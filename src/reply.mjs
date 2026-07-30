@@ -1,16 +1,19 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { releaseLane } from "./claim.mjs";
 import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
 import { createPolicyEventInspector, validateLaneGuardrails } from "./guardrails.mjs";
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { integrateLanes } from "./integrate.mjs";
-import { runDir } from "./paths.mjs";
+import { assertPathInside, assertSafeSlug, runDir } from "./paths.mjs";
+import { writePrivateFile } from "./fs-safe.mjs";
 import { writeReport } from "./report.mjs";
 import { deriveRunState, readStatus, writeStatus } from "./status.mjs";
 import { loadWorkflow } from "./workflow.mjs";
 
 export function prepareReply(runId, laneId, message) {
+  assertSafeSlug(runId, "run id");
+  assertSafeSlug(laneId, "lane id");
   if (!message || !String(message).trim()) throw new Error("reply requires a non-empty message");
   const status = readStatus(runId);
   if (!status) throw new Error("no status for " + runId);
@@ -20,21 +23,24 @@ export function prepareReply(runId, laneId, message) {
   if (!lane.sessionId) throw new Error("lane " + laneId + " has no harness session id to resume");
   const previousNeedsInput = lane.needsInput;
 
-  const laneDir = join(runDir(runId), laneId);
+  const root = runDir(runId);
+  const laneDir = join(root, laneId);
+  const safeWorktree = lane.worktree ? assertPathInside(root, lane.worktree, `lane ${laneId} worktree`) : null;
   for (const path of [
     join(laneDir, "needs-input.json"),
-    lane.worktree ? join(lane.worktree, "needs-input.json") : null,
+    safeWorktree ? join(safeWorktree, "needs-input.json") : null,
   ].filter(Boolean)) {
     rmSync(path, { force: true });
   }
 
   lane.attempt = Number(lane.attempt || 1) + 1;
   const messagePath = join(laneDir, "reply-" + lane.attempt + ".txt");
-  writeFileSync(messagePath, String(message).trim() + "\n", "utf8");
+  writePrivateFile(messagePath, String(message).trim() + "\n", "utf8");
   lane.state = "running";
   lane.needsInput = null;
   lane.endedAt = null;
   lane.replyStartedAt = new Date().toISOString();
+  status.supervisor = { pid: null, startedAt: lane.replyStartedAt, kind: "resume" };
   lane.lastActivity = "reply queued for harness resume";
   lane.claim = { state: "active", resumedAt: lane.replyStartedAt };
   status.state = "running";
@@ -44,20 +50,28 @@ export function prepareReply(runId, laneId, message) {
 }
 
 export async function resumeLane(runId, laneId, messagePath) {
+  assertSafeSlug(runId, "run id");
+  assertSafeSlug(laneId, "lane id");
   const status = readStatus(runId);
   if (!status) throw new Error("no status for " + runId);
   const lane = (status.lanes || []).find((item) => item.id === laneId);
   if (!lane) throw new Error("no lane " + laneId + " in " + runId);
-  if (!existsSync(messagePath)) throw new Error("reply message not found: " + messagePath);
+  const safeMessagePath = assertPathInside(join(runDir(runId), laneId), messagePath, "reply message");
+  if (!existsSync(safeMessagePath)) throw new Error("reply message not found: " + safeMessagePath);
 
-  const workflow = loadWorkflow(join(runDir(runId), "workflow.yaml"));
-  const laneConfig = workflow.lanes.find((item) => item.id === laneId);
-  const adapter = getHarnessAdapter(lane.harness, {
-    allowTest: workflow.policy.allow_test_harness === true,
+  const workflow = loadWorkflow(join(runDir(runId), "workflow.yaml"), {
+    repoOverride: status.repoRoot || status.repo,
   });
+  if (workflow.policy.dangerously_skip_permissions && status.dangerousPermissionsApproved !== true) {
+    throw new Error("run did not record dangerous permission approval");
+  }
+  const laneConfig = workflow.lanes.find((item) => item.id === laneId);
+  const adapter = getHarnessAdapter(lane.harness);
   const publisher = createFeedPublisher(workflow.feed);
-  const laneDir = join(runDir(runId), laneId);
-  const prompt = readFileSync(messagePath, "utf8");
+  const root = runDir(runId);
+  const laneDir = join(root, laneId);
+  lane.worktree = assertPathInside(root, lane.worktree, `lane ${laneId} worktree`);
+  const prompt = readFileSync(safeMessagePath, "utf8");
   const inspectPolicyEvent = createPolicyEventInspector(workflow.policy);
   let runtimeViolation = null;
   let handle;
@@ -71,6 +85,7 @@ export async function resumeLane(runId, laneId, messagePath) {
     model: laneConfig.model || workflow.model_default || null,
     permissionMode: workflow.policy.permission_mode,
     dangerouslySkipPermissions: !!workflow.policy.dangerously_skip_permissions,
+    envAllowlist: workflow.env_allowlist,
     onActivity: (summary) => {
       lane.lastActivity = summary;
     },
@@ -152,20 +167,27 @@ export async function resumeLane(runId, laneId, messagePath) {
       attempt: lane.attempt,
     });
   } else if (result.exitCode === 0) {
-    const check = validateLaneGuardrails({
-      worktree: lane.worktree,
-      scope: lane.scope,
-      baseCommit: lane.baseCommit,
-      policy: workflow.policy,
-    });
-    lane.changedFiles = check.changedFiles;
-    lane.scopeViolations = check.scopeViolations;
-    lane.policyViolations = [...new Set([...(lane.policyViolations || []), ...check.policyViolations])];
-    lane.state = check.ok ? "done" : "failed";
-    if (!check.ok) {
-      lane.lastActivity = check.scopeViolations.length
-        ? "scope violation: " + check.scopeViolations.join(", ")
-        : check.policyViolations.join("; ");
+    try {
+      const check = validateLaneGuardrails({
+        worktree: lane.worktree,
+        scope: lane.scope,
+        baseCommit: lane.baseCommit,
+        policy: workflow.policy,
+      });
+      lane.changedFiles = check.changedFiles;
+      lane.scopeViolations = check.scopeViolations;
+      lane.policyViolations = [...new Set([...(lane.policyViolations || []), ...check.policyViolations])];
+      lane.state = check.ok ? "done" : "failed";
+      if (!check.ok) {
+        lane.lastActivity = check.scopeViolations.length
+          ? "scope violation: " + check.scopeViolations.join(", ")
+          : check.policyViolations.join("; ");
+      }
+    } catch (error) {
+      const violation = "guardrail inspection failed: " + String(error?.message || error);
+      lane.state = "failed";
+      lane.policyViolations = [...new Set([...(lane.policyViolations || []), violation])];
+      lane.lastActivity = violation;
     }
   } else {
     lane.state = "failed";
@@ -173,7 +195,7 @@ export async function resumeLane(runId, laneId, messagePath) {
 
   lane.endedAt = new Date().toISOString();
   if (lane.state !== "blocked" && lane.branch) {
-    const released = releaseLane({ repo: status.repo, branch: lane.branch });
+    const released = releaseLane({ repo: status.repo, branch: lane.branch, mode: status.claimMode });
     lane.claim = { state: released.ok ? "released" : "release-failed", at: lane.endedAt };
     await publishFeedEvent(publisher, status, "lane_done", {
       laneId,
@@ -198,7 +220,7 @@ export async function resumeLane(runId, laneId, messagePath) {
     }
   }
 
-  if (status.state !== "running") status.endedAt = new Date().toISOString();
+  status.endedAt = status.state === "blocked" || status.state === "running" ? null : new Date().toISOString();
   writeStatus(runId, status);
   writeReport(runId, status);
   if (status.state === "done") {

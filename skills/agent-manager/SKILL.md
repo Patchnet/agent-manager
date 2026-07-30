@@ -16,7 +16,7 @@ description: >-
 **Canonical home:** `<agent-manager-repo>/skills/agent-manager/`  
 **CLI:** `<agent-manager-repo>/bin/agent-manager.mjs`  
 **Telemetry:** `$AGENT_MANAGER_RUNS_ROOT/<runId>/status.json` (default `~/.agent-manager/runs`)  
-**Detail:** [reference.md](./reference.md) · [reporting.md](./reporting.md) · [../../docs/OPERATOR.md](../../docs/OPERATOR.md)
+**Detail:** [reference.md](./reference.md) · [reporting.md](./reporting.md) · [operator guide](https://github.com/Patchnet/agent-manager/blob/main/docs/OPERATOR.md)
 
 This skill is model-neutral. Claude Code, Codex, Cursor, and others follow the
 **same** command surface and **same** chat reporting templates.
@@ -66,8 +66,8 @@ themselves in one chat — that stays a normal focused session.
     `am/<runId>/integrate` after coding finishes. It prepares the branch only —
     Master still owns Delivery Review → Ship Gate → push / `gh pr create` /
     `gh pr merge --auto --squash`. Never ask the operator to click Merge.
-11. **Never** pass `--dangerously-skip-permissions` unless the operator explicitly
-    demands it for that run.
+11. **Dangerous permissions need two approvals.** The workflow policy and the launch flag
+    `--allow-dangerous-permissions` (or matching environment confirmation) must both be present.
 12. On `needs-input` / blocked lanes: surface the question in chat, wait for the
     operator, then resume/reply (or cancel) — do not guess product decisions.
 
@@ -76,14 +76,15 @@ themselves in one chat — that stays a normal focused session.
 Prefer absolute paths to your clone:
 
 ```bash
-node /path/to/agent-manager/bin/agent-manager.mjs run <workflow.yaml> --detach
-node /path/to/agent-manager/bin/agent-manager.mjs status [runId]
-node /path/to/agent-manager/bin/agent-manager.mjs monitor [runId]
-node /path/to/agent-manager/bin/agent-manager.mjs watch-signal [runId] --heartbeat-sec 180
-node /path/to/agent-manager/bin/agent-manager.mjs reply <runId> <laneId> --message "..."
-node /path/to/agent-manager/bin/agent-manager.mjs cancel <runId>
-node /path/to/agent-manager/bin/agent-manager.mjs integrate <runId>
-node /path/to/agent-manager/bin/agent-manager.mjs cleanup <runId>
+agent-manager run <workflow.yaml> --detach
+agent-manager status [runId]
+agent-manager monitor [runId]
+agent-manager watch-signal [runId] --heartbeat-sec 180
+agent-manager reply <runId> <laneId> --message "..."
+agent-manager cancel <runId>
+agent-manager integrate <runId>
+agent-manager cleanup <runId>
+agent-manager review <runId>
 ```
 
 Example: `examples/two-lane-smoke.yaml` (set `AGENT_MANAGER_DEV_ROOT` to the
@@ -99,8 +100,8 @@ parent that contains the `agent-manager` folder).
    the operator they can open `monitor <runId>` in a side terminal.
 5. On each wake: Heartbeat / Run board / Escalation / Run outcome per templates.
 6. **Escalate** any `blocked` / `needsInput` with the **Escalation** template.
-7. **On terminal state** (`done` | `failed` | `cancelled` | stuck `blocked`): post
-   **Run outcome**, then **stop** watch-signal (kill the background PID).
+7. **On terminal state** (`done` | `failed` | `cancelled`): post
+   **Run outcome**, then **stop** watch-signal. A `blocked` run is resumable: post **Escalation** and keep the watcher active.
 8. **Delivery Review · Pass 1** — compare proposal vs worktrees; post the board;
    wait for `accept` | `accept-with-notes` | `revise` | `relaunch` | `reject`.
 9. **At most one correction** — on `revise` / `relaunch` only: feed gaps to
@@ -120,7 +121,7 @@ Silence after detach is a bug. Master must wake on status changes and on a
 1. Start in the **background** (`block_until_ms: 0`):
 
 ```bash
-node /path/to/agent-manager/bin/agent-manager.mjs watch-signal <runId> --heartbeat-sec 180
+agent-manager watch-signal <runId> --heartbeat-sec 180
 ```
 
 **Heartbeat default is 180 seconds (3 minutes).** Use that unless the operator
@@ -135,7 +136,7 @@ the “still running, nothing changed” pulse.
 ```
 
 3. On each matching line, parse the JSON after the sentinel. `reason` is one of:
-   `heartbeat` | `state_change` | `needs_input` | `terminal`.
+   `heartbeat` | `state_change` | `needs_input` | `terminal`. Treat external-output wake support as host-dependent; fall back to a side terminal or JSONL event consumer.
 4. **Always** re-read `$AGENT_MANAGER_RUNS_ROOT/<runId>/status.json` before posting
    (never invent state from the wake payload alone).
 5. Post the matching template:
@@ -149,7 +150,7 @@ the “still running, nothing changed” pulse.
 ### Side terminal (human glance)
 
 ```bash
-node /path/to/agent-manager/bin/agent-manager.mjs monitor <runId>
+agent-manager monitor <runId>
 ```
 
 Live lane board; exits on `done` / `failed` / `cancelled`. Does **not** replace
@@ -169,6 +170,7 @@ Runs root defaults to `~/.agent-manager/runs` (`AGENT_MANAGER_RUNS_ROOT`).
 | Path | Role |
 |---|---|
 | `<runs>/<runId>/status.json` | Source of truth for live state |
+| `<runs>/<runId>/events.jsonl` | Host-neutral state-change stream |
 | `<runs>/<runId>/report.md` | End-of-run synthesis for Master |
 | `<runs>/<runId>/supervisor.log` | Detached supervisor stdout/stderr |
 | `<runs>/<runId>/<lane>/stdout.log` | Harness stream (debug) |
@@ -194,7 +196,7 @@ Canonical copy stays in this repo. To expose it to a host agent:
 
 ## Related
 
-- Operator detail: `docs/OPERATOR.md`
+- Operator guide: https://github.com/Patchnet/agent-manager/blob/main/docs/OPERATOR.md
 - Claims: bundled `tools/claim.mjs`
-- Ship Gate: host / org ship-gate skill when that convention applies
+- Ship Gate: use the host's existing `ship-gate` skill; the source package also includes a portable starter
 - Cursor loop skill: host `/loop` for notify_on_output wakes

@@ -1,7 +1,7 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { releaseLane } from "./claim.mjs";
-import { repoPath, RUNS_ROOT, runDir } from "./paths.mjs";
+import { assertPathInside, assertSafeSlug, repoPath, RUNS_ROOT, runDir } from "./paths.mjs";
 import { readStatus, writeStatus } from "./status.mjs";
 import { removeWorktree } from "./worktree.mjs";
 
@@ -19,22 +19,23 @@ export function cleanupRun(runId, { keepLogs = false } = {}) {
     throw new Error("refusing cleanup outside runs root: " + target);
   }
 
-  const repoRoot = repoPath(status.repo);
+  const repoRoot = status.repoRoot || repoPath(status.repo);
   const removed = [];
   for (const lane of status.lanes || []) {
     if (lane.branch) {
-      const released = releaseLane({ repo: status.repo, branch: lane.branch });
+      const released = releaseLane({ repo: status.repo, branch: lane.branch, mode: status.claimMode });
       lane.claim = {
         state: released.ok ? "released" : "release-failed",
         at: new Date().toISOString(),
       };
     }
     if (lane.worktree && existsSync(lane.worktree)) {
-      removeWorktree({ repoRoot, worktreePath: lane.worktree });
-      removed.push(lane.worktree);
+      const safeWorktree = assertPathInside(target, lane.worktree, `lane ${lane.id} worktree`);
+      removeWorktree({ repoRoot, worktreePath: safeWorktree });
+      removed.push(safeWorktree);
     }
     if (!keepLogs) {
-      const laneDir = join(target, lane.id);
+      const laneDir = join(target, assertSafeSlug(lane.id, "lane id"));
       if (existsSync(laneDir)) {
         rmSync(laneDir, { recursive: true, force: true });
         removed.push(laneDir);
@@ -43,11 +44,12 @@ export function cleanupRun(runId, { keepLogs = false } = {}) {
   }
 
   if (status.integrate?.branch) {
-    releaseLane({ repo: status.repo, branch: status.integrate.branch });
+    releaseLane({ repo: status.repo, branch: status.integrate.branch, mode: status.claimMode });
   }
   if (status.integrate?.worktree && existsSync(status.integrate.worktree)) {
-    removeWorktree({ repoRoot, worktreePath: status.integrate.worktree });
-    removed.push(status.integrate.worktree);
+    const safeIntegrateWorktree = assertPathInside(target, status.integrate.worktree, "integrate worktree");
+    removeWorktree({ repoRoot, worktreePath: safeIntegrateWorktree });
+    removed.push(safeIntegrateWorktree);
   }
   if (!keepLogs) {
     for (const path of [join(target, "integrate"), join(target, "supervisor.log")]) {
@@ -64,4 +66,22 @@ export function cleanupRun(runId, { keepLogs = false } = {}) {
     removed,
   };
   return writeStatus(runId, status);
+}
+export function cleanupStaleRuns({ olderThanDays = 30, keepLogs = false, now = Date.now() } = {}) {
+  if (!Number.isFinite(olderThanDays) || olderThanDays < 1) {
+    throw new Error("olderThanDays must be at least 1");
+  }
+  if (!existsSync(RUNS_ROOT)) return [];
+  const cutoff = now - olderThanDays * 86_400_000;
+  const cleaned = [];
+  for (const entry of readdirSync(RUNS_ROOT, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(entry.name)) continue;
+    const status = readStatus(entry.name);
+    if (!status || status.state === "running" || status.state === "blocked") continue;
+    const timestamp = Date.parse(status.updatedAt || status.endedAt || status.startedAt || "");
+    if (!Number.isFinite(timestamp) || timestamp > cutoff) continue;
+    cleanupRun(entry.name, { keepLogs });
+    cleaned.push(entry.name);
+  }
+  return cleaned;
 }

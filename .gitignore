@@ -1,5 +1,9 @@
 node_modules/
 *.log
+
+# Internal dev log â€” public release notes live in GitHub Releases
+CHANGELOG.md
+
 .env
 .env.*
 !.env.example
@@ -12,7 +16,7 @@ Codex.local.md
 .codex/
 brains/
 user-data/
-workflows/
+/workflows/
 .DS_Store
 Thumbs.db
 coverage/

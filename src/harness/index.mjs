@@ -43,11 +43,11 @@ const SUPPORTED_NAMES = [...adapters.values()]
   .filter((adapter) => adapter.supported && !adapter.testOnly)
   .map((adapter) => adapter.name);
 
-export function getHarnessAdapter(name, { allowTest = false } = {}) {
+export function getHarnessAdapter(name) {
   const adapter = adapters.get(name);
   if (!adapter) throw new Error('unknown harness "' + name + '"');
-  if (adapter.testOnly && !allowTest && process.env.AGENT_MANAGER_ALLOW_FAKE !== "1") {
-    throw new Error('harness "fake" is test-only; set policy.allow_test_harness: true');
+  if (adapter.testOnly && process.env.AGENT_MANAGER_TEST_MODE !== "1") {
+    throw new Error('harness "fake" is test-only; set AGENT_MANAGER_TEST_MODE=1 in the test process');
   }
   if (!adapter.supported) {
     throw new Error(

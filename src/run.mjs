@@ -1,13 +1,15 @@
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, openSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { loadWorkflow, lanePrompt } from "./workflow.mjs";
+import { assertDangerousPermissionApproval, loadWorkflow, lanePrompt } from "./workflow.mjs";
 import { claimLane, releaseLane } from "./claim.mjs";
 import { addWorktree, removeWorktree } from "./worktree.mjs";
 import { deriveRunState, readStatus, writeStatus } from "./status.mjs";
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { writeReport } from "./report.mjs";
 import { integrateLanes } from "./integrate.mjs";
-import { runDir } from "./paths.mjs";
+import { assertSafeSlug, runDir } from "./paths.mjs";
+import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
 import {
   createPolicyEventInspector,
@@ -27,7 +29,7 @@ export function newRunId() {
     pad(d.getHours()) +
     pad(d.getMinutes()) +
     pad(d.getSeconds());
-  return "run-" + stamp;
+  return "run-" + stamp + "-" + randomBytes(4).toString("hex");
 }
 
 function scopeList(scope) {
@@ -43,7 +45,7 @@ function cancellationRequested(runId) {
 
 function releaseLaneClaim(status, lane) {
   if (!lane.branch || lane.claim?.state === "released") return;
-  const released = releaseLane({ repo: status.repo, branch: lane.branch });
+  const released = releaseLane({ repo: status.repo, branch: lane.branch, mode: status.claimMode });
   lane.claim = {
     state: released.ok ? "released" : "release-failed",
     at: new Date().toISOString(),
@@ -73,12 +75,25 @@ function applyGuardrails(lane, workflow) {
   }
 }
 
-export async function runWorkflow(workflowPath, { runId: forcedId } = {}) {
-  const workflow = loadWorkflow(workflowPath);
-  const runId = forcedId || newRunId();
+export async function runWorkflow(workflowPath, {
+  runId: forcedId,
+  repoOverride = null,
+  allowDangerousPermissions = false,
+} = {}) {
+  const workflow = loadWorkflow(workflowPath, { repoOverride });
+  assertDangerousPermissionApproval(workflow, allowDangerousPermissions);
+  const runId = assertSafeSlug(forcedId || newRunId(), "run id");
   const dir = runDir(runId);
-  mkdirSync(dir, { recursive: true });
+  ensurePrivateDir(dir);
+  const lockPath = join(dir, "supervisor.lock");
+  let lockFd;
+  try {
+    lockFd = openSync(lockPath, "wx", 0o600);
+  } catch (error) {
+    throw new Error(`run ${runId} is already active or its lock exists: ${error.message}`);
+  }
   copyFileSync(workflow.absPath, join(dir, "workflow.yaml"));
+  chmodSync(join(dir, "workflow.yaml"), 0o600);
 
   const startedAt = new Date().toISOString();
   const initialRepo = inspectInitialRepo(workflow.repoRoot);
@@ -111,12 +126,17 @@ export async function runWorkflow(workflowPath, { runId: forcedId } = {}) {
     runId,
     state: "running",
     repo: workflow.repo,
+    repoRoot: workflow.repoRoot,
+    dangerousPermissionsApproved: workflow.policy.dangerously_skip_permissions === true,
     workflow: workflow.absPath,
     target_dev_flow: workflow.target_dev_flow,
     startedAt,
     endedAt: null,
     initialRepo,
     policy: workflow.policy,
+    claimMode: workflow.claim_mode,
+    baseRef: workflow.base_ref,
+    supervisor: { pid: process.pid, startedAt, kind: "run" },
     feed: {
       enabled: workflow.feed.enabled,
       baseUrl: workflow.feed.baseUrl,
@@ -126,7 +146,7 @@ export async function runWorkflow(workflowPath, { runId: forcedId } = {}) {
     lanes: laneStates,
   };
   writeStatus(runId, status);
-  writeFileSync(
+  writePrivateFile(
     join(dir, "meta.json"),
     JSON.stringify({ runId, startedAt, initialRepo }, null, 2) + "\n",
   );
@@ -144,6 +164,27 @@ export async function runWorkflow(workflowPath, { runId: forcedId } = {}) {
 
   const handles = [];
   const createdWorktrees = [];
+  const handleSupervisorSignal = (signal) => {
+    const at = new Date().toISOString();
+    writePrivateFile(
+      join(dir, "cancelled.json"),
+      JSON.stringify({ at, reason: "supervisor signal", signal }, null, 2) + "\n",
+      "utf8",
+    );
+    for (const entry of handles) entry.adapter.cancel(entry.handle);
+    for (const lane of laneStates) {
+      if (lane.state === "running" || lane.state === "queued") {
+        lane.state = "cancelled";
+        lane.lastActivity = `supervisor received ${signal}`;
+        lane.endedAt = at;
+      }
+    }
+    status.state = "cancelled";
+    status.endedAt = at;
+    writeStatus(runId, status);
+  };
+  process.once("SIGINT", handleSupervisorSignal);
+  process.once("SIGTERM", handleSupervisorSignal);
 
   try {
     for (let index = 0; index < workflow.lanes.length; index++) {
@@ -153,24 +194,29 @@ export async function runWorkflow(workflowPath, { runId: forcedId } = {}) {
       const branch = "am/" + runId + "/" + lane.id;
       const laneDir = join(dir, lane.id);
       const worktree = join(laneDir, "wt");
-      mkdirSync(laneDir, { recursive: true });
-      writeFileSync(
+      ensurePrivateDir(laneDir);
+      writePrivateFile(
         join(laneDir, "README-LANE.txt"),
         "Lane " + lane.id + "\nIf blocked, write needs-input.json here:\n" +
           join(laneDir, "needs-input.json") + "\n",
       );
 
       laneState.branch = branch;
-      claimLane({
+      const claim = claimLane({
         repo: workflow.repo,
         branch,
         lane: lane.id,
         scope: scopeList(lane.scope),
         agent: "agt-agent-manager-" + (lane.harness || workflow.harness_default),
+        mode: workflow.claim_mode,
       });
-      laneState.claim = { state: "active", at: new Date().toISOString() };
+      laneState.claim = claim.skipped
+        ? { state: "skipped", at: new Date().toISOString() }
+        : claim.ok
+          ? { state: "active", at: new Date().toISOString() }
+          : { state: "advisory-failed", at: new Date().toISOString(), error: claim.error };
 
-      addWorktree({ repoRoot: workflow.repoRoot, worktreePath: worktree, branch });
+      addWorktree({ repoRoot: workflow.repoRoot, worktreePath: worktree, branch, baseBranch: workflow.base_ref });
       createdWorktrees.push(worktree);
       laneState.worktree = worktree;
       laneState.baseCommit = currentHead(worktree);
@@ -182,9 +228,7 @@ export async function runWorkflow(workflowPath, { runId: forcedId } = {}) {
         "\n\n## Escalation path\nIf blocked, write JSON to:\n" +
         join(laneDir, "needs-input.json") + "\n";
       const harnessName = lane.harness || workflow.harness_default;
-      const adapter = getHarnessAdapter(harnessName, {
-        allowTest: workflow.policy.allow_test_harness === true,
-      });
+      const adapter = getHarnessAdapter(harnessName);
       const inspectPolicyEvent = createPolicyEventInspector(workflow.policy);
       let handle;
       let runtimeViolation = null;
@@ -196,6 +240,7 @@ export async function runWorkflow(workflowPath, { runId: forcedId } = {}) {
         model: lane.model || workflow.model_default || null,
         permissionMode: workflow.policy.permission_mode,
         dangerouslySkipPermissions: !!workflow.policy.dangerously_skip_permissions,
+        envAllowlist: workflow.env_allowlist,
         onActivity: (summary) => {
           laneState.lastActivity = summary;
         },
@@ -324,8 +369,11 @@ export async function runWorkflow(workflowPath, { runId: forcedId } = {}) {
     }));
 
     if (cancellationRequested(runId)) {
-      const onDisk = readStatus(runId);
-      return { runId, status: onDisk || status, dir };
+      const cancelled = readStatus(runId) || status;
+      for (const lane of cancelled.lanes || []) releaseLaneClaim(cancelled, lane);
+      const saved = writeStatus(runId, { ...cancelled, state: "cancelled", endedAt: cancelled.endedAt || new Date().toISOString() });
+      writeReport(runId, saved);
+      return { runId, status: saved, dir };
     }
 
     status.state = deriveRunState(status);
@@ -342,7 +390,7 @@ export async function runWorkflow(workflowPath, { runId: forcedId } = {}) {
       }
     }
 
-    status.endedAt = new Date().toISOString();
+    status.endedAt = status.state === "blocked" ? null : new Date().toISOString();
     writeStatus(runId, status);
     const reportPath = writeReport(runId, status);
     if (status.state === "done") {
@@ -401,5 +449,14 @@ export async function runWorkflow(workflowPath, { runId: forcedId } = {}) {
       }
     }
     throw error;
+  } finally {
+    process.removeListener("SIGINT", handleSupervisorSignal);
+    process.removeListener("SIGTERM", handleSupervisorSignal);
+    try {
+      closeSync(lockFd);
+    } catch {
+      /* lock may not have opened */
+    }
+    rmSync(lockPath, { force: true });
   }
 }

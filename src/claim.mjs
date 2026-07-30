@@ -14,7 +14,8 @@ function runClaim(args) {
   };
 }
 
-export function claimLane({ repo, branch, lane, scope, agent }) {
+export function claimLane({ repo, branch, lane, scope, agent, mode = "auto" }) {
+  if (mode === "off") return { ok: true, skipped: true };
   const scopeStr = Array.isArray(scope) ? scope.join(",") : String(scope);
   const r = runClaim([
     "claim",
@@ -28,11 +29,13 @@ export function claimLane({ repo, branch, lane, scope, agent }) {
     const msg = (r.stderr || r.stdout || "claim failed").trim();
     const err = new Error(msg);
     err.code = r.status;
-    throw err;
+    if (mode === "required") throw err;
+    return { ok: false, advisory: true, error: msg };
   }
-  return r.stdout.trim();
+  return { ok: true, output: r.stdout.trim() };
 }
 
-export function releaseLane({ repo, branch }) {
+export function releaseLane({ repo, branch, mode = "auto" }) {
+  if (mode === "off") return { ok: true, skipped: true };
   return runClaim(["release", "--repo", repo, "--branch", branch]);
 }

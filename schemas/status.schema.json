@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/status.schema.json",
+  "title": "agent-manager status",
+  "type": "object",
+  "required": ["runId", "state", "repo", "startedAt", "lanes"],
+  "properties": {
+    "runId": { "type": "string" }, "state": { "enum": ["running", "blocked", "done", "failed", "cancelled"] },
+    "repo": { "type": "string" }, "startedAt": { "type": "string", "format": "date-time" },
+    "endedAt": { "type": ["string", "null"] }, "lanes": { "type": "array" }
+  }
+}

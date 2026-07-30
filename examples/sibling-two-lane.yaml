@@ -1,9 +1,9 @@
-# Example: two parallel lanes against a sibling repo named patchnet-mr-markdown.
-# Replace `repo` with any folder under AGENT_MANAGER_DEV_ROOT (default: cwd).
+# Example: two parallel lanes against a sibling repo under AGENT_MANAGER_DEV_ROOT.
+# Replace `repo` with any folder name next to your agent-manager clone.
 # Workers inherit that repo's agent files / skills / MCP.
 # No commit — Master Dev / Ship Gate owns shipping.
 
-repo: patchnet-mr-markdown
+repo: my-sibling-repo
 harness_default: claude
 
 feed:

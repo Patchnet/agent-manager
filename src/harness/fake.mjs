@@ -2,6 +2,8 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { detectNeedsInput } from "./claude.mjs";
+import { assertPathInside } from "../paths.mjs";
+import { ensurePrivateDir, writePrivateFile } from "../fs-safe.mjs";
 
 function makeHandle(options, resumed = false) {
   const fixture = resumed ? options.lane?.fake?.resume || {} : options.lane?.fake || {};
@@ -11,11 +13,11 @@ function makeHandle(options, resumed = false) {
   let killed = false;
   let lastActivity = resumed ? "fake resumed" : "fake spawned";
   let lastByteAt = Date.now();
-  mkdirSync(options.laneDir, { recursive: true });
+  ensurePrivateDir(options.laneDir);
   if (resumed) {
     rmSync(join(options.laneDir, "needs-input.json"), { force: true });
   }
-  writeFileSync(logPath, lastActivity + "\n", { flag: "a" });
+  writePrivateFile(logPath, lastActivity + "\n", { flag: "a" });
 
   const done = new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -25,7 +27,7 @@ function makeHandle(options, resumed = false) {
         return;
       }
       if (fixture.write) {
-        const target = join(options.cwd, fixture.write.path);
+        const target = assertPathInside(options.cwd, join(options.cwd, fixture.write.path), "fake fixture path");
         mkdirSync(dirname(target), { recursive: true });
         writeFileSync(target, String(fixture.write.content ?? "fixture\n"), "utf8");
         lastActivity = "fake wrote " + fixture.write.path;
@@ -36,7 +38,7 @@ function makeHandle(options, resumed = false) {
           prompt: String(fixture.needs_input),
           blocking: true,
         };
-        writeFileSync(join(options.laneDir, "needs-input.json"), JSON.stringify(needs, null, 2));
+        writePrivateFile(join(options.laneDir, "needs-input.json"), JSON.stringify(needs, null, 2));
         lastActivity = needs.prompt;
       }
       options.onActivity?.(lastActivity);

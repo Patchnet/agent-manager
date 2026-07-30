@@ -1,0 +1,15 @@
+---
+description: Run detached multi-harness lanes through agent-manager
+alwaysApply: false
+---
+
+When the user asks for agent-manager, multi-lane work, or both Claude and Codex:
+
+1. Generate or validate a workflow with no more than three independent lane scopes.
+2. Launch only with `agent-manager run <workflow> --detach --json`.
+3. Render the Run board from `status.json`; never invent lane state.
+4. On `needs_input`, ask the operator and use `agent-manager reply <runId> <laneId> --message "..."`.
+5. On completion, run `agent-manager review <runId>` and present Delivery Review Pass 1.
+6. Do not commit, push, open or merge a PR, tag, or release without the explicit Ship Gate.
+
+Use `agent-manager watch-signal <runId>` or `agent-manager events <runId> --jsonl` as the host-neutral wake source. A blocked run is resumable, not terminal.

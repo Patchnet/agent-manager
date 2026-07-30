@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/review.schema.json",
+  "title": "agent-manager Delivery Review",
+  "type": "object",
+  "required": ["schema", "runId", "pass", "path", "markdown"],
+  "properties": {
+    "schema": { "const": "agent-manager.review.v1" }, "runId": { "type": "string" },
+    "pass": { "enum": [1, 2] }, "path": { "type": "string" }, "markdown": { "type": "string" }
+  }
+}

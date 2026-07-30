@@ -30,6 +30,7 @@ still come from Master reading `status.json` on each wake
 | `AGENT_MANAGER_RUNS_ROOT` | `~/.agent-manager/runs` | Telemetry + worktrees |
 | `AGENT_MANAGER_CLAIMS_ROOT` | `~/.agent-manager/claims` | Claim JSON registry |
 | `AGENT_MANAGER_CLAIM_BIN` | `<pkg>/tools/claim.mjs` | Claims CLI |
+| `AGENT_MANAGER_ENV_ALLOWLIST` | empty | Extra worker environment names |
 
 ## Detach (Master Dev mandatory)
 
@@ -83,7 +84,7 @@ lanes:
 Max **3** lanes per run (coordination policy).
 
 When `integrate: true` and all coding lanes exit `done`, the supervisor snapshots
-dirty lane worktrees, merges them into `am/<runId>/integrate` from `origin/main`,
+dirty lane worktrees, merges them into `am/<runId>/integrate` from the recorded immutable base SHA,
 and writes `integrate/summary.json` + `integrate/README.md`. Conflicts →
 `needs-input` / run `blocked`. Integrate never pushes, opens a PR, stamps
 versions, or merges to `main` — Master Dev + Ship Gate do that
@@ -100,7 +101,7 @@ versions, or merges to `main` — Master Dev + Ship Gate do that
 
 ```json
 {
-  "runId": "run-YYYYMMDD-HHMMSS",
+  "runId": "run-YYYYMMDD-HHMMSS-random",
   "state": "running|blocked|done|failed|cancelled",
   "repo": "my-repo",
   "workflow": "/abs/path/workflow.yaml",
@@ -163,7 +164,7 @@ repo’s `CLAUDE.md` / skills / MCP like a normal in-repo session. Do not pass
 | `claude` | supported | `claude -p --output-format stream-json` |
 | `codex` | supported | `codex exec --json` / `codex exec resume <id>` |
 | `cursor` | not implemented | stub only |
-| `fake` | test-only | gated by `policy.allow_test_harness` |
+| `fake` | test-only | gated by `AGENT_MANAGER_TEST_MODE=1` in the launching process |
 
 Codex session ids come from `thread.started.thread_id`. Needs-input still uses
 lane `needs-input.json` (same contract as Claude).

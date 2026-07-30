@@ -29,23 +29,20 @@ export function addWorktree({ repoRoot, worktreePath, branch, baseBranch }) {
   const base = baseBranch || "HEAD";
   const r = git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, base]);
   if (!r.ok) {
-    // Branch may already exist — try attach without -b
-    const r2 = git(repoRoot, ["worktree", "add", worktreePath, branch]);
-    if (!r2.ok) {
-      throw new Error(`worktree add failed: ${r.stderr || r.stdout}\n${r2.stderr || r2.stdout}`);
-    }
+    throw new Error(`worktree add failed: ${r.stderr || r.stdout}`);
   }
   return worktreePath;
 }
 
-export function removeWorktree({ repoRoot, worktreePath, force = true }) {
+export function removeWorktree({ repoRoot, worktreePath, force = true, bestEffort = false }) {
   if (!existsSync(worktreePath)) return;
   const args = ["worktree", "remove", worktreePath];
   if (force) args.push("--force");
   const r = git(repoRoot, args);
   if (!r.ok) {
-    // Best-effort cleanup
-    console.error(`worktree remove warning: ${r.stderr || r.stdout}`);
+    const message = `worktree remove failed: ${r.stderr || r.stdout}`;
+    if (bestEffort) console.error(message);
+    else throw new Error(message);
   }
 }
 

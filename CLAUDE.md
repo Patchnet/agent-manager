@@ -1,7 +1,8 @@
 # agent-manager — agent bootstrap
 
-Tracked, safe-public pointer. Operator-specific context lives in `CLAUDE.local.md`
-(gitignored). Codex sibling: `AGENTS.md` (gitignored).
+Tracked, **safe-public** pointer. Assume any contributor or fork can read this
+file. Operator-specific context lives in `CLAUDE.local.md` (gitignored). Codex
+sibling: `AGENTS.md` (gitignored).
 
 ## What this repo is
 
@@ -13,8 +14,13 @@ escalates blockers, and writes a report.
 
 ## Working agreements
 
+- **This repo is public.** Never commit secrets, tokens, private keys, internal
+  hostnames/IPs, emails, internal identifiers (`prj_*`, `agt-*`, `sess-*`, …),
+  customer/tenant data, or fleet-specific paths. Operator workflows and brain
+  context stay gitignored (`workflows/`, `*.local.md`). Full rules:
+  **`docs/PUBLIC-REPO-HYGIENE.md`**
 - **Dev flow: Simple** (`Version.md` `dev_flow: simple`) — direct commits to `main`.
-- **Test gate: none** until a local suite is required for ship.
+- **Test gate:** `npm test`, followed by `npm run hygiene` for public changes.
 - **Ship Gate** before commit/push/tag when operating under that convention.
 - Workers spawned by this tool inherit the **target repo's** agent files; do not
   invent a parallel skill system here.
@@ -28,6 +34,8 @@ Load **`skills/agent-manager/SKILL.md`**.
 
 - Reporting templates (mandatory): `skills/agent-manager/reporting.md`
 - Reference: `skills/agent-manager/reference.md`
+- Ship Gate (bundled starter): `skills/ship-gate/SKILL.md` — prefer a
+  host/org ship-gate when present
 - Operator guide: `docs/OPERATOR.md`
 
 ## Commands

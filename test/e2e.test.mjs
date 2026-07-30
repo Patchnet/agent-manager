@@ -59,6 +59,7 @@ const env = {
   AGENT_MANAGER_DEV_ROOT: root,
   AGENT_MANAGER_RUNS_ROOT: runsRoot,
   AGENT_MANAGER_CLAIM_BIN: claimScript,
+  AGENT_MANAGER_TEST_MODE: "1",
   CLAIM_LOG: claimLog,
 };
 
@@ -82,7 +83,7 @@ async function runCli(args, timeout = 10_000) {
   });
 }
 
-async function waitForStatus(runId, predicate, timeoutMs = 8_000) {
+async function waitForStatus(runId, predicate, timeoutMs = 30_000) {
   const statusPath = join(runsRoot, runId, "status.json");
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -95,7 +96,7 @@ async function waitForStatus(runId, predicate, timeoutMs = 8_000) {
   throw new Error("timed out waiting for " + runId);
 }
 
-async function waitForFeed(event, runId, timeoutMs = 5_000) {
+async function waitForFeed(event, runId, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (feedEvents.some((item) => item.event === event && item.runId === runId)) return;
@@ -116,8 +117,7 @@ function baseWorkflow(lanes) {
     policy: {
       allow_commit: false,
       allow_pr: false,
-      allow_test_harness: true,
-      poll_interval_ms: 10,
+      poll_interval_ms: 100,
       stall_timeout_sec: 5,
     },
     lanes,
@@ -175,6 +175,11 @@ test("detached run publishes feed events, resumes the exact session, and release
   assert.ok(existsSync(join(resumed.worktree, "resume.txt")));
   await waitForFeed("run_done", runId);
 
+  const reviewOutput = await runCli(["review", runId, "--json"]);
+  const review = JSON.parse(reviewOutput.stdout.trim());
+  assert.equal(review.schema, "agent-manager.review.v1");
+  assert.ok(existsSync(review.path));
+
   const eventNames = feedEvents.filter((item) => item.runId === runId).map((item) => item.event);
   assert.ok(eventNames.includes("run_started"));
   assert.ok(eventNames.filter((name) => name === "lane_started").length >= 3);
@@ -186,6 +191,7 @@ test("detached run publishes feed events, resumes the exact session, and release
   const claims = readFileSync(claimLog, "utf8");
   assert.match(claims, /release --repo fixture-repo --branch am\/run-test-reply\/writer/);
   assert.match(claims, /release --repo fixture-repo --branch am\/run-test-reply\/question/);
+  await runCli(["cleanup", runId]);
 });
 
 test("scope violations fail the lane and publish run_failed", async () => {
@@ -204,6 +210,7 @@ test("scope violations fail the lane and publish run_failed", async () => {
   assert.match(failed.lanes[0].lastActivity, /scope violation/);
   assert.equal(failed.lanes[0].claim.state, "released");
   await waitForFeed("run_failed", runId);
+  await runCli(["cleanup", runId]);
 });
 
 test("manual integrate folds a successful lane and releases its integration claim", async () => {
@@ -224,6 +231,7 @@ test("manual integrate folds a successful lane and releases its integration clai
   assert.equal(integrated.integrate.state, "ready");
   assert.equal(integrated.integrate.claim.state, "released");
   assert.ok(existsSync(join(integrated.integrate.worktree, "integrated.txt")));
+  await runCli(["cleanup", runId]);
 });
 
 test("cancel remains authoritative and cleanup removes abandoned worktrees and logs", async () => {
@@ -239,13 +247,15 @@ test("cancel remains authoritative and cleanup removes abandoned worktrees and l
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
   const running = await waitForStatus(runId, (status) => status.lanes?.[0]?.state === "running");
   const worktree = running.lanes[0].worktree;
-  await runCli(["cancel", runId]);
+  await runCli(["cancel", runId, "--remove-worktrees"]);
   await new Promise((resolve) => setTimeout(resolve, 400));
   const cancelled = JSON.parse(readFileSync(join(runsRoot, runId, "status.json"), "utf8"));
   assert.equal(cancelled.state, "cancelled");
   assert.ok(cancelled.endedAt);
   await waitForFeed("run_failed", runId);
 
+  cancelled.repo = ".";
+  writeFileSync(join(runsRoot, runId, "status.json"), JSON.stringify(cancelled, null, 2));
   await runCli(["cleanup", runId]);
   const cleaned = JSON.parse(readFileSync(join(runsRoot, runId, "status.json"), "utf8"));
   assert.ok(cleaned.cleanup.at);

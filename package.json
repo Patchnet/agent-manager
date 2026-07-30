@@ -1,37 +1,43 @@
 {
-  "name": "agent-manager",
-  "version": "1.0.0",
-  "private": false,
-  "license": "Apache-2.0",
-  "description": "Master Dev CLI supervisor — claim lanes, spawn harness CLIs, status.json, report",
-  "type": "module",
-  "bin": {
-    "agent-manager": "./bin/agent-manager.mjs"
-  },
-  "scripts": {
-    "agent-manager": "node ./bin/agent-manager.mjs",
-    "start": "node ./bin/agent-manager.mjs",
-    "test": "node --test --test-concurrency=1"
-  },
-  "engines": {
-    "node": ">=24"
-  },
-  "dependencies": {
-    "yaml": "^2.8.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Patchnet/agent-manager.git"
-  },
-  "files": [
-    "bin/",
-    "src/",
-    "tools/",
-    "skills/",
-    "docs/",
-    "examples/",
-    "Version.md",
-    "LICENSE",
-    "README.md"
-  ]
+    "name": "agent-manager",
+    "version": "1.1.0",
+    "private": false,
+    "license": "Apache-2.0",
+    "description": "Detached multi-harness CLI supervisor with isolated worktrees and gated delivery",
+    "type": "module",
+    "bin": {
+        "agent-manager": "./bin/agent-manager.mjs"
+    },
+    "scripts": {
+        "agent-manager": "node ./bin/agent-manager.mjs",
+        "start": "node ./bin/agent-manager.mjs",
+        "test": "node --test --test-concurrency=1",
+        "hygiene": "node ./scripts/public-hygiene.mjs",
+        "check:version": "node ./scripts/check-version.mjs"
+    },
+    "engines": {
+        "node": ">=24"
+    },
+    "dependencies": {
+        "yaml": "^2.8.0"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Patchnet/agent-manager.git"
+    },
+    "files": [
+        "bin/",
+        "src/",
+        "tools/",
+        "skills/",
+        "integrations/",
+        "schemas/",
+        "docs/",
+        "examples/",
+        "Version.md",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "LICENSE",
+        "README.md"
+    ]
 }

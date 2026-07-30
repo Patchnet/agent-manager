@@ -16,7 +16,9 @@ export function integrateRun(runId) {
     throw new Error("all lanes must be done before integration");
   }
 
-  const workflow = loadWorkflow(join(runDir(runId), "workflow.yaml"));
+  const workflow = loadWorkflow(join(runDir(runId), "workflow.yaml"), {
+    repoOverride: status.repoRoot || status.repo,
+  });
   status.integrate = { state: "running" };
   writeStatus(runId, status);
   try {

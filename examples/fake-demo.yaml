@@ -1,0 +1,35 @@
+# Local orchestration demo. The fake harness is available only when the process
+# explicitly opts into test mode; it never launches a model CLI.
+#
+# PowerShell:
+#   $env:AGENT_MANAGER_TEST_MODE="1"
+#   node bin/agent-manager.mjs run examples/fake-demo.yaml --detach
+#
+# bash/zsh:
+#   AGENT_MANAGER_TEST_MODE=1 node bin/agent-manager.mjs run examples/fake-demo.yaml --detach
+
+repo: ..
+harness_default: fake
+claim_mode: off
+policy:
+  allow_commit: false
+  allow_pr: false
+  poll_interval_ms: 100
+  stall_timeout_sec: 30
+lanes:
+  - id: demo-write
+    scope: demo-output.txt
+    prompt: Create the demo output.
+    fake:
+      write:
+        path: demo-output.txt
+        content: demo complete
+  - id: demo-question
+    scope: demo-answer.txt
+    prompt: Ask for a value, then resume.
+    fake:
+      needs_input: Which value should the demo use?
+      resume:
+        write:
+          path: demo-answer.txt
+          content: operator answered

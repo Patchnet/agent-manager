@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
 import { join } from "node:path";
+import { buildHarnessEnv } from "../environment.mjs";
+import { terminateProcessTree } from "../process.mjs";
+import { ensurePrivateDir, writePrivateFile } from "../fs-safe.mjs";
 import { detectNeedsInput } from "./claude.mjs";
 
-function resolveCodexBin() {
+export function resolveCodexBin() {
   if (process.env.CODEX_BIN && existsSync(process.env.CODEX_BIN)) {
     return process.env.CODEX_BIN;
   }
@@ -55,16 +58,17 @@ function spawnCodexProcess({
   onActivity,
   onEvent,
   logName = "stdout.log",
+  envAllowlist = [],
 }) {
-  mkdirSync(laneDir, { recursive: true });
+  ensurePrivateDir(laneDir);
   const promptPath = join(
     laneDir,
     resumeSessionId ? logName.replace(/\.log$/, ".prompt.md") : "prompt.md",
   );
-  writeFileSync(promptPath, prompt, "utf8");
+  writePrivateFile(promptPath, prompt, "utf8");
 
   const logPath = join(laneDir, logName);
-  const log = createWriteStream(logPath, { flags: "a" });
+  const log = createWriteStream(logPath, { flags: "a", mode: 0o600 });
 
   // Prompt on stdin via `-` — multiline argv is unreliable on Windows.
   const args = ["exec"];
@@ -89,7 +93,8 @@ function spawnCodexProcess({
   const cmd = resolveCodexBin();
   const child = spawn(cmd, args, {
     cwd,
-    env: process.env,
+    env: buildHarnessEnv(envAllowlist),
+    detached: process.platform !== "win32",
     windowsHide: true,
     shell: false,
     stdio: ["pipe", "pipe", "pipe"],
@@ -167,13 +172,7 @@ function spawnCodexProcess({
     getLastActivity: () => lastActivity,
     getLastByteAt: () => lastByteAt,
     getSessionId: () => sessionId,
-    kill: () => {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-    },
+    kill: () => terminateProcessTree(child),
   };
 }
 

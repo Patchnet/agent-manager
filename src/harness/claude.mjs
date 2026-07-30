@@ -1,8 +1,11 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildHarnessEnv } from "../environment.mjs";
+import { terminateProcessTree } from "../process.mjs";
+import { ensurePrivateDir, writePrivateFile } from "../fs-safe.mjs";
 
-function resolveClaudeBin() {
+export function resolveClaudeBin() {
   if (process.env.CLAUDE_BIN && existsSync(process.env.CLAUDE_BIN)) {
     return process.env.CLAUDE_BIN;
   }
@@ -34,6 +37,7 @@ export function spawnClaude({
   onActivity,
   onEvent,
   logName = "stdout.log",
+  envAllowlist = [],
 }) {
   return spawnClaudeProcess({
     cwd,
@@ -44,6 +48,7 @@ export function spawnClaude({
     onActivity,
     onEvent,
     logName,
+    envAllowlist,
   });
 }
 
@@ -57,6 +62,7 @@ export function resumeClaude({
   onActivity,
   onEvent,
   logName = "resume.log",
+  envAllowlist = [],
 }) {
   if (!sessionId) throw new Error("Claude resume requires a session id");
   return spawnClaudeProcess({
@@ -69,6 +75,7 @@ export function resumeClaude({
     onActivity,
     onEvent,
     logName,
+    envAllowlist,
   });
 }
 
@@ -82,16 +89,17 @@ function spawnClaudeProcess({
   onActivity,
   onEvent,
   logName,
+  envAllowlist = [],
 }) {
-  mkdirSync(laneDir, { recursive: true });
+  ensurePrivateDir(laneDir);
   const promptPath = join(
     laneDir,
     resumeSessionId ? logName.replace(/\.log$/, ".prompt.md") : "prompt.md",
   );
-  writeFileSync(promptPath, prompt, "utf8");
+  writePrivateFile(promptPath, prompt, "utf8");
 
   const logPath = join(laneDir, logName);
-  const log = createWriteStream(logPath, { flags: "a" });
+  const log = createWriteStream(logPath, { flags: "a", mode: 0o600 });
 
   // Deliver prompt on stdin — Windows argv/shell mangling drops multiline -p args.
   const args = [];
@@ -113,7 +121,8 @@ function spawnClaudeProcess({
   const cmd = resolveClaudeBin();
   const child = spawn(cmd, args, {
     cwd,
-    env: process.env,
+    env: buildHarnessEnv(envAllowlist),
+    detached: process.platform !== "win32",
     windowsHide: true,
     shell: false,
     stdio: ["pipe", "pipe", "pipe"],
@@ -202,13 +211,7 @@ function spawnClaudeProcess({
     getLastActivity: () => lastActivity,
     getLastByteAt: () => lastByteAt,
     getSessionId: () => sessionId,
-    kill: () => {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-    },
+    kill: () => terminateProcessTree(child),
   };
 }
 

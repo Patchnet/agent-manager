@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/event.schema.json",
+  "title": "agent-manager event",
+  "type": "object",
+  "required": ["schema", "type", "at", "runId", "state", "lanes"],
+  "properties": {
+    "schema": { "const": "agent-manager.event.v1" }, "type": { "const": "status" },
+    "at": { "type": "string", "format": "date-time" }, "runId": { "type": "string" },
+    "state": { "enum": ["running", "blocked", "done", "failed", "cancelled"] }, "lanes": { "type": "array" }
+  }
+}

@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { writePrivateFile } from "./fs-safe.mjs";
 import { join } from "node:path";
 import { runDir } from "./paths.mjs";
 
@@ -89,6 +89,6 @@ export function writeReport(runId, status) {
   lines.push("");
 
   const path = join(runDir(runId), "report.md");
-  writeFileSync(path, lines.join("\n") + "\n", "utf8");
+  writePrivateFile(path, lines.join("\n") + "\n", "utf8");
   return path;
 }

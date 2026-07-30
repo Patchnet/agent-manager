@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/workflow.schema.json",
+  "title": "agent-manager workflow",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "lanes"],
+  "properties": {
+    "repo": { "type": "string", "minLength": 1 },
+    "harness_default": { "enum": ["claude", "codex", "fake"] },
+    "model_default": { "type": "string", "minLength": 1 },
+    "integrate": { "type": "boolean" },
+    "claim_mode": { "enum": ["auto", "off", "required"] },
+    "remote": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
+    "base_ref": { "type": "string", "minLength": 1 },
+    "env_allowlist": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" } },
+    "policy": { "$ref": "#/$defs/policy" },
+    "feed": { "$ref": "#/$defs/feed" },
+    "lanes": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "$ref": "#/$defs/lane" } }
+  },
+  "$defs": {
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "scope"],
+      "anyOf": [{ "required": ["prompt"] }, { "required": ["prompt_file"] }],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
+        "harness": { "enum": ["claude", "codex", "fake"] },
+        "model": { "type": "string", "minLength": 1 },
+        "scope": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }] },
+        "prompt": { "type": "string", "minLength": 1 },
+        "prompt_file": { "type": "string", "minLength": 1 },
+        "fake": { "type": "object" }
+      }
+    },
+    "policy": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "allow_commit": { "type": "boolean" }, "allow_pr": { "type": "boolean" },
+        "dangerously_skip_permissions": { "type": "boolean" },
+        "permission_mode": { "enum": ["acceptEdits", "readOnly", "read-only", "read_only", "workspace-write"] },
+        "stall_timeout_sec": { "type": "number", "minimum": 5, "maximum": 86400 },
+        "poll_interval_ms": { "type": "number", "minimum": 100, "maximum": 60000 }
+      }
+    },
+    "feed": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "enabled": { "type": "boolean" }, "baseUrl": { "type": "string", "format": "uri" }, "topic": { "type": "string", "minLength": 1 } }
+    }
+  }
+}

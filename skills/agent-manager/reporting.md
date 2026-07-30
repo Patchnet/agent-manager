@@ -29,7 +29,7 @@ another interval at any time; Master restarts `watch-signal` with the new value.
 |------|-------|---------|---------------|
 | `<id>` | `running\|…` | `<Ns>` | `<lastActivity>` |
 
-_Side terminal:_ `node /path/to/agent-manager/bin/agent-manager.mjs monitor <runId>`
+_Side terminal:_ `agent-manager monitor <runId>`
 ```
 
 ---
@@ -60,9 +60,9 @@ Post once when a run starts, then again on meaningful updates
 | `<id>` | `queued\|running\|blocked\|done\|failed\|cancelled` | `claude\|…` | `<branch>` | `<Ns>` | `<lastActivity>` |
 
 ### Actions
-- Monitor (side terminal): `node /path/to/agent-manager/bin/agent-manager.mjs monitor <runId>`
-- Watch-signal (Master loop): `node /path/to/agent-manager/bin/agent-manager.mjs watch-signal <runId>`
-- Cancel: `node /path/to/agent-manager/bin/agent-manager.mjs cancel <runId>`
+- Monitor (side terminal): `agent-manager monitor <runId>`
+- Watch-signal (Master loop): `agent-manager watch-signal <runId>`
+- Cancel: `agent-manager cancel <runId>`
 - Logs: `$AGENT_MANAGER_RUNS_ROOT/<runId>/<lane>/stdout.log`
 ```
 
@@ -93,15 +93,14 @@ Post when any lane has `state: blocked` or `needsInput` set.
 Operator reply in this chat. Other independent lanes may keep running.
 
 ### Reply command
-- `node /path/to/agent-manager/bin/agent-manager.mjs reply <runId> <lane> --message "<answer>"`
+- `agent-manager reply <runId> <lane> --message "<answer>"`
 ```
 
 ---
 
 ## Template — Run outcome (terminal)
 
-Post when run `state` is `done`, `failed`, `cancelled`, or stuck `blocked`
-awaiting a decision that ends the session slice.
+Post when run `state` is `done`, `failed`, or `cancelled`. A `blocked` run uses the Escalation template and remains resumable.
 
 ```markdown
 ## Agent Manager · Run outcome
@@ -110,7 +109,7 @@ awaiting a decision that ends the session slice.
 |---|---|
 | **runId** | `<runId>` |
 | **repo** | `<repo>` |
-| **final state** | `done \| failed \| cancelled \| blocked` |
+| **final state** | `done \| failed \| cancelled` |
 | **report** | `$AGENT_MANAGER_RUNS_ROOT/<runId>/report.md` |
 | **target_dev_flow** | `simple \| formal` |
 | **integrate** | `n/a \| ready \| blocked \| failed` · branch `<am/…/integrate>` |
@@ -129,8 +128,8 @@ awaiting a decision that ends the session slice.
 - [ ] Formal: push → PR → `gh pr merge --auto --squash` (no manual Merge click)
 - [ ] After merge: `npm run release:formal` when the target repo has it
 - [ ] Release claims / remove worktrees when abandoned
-- [ ] Manual fold if needed: `node /path/to/agent-manager/bin/agent-manager.mjs integrate <runId>`
-- [ ] Cleanup abandoned artifacts: `node /path/to/agent-manager/bin/agent-manager.mjs cleanup <runId>`
+- [ ] Manual fold if needed: `agent-manager integrate <runId>`
+- [ ] Cleanup abandoned artifacts: `agent-manager cleanup <runId>`
 ```
 
 ---

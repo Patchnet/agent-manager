@@ -1,22 +1,54 @@
-import { readFileSync, writeFileSync, existsSync, readdirSync, renameSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { RUNS_ROOT, runDir } from "./paths.mjs";
+import { RUNS_ROOT, assertSafeSlug, runDir } from "./paths.mjs";
+import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 
 export function writeStatus(runId, status) {
-  const dir = runDir(runId);
+  assertSafeSlug(runId, "run id");
+  const dir = ensurePrivateDir(runDir(runId));
   const path = join(dir, "status.json");
   if (status.state !== "cancelled" && existsSync(join(dir, "cancelled.json"))) {
     return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : status;
   }
-  const payload = {
-    ...status,
-    runId,
-    updatedAt: new Date().toISOString(),
-  };
+  const previous = existsSync(path) ? safeParse(path) : null;
+  const payload = { ...status, runId, updatedAt: new Date().toISOString() };
   const tempPath = path + ".tmp";
-  writeFileSync(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  writePrivateFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
   renameSync(tempPath, path);
+  if (eventFingerprint(previous) !== eventFingerprint(payload)) {
+    appendEvent(runId, {
+      schema: "agent-manager.event.v1",
+      type: "status",
+      at: payload.updatedAt,
+      runId,
+      state: payload.state,
+      lanes: (payload.lanes || []).map((lane) => ({
+        id: lane.id,
+        harness: lane.harness,
+        state: lane.state,
+        exitCode: lane.exitCode ?? null,
+        needsInput: lane.needsInput || null,
+      })),
+    });
+  }
   return payload;
+}
+
+export function appendEvent(runId, event) {
+  const dir = ensurePrivateDir(runDir(runId));
+  appendFileSync(join(dir, "events.jsonl"), JSON.stringify(event) + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
+export function readEvents(runId) {
+  const path = join(runDir(assertSafeSlug(runId, "run id")), "events.jsonl");
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
 export function deriveRunState(status) {
@@ -29,11 +61,12 @@ export function deriveRunState(status) {
 }
 
 export function isTerminalState(state) {
-  return state === "done" || state === "failed" || state === "cancelled" || state === "blocked";
+  return state === "done" || state === "failed" || state === "cancelled";
 }
 
 export function readStatus(runId) {
-  const path = join(runDir(runId), "status.json");
+  if (!runId) return null;
+  const path = join(runDir(assertSafeSlug(runId, "run id")), "status.json");
   if (!existsSync(path)) return null;
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -41,8 +74,8 @@ export function readStatus(runId) {
 export function latestRunId() {
   if (!existsSync(RUNS_ROOT)) return null;
   const dirs = readdirSync(RUNS_ROOT, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name)
+    .filter((entry) => entry.isDirectory() && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(entry.name))
+    .map((entry) => entry.name)
     .sort();
   return dirs.length ? dirs[dirs.length - 1] : null;
 }
@@ -57,9 +90,7 @@ export function formatStatus(status) {
   ];
   for (const lane of status.lanes || []) {
     const spin = lane.state === "running" ? "*" : " ";
-    lines.push(
-      `[${spin}] ${lane.id.padEnd(12)} ${lane.state.padEnd(8)} ${lane.harness}  ${lane.branch || "-"}`,
-    );
+    lines.push(`[${spin}] ${lane.id.padEnd(12)} ${lane.state.padEnd(8)} ${lane.harness}  ${lane.branch || "-"}`);
     lines.push(`      scope: ${lane.scope}`);
     lines.push(`      last: ${lane.lastActivity || "-"}`);
     if (lane.elapsedSec != null) lines.push(`      elapsed: ${lane.elapsedSec}s  pid=${lane.pid ?? "-"}`);
@@ -67,15 +98,11 @@ export function formatStatus(status) {
     if (lane.sessionId) lines.push(`      session: ${lane.sessionId}`);
     if (lane.endedAt) lines.push(`      ended: ${lane.endedAt}`);
     if (lane.claim?.state) lines.push(`      claim: ${lane.claim.state}`);
-    if (lane.scopeViolations?.length) {
-      lines.push(`      scope violations: ${lane.scopeViolations.join(", ")}`);
-    }
+    if (lane.scopeViolations?.length) lines.push(`      scope violations: ${lane.scopeViolations.join(", ")}`);
     lines.push("");
   }
   if (status.integrate) {
-    lines.push(
-      `integrate: ${status.integrate.state}  branch=${status.integrate.branch || "-"}`,
-    );
+    lines.push(`integrate: ${status.integrate.state}  branch=${status.integrate.branch || "-"}`);
     if (status.integrate.error) lines.push(`      error: ${status.integrate.error}`);
     lines.push("");
   }
@@ -83,8 +110,28 @@ export function formatStatus(status) {
   return lines.join("\n");
 }
 
-/** @deprecated Prefer runMonitor — kept as alias for status --watch. */
 export async function watchStatus(runId, options = {}) {
   const { runMonitor } = await import("./monitor.mjs");
   return runMonitor(runId, options);
+}
+
+function safeParse(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function eventFingerprint(status) {
+  if (!status) return null;
+  return JSON.stringify({
+    state: status.state,
+    lanes: (status.lanes || []).map((lane) => ({
+      id: lane.id,
+      state: lane.state,
+      exitCode: lane.exitCode ?? null,
+      needsInput: lane.needsInput || null,
+    })),
+  });
 }

@@ -1,9 +1,10 @@
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { addWorktree } from "./worktree.mjs";
 import { claimLane, releaseLane } from "./claim.mjs";
 import { runDir } from "./paths.mjs";
+import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 
 function git(cwd, args) {
   const r = spawnSync("git", ["-C", cwd, ...args], {
@@ -30,6 +31,8 @@ function ensureLaneCommitted(worktreePath, laneId) {
   const add = git(worktreePath, ["add", "-A"]);
   if (!add.ok) return { ok: false, error: add.stderr || "git add failed" };
   const commit = git(worktreePath, [
+    "-c", "user.name=agent-manager",
+    "-c", "user.email=agent-manager@users.noreply.github.com",
     "commit",
     "-m",
     `wip(${laneId}): lane integrate snapshot`,
@@ -46,7 +49,7 @@ function ensureLaneCommitted(worktreePath, laneId) {
 export function integrateLanes({ workflow, runId, laneStates }) {
   const integrateDir = join(runDir(runId), "integrate");
   const wt = join(integrateDir, "wt");
-  mkdirSync(integrateDir, { recursive: true });
+  ensurePrivateDir(integrateDir);
 
   const branch = `am/${runId}/integrate`;
   const doneLanes = laneStates.filter((l) => l.state === "done" && l.worktree && l.branch);
@@ -70,8 +73,11 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     ),
   ];
 
-  // Refresh main for a clean base
-  git(workflow.repoRoot, ["fetch", "origin", "main"]);
+  const baseShas = [...new Set(doneLanes.map((lane) => lane.baseCommit).filter(Boolean))];
+  if (baseShas.length !== 1) {
+    throw new Error("lanes do not share one immutable base commit");
+  }
+  const baseSha = baseShas[0];
 
   claimLane({
     repo: workflow.repo,
@@ -79,9 +85,10 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     lane: "integrate",
     scope: scopes,
     agent: "agt-agent-manager-integrate",
+    mode: workflow.claim_mode,
   });
   const finish = (result) => {
-    const released = releaseLane({ repo: workflow.repo, branch });
+    const released = releaseLane({ repo: workflow.repo, branch, mode: workflow.claim_mode });
     return {
       ...result,
       claim: { state: released.ok ? "released" : "release-failed" },
@@ -95,7 +102,7 @@ export function integrateLanes({ workflow, runId, laneStates }) {
       repoRoot: workflow.repoRoot,
       worktreePath: wt,
       branch,
-      baseBranch: "origin/main",
+      baseBranch: baseSha,
     });
   }
 
@@ -108,7 +115,7 @@ export function integrateLanes({ workflow, runId, laneStates }) {
         prompt: `Integrate could not snapshot lane ${lane.id}: ${snap.error}`,
         blocking: true,
       };
-      writeFileSync(join(integrateDir, "needs-input.json"), JSON.stringify(needs, null, 2));
+      writePrivateFile(join(integrateDir, "needs-input.json"), JSON.stringify(needs, null, 2));
       return finish({
         state: "blocked",
         branch,
@@ -123,13 +130,14 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     if (!merge.ok) {
       const needs = {
         type: "blocked",
-        prompt: `Merge conflict integrating lane ${lane.id} (${lane.branch}) into ${branch}. Resolve in ${wt} or abandon.`,
+        prompt: `Merge conflict integrating lane ${lane.id} (${lane.branch}) into ${branch}. The automatic merge was aborted; revise the lane or rerun the merge manually in ${wt}.`,
         blocking: true,
         lane: lane.id,
         stderr: merge.stderr || merge.stdout,
       };
-      writeFileSync(join(integrateDir, "needs-input.json"), JSON.stringify(needs, null, 2));
-      git(wt, ["merge", "--abort"]);
+      const aborted = git(wt, ["merge", "--abort"]);
+      if (!aborted.ok) needs.abortError = aborted.stderr || aborted.stdout;
+      writePrivateFile(join(integrateDir, "needs-input.json"), JSON.stringify(needs, null, 2));
       return finish({
         state: "blocked",
         branch,
@@ -142,22 +150,24 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     merged.push(lane.id);
   }
 
-  const log = git(wt, ["log", "--oneline", "origin/main..HEAD"]);
-  const diffStat = git(wt, ["diff", "--stat", "origin/main...HEAD"]);
+  const log = git(wt, ["log", "--oneline", baseSha + "..HEAD"]);
+  const diffStat = git(wt, ["diff", "--stat", baseSha + "...HEAD"]);
 
   const summary = {
     state: "ready",
     branch,
     worktree: wt,
     merged,
+    baseSha,
+    remote: workflow.remote,
     commits: log.ok ? log.stdout.split("\n").filter(Boolean) : [],
     diffStat: diffStat.ok ? diffStat.stdout : "",
     shipGateHint:
-      "Present Ship Gate for this integrate branch. On through-pr/all: push → gh pr create → gh pr merge --auto --squash. Do not stamp Version.md on the branch.",
+      `Present Ship Gate for this integrate branch. On approval, push to ${workflow.remote}, open a PR, and merge explicitly.`,
   };
 
-  writeFileSync(join(integrateDir, "summary.json"), JSON.stringify(summary, null, 2));
-  writeFileSync(
+  writePrivateFile(join(integrateDir, "summary.json"), JSON.stringify(summary, null, 2));
+  writePrivateFile(
     join(integrateDir, "README.md"),
     [
       `# Integrate · ${runId}`,
@@ -168,9 +178,9 @@ export function integrateLanes({ workflow, runId, laneStates }) {
       "",
       "## Next (Master Dev)",
       "",
-      "1. Review diff vs `origin/main`.",
+      `1. Review diff from immutable base ${baseSha}.`,
       "2. Present **Ship Gate** (Formal).",
-      "3. On `through-pr` / `all`: push branch, `gh pr create`, then `gh pr merge --auto --squash`.",
+      `3. On approval, push to ${workflow.remote}, open a PR, and merge explicitly.`,
       "4. After merge + Ship Gate for VERSION/TAG: `npm run release:formal` in the target repo when available.",
       "",
       "Workers do not merge to main or stamp versions.",
@@ -181,7 +191,7 @@ export function integrateLanes({ workflow, runId, laneStates }) {
 
   return finish(summary);
   } catch (error) {
-    releaseLane({ repo: workflow.repo, branch });
+    releaseLane({ repo: workflow.repo, branch, mode: workflow.claim_mode });
     throw error;
   }
 }

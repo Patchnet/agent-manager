@@ -33,24 +33,33 @@ export function currentHead(worktree) {
   return result.stdout;
 }
 
-export function inspectLaneChanges(worktree) {
-  const tracked = git(worktree, ["diff", "--name-only", "HEAD"]);
+export function inspectLaneChanges(worktree, baseCommit = "HEAD") {
+  const committed = git(worktree, ["diff", "--name-only", baseCommit + "...HEAD"]);
+  const working = git(worktree, ["diff", "--name-only", "HEAD"]);
   const untracked = git(worktree, ["ls-files", "--others", "--exclude-standard"]);
-  if (!tracked.ok || !untracked.ok) {
-    throw new Error(tracked.stderr || untracked.stderr || "unable to inspect lane changes");
+  if (!committed.ok || !working.ok || !untracked.ok) {
+    throw new Error(
+      committed.stderr || working.stderr || untracked.stderr || "unable to inspect lane changes",
+    );
   }
   return [...new Set([
-    ...splitLines(tracked.stdout),
+    ...splitLines(committed.stdout),
+    ...splitLines(working.stdout),
     ...splitLines(untracked.stdout),
   ].map(normalizePath))].sort();
 }
 
 export function validateLaneGuardrails({ worktree, scope, baseCommit, policy = {} }) {
-  const changedFiles = inspectLaneChanges(worktree);
+  if (!baseCommit) throw new Error("guardrail inspection requires baseCommit");
+  const changedFiles = inspectLaneChanges(worktree, baseCommit);
   const patterns = parseScope(scope);
   const scopeViolations = changedFiles.filter((file) => !patterns.some((pattern) => matchesScope(file, pattern)));
   const commits = git(worktree, ["rev-list", "--count", baseCommit + "..HEAD"]);
-  const commitCount = commits.ok ? Number.parseInt(commits.stdout || "0", 10) : 0;
+  if (!commits.ok) throw new Error(commits.stderr || "unable to inspect worker commits");
+  const commitCount = Number.parseInt(commits.stdout || "0", 10);
+  if (!Number.isSafeInteger(commitCount) || commitCount < 0) {
+    throw new Error("invalid worker commit count returned by Git");
+  }
   const policyViolations = [];
   if (policy.allow_commit !== true && commitCount > 0) {
     policyViolations.push("worker created " + commitCount + " commit(s) while allow_commit=false");

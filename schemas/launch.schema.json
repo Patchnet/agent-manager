@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/launch.schema.json",
+  "title": "agent-manager detached launch",
+  "type": "object",
+  "required": ["runId", "state", "pid", "telemetry", "supervisorLog", "statusCommand"],
+  "properties": {
+    "runId": { "type": "string" }, "state": { "const": "detached" }, "pid": { "type": "integer" },
+    "telemetry": { "type": "string" }, "supervisorLog": { "type": "string" }, "statusCommand": { "type": "string" }
+  }
+}

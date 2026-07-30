@@ -28,7 +28,11 @@ for (let i = 1; i < args.length; i++) {
   }
 }
 
-const slug = (s) => String(s).replace(/[^a-zA-Z0-9._-]+/g, "-");
+const slug = (value) => {
+  const result = String(value).replace(/[^a-zA-Z0-9._-]+/g, "-");
+  if (!result || result === "." || result === "..") throw new Error("claim identifier is not safe");
+  return result.slice(0, 160);
+};
 const now = () => new Date().toISOString();
 const isStale = (c) => {
   const ttl = (c.ttl_hours ?? DEFAULT_TTL_HOURS) * 3600 * 1000;
@@ -93,9 +97,9 @@ if (cmd === "claim") {
     ...(clashes.length ? { override_of: clashes.map((c) => c.branch) } : {}),
   };
   const dir = join(ROOT, slug(opt.repo));
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = join(dir, slug(opt.branch) + ".json");
-  writeFileSync(file, JSON.stringify(claim, null, 2) + "\n");
+  writeFileSync(file, JSON.stringify(claim, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   console.log(`claimed ${opt.repo} ${opt.branch} → ${file}`);
   process.exit(0);
 }
