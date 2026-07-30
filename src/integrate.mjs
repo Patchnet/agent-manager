@@ -163,7 +163,7 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     commits: log.ok ? log.stdout.split("\n").filter(Boolean) : [],
     diffStat: diffStat.ok ? diffStat.stdout : "",
     shipGateHint:
-      `Present Ship Gate for this integrate branch. On approval, push to ${workflow.remote}, open a PR, and merge explicitly.`,
+      "Present Ship Gate for this integrate branch. On approval, detach PR Manager to push, open the PR, and merge explicitly.",
   };
 
   writePrivateFile(join(integrateDir, "summary.json"), JSON.stringify(summary, null, 2));
@@ -180,8 +180,8 @@ export function integrateLanes({ workflow, runId, laneStates }) {
       "",
       `1. Review diff from immutable base ${baseSha}.`,
       "2. Present **Ship Gate** (Formal).",
-      `3. On approval, push to ${workflow.remote}, open a PR, and merge explicitly.`,
-      "4. After merge + Ship Gate for VERSION/TAG: `npm run release:formal` in the target repo when available.",
+      `3. On approval, run \`agent-manager ship ${runId} --approve <level> --detach ...\`.`,
+      "4. Keep `watch-signal` armed for ship blockers and the terminal outcome.",
       "",
       "Workers do not merge to main or stamp versions.",
       "",

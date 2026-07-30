@@ -8,7 +8,9 @@ state changes, on a **Heartbeat** wake, or when the operator asks.
 
 After detach, Master **must** arm `watch-signal` (see SKILL). On each wake:
 unchanged + running → Heartbeat; changed → Run board; needs-input → Escalation;
-terminal → Run outcome then **stop** the watch loop.
+terminal → Run outcome then **stop** the watch loop. After an accepted
+Delivery Review and Ship Gate approval, switch to the canonical templates in
+[`../pr-manager/reporting.md`](../pr-manager/reporting.md).
 
 ---
 
@@ -46,7 +48,7 @@ Post once when a run starts, then again on meaningful updates
 |---|---|
 | **runId** | `<runId>` |
 | **repo** | `<repo>` |
-| **state** | `running \| blocked \| done \| failed \| cancelled` |
+| **state** | `running \| shipping \| blocked \| done \| failed \| cancelled` |
 | **target_dev_flow** | `simple \| formal` |
 | **workflow** | `<path>` |
 | **started** | `<ISO or local>` |
@@ -125,8 +127,8 @@ Post when run `state` is `done`, `failed`, or `cancelled`. A `blocked` run uses 
 - [ ] Review integrate worktree when `status.integrate.state=ready`
 - [ ] Answer open escalations (if any)
 - [ ] Ship Gate only after Delivery Review verdict `accept` or `accept-with-notes`
-- [ ] Formal: push → PR → `gh pr merge --auto --squash` (no manual Merge click)
-- [ ] After merge: `npm run release:formal` when the target repo has it
+- [ ] After Ship Gate approval: detach `agent-manager ship <runId> ... --detach`
+- [ ] Post PR Manager Handoff and stop babysitting CI/merge in this chat
 - [ ] Release claims / remove worktrees when abandoned
 - [ ] Manual fold if needed: `agent-manager integrate <runId>`
 - [ ] Cleanup abandoned artifacts: `agent-manager cleanup <runId>`

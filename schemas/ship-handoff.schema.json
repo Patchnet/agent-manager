@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/ship-handoff.schema.json",
+  "title": "agent-manager ship handoff",
+  "type": "object",
+  "required": [
+    "schema",
+    "runId",
+    "approve",
+    "flow",
+    "repoRoot",
+    "worktree",
+    "branch",
+    "base",
+    "remote"
+  ],
+  "properties": {
+    "schema": { "const": "agent-manager.ship-handoff.v1" },
+    "runId": { "type": "string" },
+    "approve": { "enum": ["through-pr", "all"] },
+    "flow": { "enum": ["simple", "formal"] },
+    "repoRoot": { "type": "string" },
+    "worktree": { "type": "string" },
+    "branch": { "type": "string" },
+    "base": { "type": "string" },
+    "remote": { "type": "string" },
+    "pr": { "type": ["string", "null"] },
+    "commitMessage": { "type": ["string", "null"] },
+    "version": { "type": ["string", "null"] },
+    "summary": { "type": ["string", "null"] },
+    "pollSec": { "type": "number", "minimum": 1 },
+    "timeoutSec": { "type": "number", "minimum": 1 },
+    "requestedAt": { "type": "string", "format": "date-time" }
+  }
+}

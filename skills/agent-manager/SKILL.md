@@ -63,9 +63,10 @@ themselves in one chat — that stays a normal focused session.
    (default: forbidden). Shipping goes through **Ship Gate** *after* an
    accepting Delivery Review (Pass 1 or Pass 2).
 10. **Integrate** (`integrate: true` in workflow) folds successful lanes into
-    `am/<runId>/integrate` after coding finishes. It prepares the branch only —
-    Master still owns Delivery Review → Ship Gate → push / `gh pr create` /
-    `gh pr merge --auto --squash`. Never ask the operator to click Merge.
+    `am/<runId>/integrate` after coding finishes. It prepares the branch only.
+    Master owns Delivery Review and Ship Gate. After approval, hand shipping to
+    the **pr-manager** skill with `ship --detach`; do not babysit push, PR, CI,
+    merge, or tag in the host chat. Never ask the operator to click Merge.
 11. **Dangerous permissions need two approvals.** The workflow policy and the launch flag
     `--allow-dangerous-permissions` (or matching environment confirmation) must both be present.
 12. On `needs-input` / blocked lanes: surface the question in chat, wait for the
@@ -85,6 +86,7 @@ agent-manager cancel <runId>
 agent-manager integrate <runId>
 agent-manager cleanup <runId>
 agent-manager review <runId>
+agent-manager ship <runId> --approve through-pr|all --detach
 ```
 
 Example: `examples/two-lane-smoke.yaml` (set `AGENT_MANAGER_DEV_ROOT` to the
@@ -108,8 +110,10 @@ parent that contains the `agent-manager` folder).
    workers once (same worktrees or one new workflow slice). When that finishes,
    post **Delivery Review · Pass 2** to the operator. **Stop.** Master does not
    eval again.
-10. **Ship** only via Ship Gate after Pass 1 or Pass 2 accepts (target-repo lane
-    results or agent-manager itself).
+10. **Ship** only via Ship Gate after Pass 1 or Pass 2 accepts. On
+    `through-pr` or `all`, load `skills/pr-manager/SKILL.md`, launch
+    `agent-manager ship ... --detach`, post the PR Manager Handoff board, and
+    exit the turn.
 
 ## Watch loop (mandatory after detach)
 
@@ -141,9 +145,9 @@ the “still running, nothing changed” pulse.
    (never invent state from the wake payload alone).
 5. Post the matching template:
    - `heartbeat` + still running → **Heartbeat**
-   - `state_change` → **Run board**
-   - `needs_input` → **Escalation** (loop continues)
-   - `terminal` → **Run outcome**, then kill watch-signal and stop arming wakes
+   - `state_change` → **Run board** or PR Manager **Ship board**
+   - `needs_input` → lane **Escalation** or PR Manager **Ship escalation**
+   - `terminal` → **Run outcome** or PR Manager **Ship outcome**, then stop
 6. Operator may keep chatting (Multitask / parallel turns are fine). Stop the
    loop when the operator says stop watching, or on `terminal`.
 
@@ -173,6 +177,7 @@ Runs root defaults to `~/.agent-manager/runs` (`AGENT_MANAGER_RUNS_ROOT`).
 | `<runs>/<runId>/events.jsonl` | Host-neutral state-change stream |
 | `<runs>/<runId>/report.md` | End-of-run synthesis for Master |
 | `<runs>/<runId>/supervisor.log` | Detached supervisor stdout/stderr |
+| `<runs>/<runId>/ship/` | Private ship handoff, supervisor log, and summary |
 | `<runs>/<runId>/<lane>/stdout.log` | Harness stream (debug) |
 | `<runs>/<runId>/<lane>/needs-input.json` | Blocking question from worker |
 | `<runs>/<runId>/<lane>/wt/` | Lane worktree (code changes) |

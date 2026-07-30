@@ -5,8 +5,28 @@
   "type": "object",
   "required": ["runId", "state", "repo", "startedAt", "lanes"],
   "properties": {
-    "runId": { "type": "string" }, "state": { "enum": ["running", "blocked", "done", "failed", "cancelled"] },
+    "runId": { "type": "string" }, "state": { "enum": ["running", "shipping", "blocked", "done", "failed", "cancelled"] },
     "repo": { "type": "string" }, "startedAt": { "type": "string", "format": "date-time" },
-    "endedAt": { "type": ["string", "null"] }, "lanes": { "type": "array" }
+    "endedAt": { "type": ["string", "null"] }, "lanes": { "type": "array" },
+    "ship": {
+      "type": "object",
+      "required": ["schema", "state", "phase", "approve", "branch", "base", "remote"],
+      "properties": {
+        "schema": { "const": "agent-manager.ship.v1" },
+        "state": { "enum": ["queued", "running", "blocked", "done", "failed", "cancelled"] },
+        "phase": { "enum": ["preflight", "commit", "push", "pr", "merge", "release", "release-push", "ci", "tag", "done"] },
+        "approve": { "enum": ["through-pr", "all"] },
+        "branch": { "type": "string" },
+        "base": { "type": "string" },
+        "remote": { "type": "string" },
+        "prUrl": { "type": ["string", "null"] },
+        "mergeSha": { "type": ["string", "null"] },
+        "releaseSha": { "type": ["string", "null"] },
+        "plannedTag": { "type": ["string", "null"] },
+        "tag": { "type": ["string", "null"] },
+        "needsInput": { "type": ["object", "null"] },
+        "steps": { "type": "array" }
+      }
+    }
   }
 }

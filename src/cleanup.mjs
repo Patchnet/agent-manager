@@ -8,7 +8,7 @@ import { removeWorktree } from "./worktree.mjs";
 export function cleanupRun(runId, { keepLogs = false } = {}) {
   const status = readStatus(runId);
   if (!status) throw new Error("no status for " + runId);
-  if (status.state === "running") {
+  if (status.state === "running" || status.state === "shipping") {
     throw new Error("refusing to clean a running run; cancel it first");
   }
 
@@ -52,7 +52,7 @@ export function cleanupRun(runId, { keepLogs = false } = {}) {
     removed.push(safeIntegrateWorktree);
   }
   if (!keepLogs) {
-    for (const path of [join(target, "integrate"), join(target, "supervisor.log")]) {
+    for (const path of [join(target, "integrate"), join(target, "ship"), join(target, "supervisor.log")]) {
       if (existsSync(path)) {
         rmSync(path, { recursive: true, force: true });
         removed.push(path);
@@ -77,7 +77,7 @@ export function cleanupStaleRuns({ olderThanDays = 30, keepLogs = false, now = D
   for (const entry of readdirSync(RUNS_ROOT, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(entry.name)) continue;
     const status = readStatus(entry.name);
-    if (!status || status.state === "running" || status.state === "blocked") continue;
+    if (!status || status.state === "running" || status.state === "shipping" || status.state === "blocked") continue;
     const timestamp = Date.parse(status.updatedAt || status.endedAt || status.startedAt || "");
     if (!Number.isFinite(timestamp) || timestamp > cutoff) continue;
     cleanupRun(entry.name, { keepLogs });

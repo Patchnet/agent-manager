@@ -34,6 +34,7 @@ Load **`skills/agent-manager/SKILL.md`**.
 
 - Reporting templates (mandatory): `skills/agent-manager/reporting.md`
 - Reference: `skills/agent-manager/reference.md`
+- Approved shipping: `skills/pr-manager/SKILL.md`
 - Ship Gate (bundled starter): `skills/ship-gate/SKILL.md` — prefer a
   host/org ship-gate when present
 - Operator guide: `docs/OPERATOR.md`
@@ -45,6 +46,7 @@ node bin/agent-manager.mjs run <workflow.yaml> --detach
 node bin/agent-manager.mjs status [runId] [--watch]
 node bin/agent-manager.mjs monitor [runId]
 node bin/agent-manager.mjs watch-signal [runId] --heartbeat-sec 180
+node bin/agent-manager.mjs ship <runId> --approve through-pr|all --detach
 node bin/agent-manager.mjs cancel <runId>
 ```
 

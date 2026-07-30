@@ -1,0 +1,21 @@
+# Local delivery smoke input. This prepares an integrate branch only.
+# Do not run `ship` against a real remote without Ship Gate approval.
+repo: .
+harness_default: fake
+target_dev_flow: formal
+claim_mode: off
+integrate: true
+policy:
+  allow_commit: false
+  allow_pr: false
+  permission_mode: acceptEdits
+  poll_interval_ms: 100
+  stall_timeout_sec: 30
+lanes:
+  - id: ship-smoke
+    scope: ".ship-smoke-output.txt"
+    prompt: "Create the local PR Manager smoke output."
+    fake:
+      write:
+        path: ".ship-smoke-output.txt"
+        content: "ready for Delivery Review and Ship Gate\n"

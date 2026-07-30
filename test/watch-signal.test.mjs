@@ -78,6 +78,29 @@ test("classifyWake distinguishes heartbeat, state_change, needs_input, terminal"
     lanes: [{ id: "core", state: "failed", harness: "claude", exitCode: 1 }],
   });
   assert.equal(classifyWake(running, failed).reason, "terminal");
+
+  const shipping = sampleStatus({
+    state: "shipping",
+    ship: {
+      state: "running",
+      phase: "merge",
+      approve: "through-pr",
+      lastActivity: "waiting for checks",
+      needsInput: null,
+    },
+  });
+  assert.equal(classifyWake(running, shipping).reason, "state_change");
+  const shipBlocked = sampleStatus({
+    state: "blocked",
+    ship: {
+      ...shipping.ship,
+      state: "blocked",
+      needsInput: { type: "blocked", prompt: "merge conflict" },
+    },
+  });
+  const shipWake = classifyWake(shipping, shipBlocked);
+  assert.equal(shipWake.reason, "needs_input");
+  assert.equal(shipWake.phase, "ship");
 });
 
 test("formatWakeLine matches Cursor notify pattern", () => {

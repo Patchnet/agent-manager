@@ -49,12 +49,20 @@ export function writeReport(runId, status) {
   }
   lines.push("## Next");
   lines.push("");
-  if (status.integrate?.state === "ready") {
+  if (status.ship?.state === "done") {
+    lines.push(`- **Ship complete:** ${status.ship.prUrl || status.ship.tag || status.ship.branch}`);
+    lines.push("- Review the Ship outcome board and clean retained run artifacts when appropriate.");
+  } else if (status.ship?.state === "blocked") {
+    lines.push(`- **Ship blocked:** ${status.ship.needsInput?.prompt || status.ship.error || "see ship telemetry"}`);
+    lines.push("- Resolve the blocker or cancel the ship phase. Do not guess or bypass policy.");
+  } else if (status.ship?.state === "running" || status.ship?.state === "queued") {
+    lines.push(`- **Ship in progress:** phase \`${status.ship.phase}\``);
+    lines.push("- Keep `watch-signal` armed; the host chat does not poll CI or merge inline.");
+  } else if (status.integrate?.state === "ready") {
     lines.push(`- **Integrate ready:** \`${status.integrate.branch}\``);
     lines.push(`- Worktree: \`${status.integrate.worktree}\``);
     lines.push("- Present Ship Gate for the integrate branch (Formal: no version stamp on branch).");
-    lines.push("- On `through-pr` / `all`: push → `gh pr create` → `gh pr merge --auto --squash`.");
-    lines.push("- After merge: Ship Gate for VERSION/TAG → `npm run release:formal` when the target repo has it.");
+    lines.push("- After Ship Gate approval, detach PR Manager with `agent-manager ship <runId> ... --detach`.");
   } else if (status.integrate?.state === "blocked") {
     lines.push(`- **Integrate blocked:** ${status.integrate.error || status.integrate.needsInput?.prompt || "see needs-input"}`);
     lines.push("- Answer escalate in Master Dev chat; resolve conflicts in the integrate worktree.");
@@ -76,6 +84,25 @@ export function writeReport(runId, status) {
     }
     if (status.integrate.shipGateHint) {
       lines.push(`- hint: ${status.integrate.shipGateHint}`);
+    }
+    lines.push("");
+  }
+
+  if (status.ship) {
+    lines.push("## Ship");
+    lines.push("");
+    lines.push(`- state: ${status.ship.state}`);
+    lines.push(`- phase: ${status.ship.phase || "-"}`);
+    lines.push(`- approval: ${status.ship.approve || "-"}`);
+    lines.push(`- branch: ${status.ship.branch || "-"}`);
+    lines.push(`- base: ${status.ship.base || "-"}`);
+    lines.push(`- PR: ${status.ship.prUrl || "-"}`);
+    lines.push(`- merge SHA: ${status.ship.mergeSha || "-"}`);
+    lines.push(`- release SHA: ${status.ship.releaseSha || "-"}`);
+    lines.push(`- tag: ${status.ship.tag || "-"}`);
+    lines.push(`- last activity: ${status.ship.lastActivity || "-"}`);
+    if (status.ship.needsInput?.prompt) {
+      lines.push(`- **needs input:** ${status.ship.needsInput.prompt}`);
     }
     lines.push("");
   }

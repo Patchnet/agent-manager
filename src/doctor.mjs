@@ -10,13 +10,14 @@ export function runDoctor({ repo = process.cwd() } = {}) {
   const checks = [
     { name: "node", ok: Number(process.versions.node.split(".")[0]) >= 24, detail: process.version },
     asCheck("git", checkCommand("git")),
-    { ...asCheck("claude", checkCommand(resolveClaudeBin())), optional: true },
-    { ...asCheck("codex", checkCommand(resolveCodexBin())), optional: true },
+    { ...asCheck("gh (shipping)", checkCommand("gh")), optional: true },
+    { ...asCheck("claude", checkCommand(resolveClaudeBin())), optional: true, harness: true },
+    { ...asCheck("codex", checkCommand(resolveCodexBin())), optional: true, harness: true },
     { name: "repository", ok: existsSync(root), detail: root },
     writableCheck("runs root", RUNS_ROOT),
   ];
   const coreReady = checks.filter((check) => !check.optional).every((check) => check.ok);
-  const harnessReady = checks.filter((check) => check.optional).some((check) => check.ok);
+  const harnessReady = checks.filter((check) => check.harness).some((check) => check.ok);
   return { schema: "agent-manager.doctor.v1", ok: coreReady && harnessReady, checks };
 }
 

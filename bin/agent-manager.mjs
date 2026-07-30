@@ -16,6 +16,14 @@ import { preflightWorkflow, validateRepository } from "../src/preflight.mjs";
 import { prepareReply, resumeLane } from "../src/reply.mjs";
 import { buildDeliveryReview } from "../src/review.mjs";
 import { newRunId, runWorkflow } from "../src/run.mjs";
+import {
+  blockQueuedShip,
+  markShipSupervisor,
+  preflightShipHandoff,
+  prepareShipHandoff,
+  queueShip,
+  runShip,
+} from "../src/ship-run.mjs";
 import { runMonitor } from "../src/monitor.mjs";
 import { formatStatus, latestRunId, readEvents, readStatus, writeStatus } from "../src/status.mjs";
 import { runWatchSignal } from "../src/watch-signal.mjs";
@@ -42,6 +50,10 @@ function usage() {
     "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000]",
     "  agent-manager reply <runId> <laneId> --message <text> [--json]",
     "  agent-manager review <runId> [--pass 1|2] [--json]",
+    "  agent-manager ship <runId> --approve all|through-pr --detach [options] [--json]",
+    "    options: --commit-message <text> --version <semver> --summary <text>",
+    "             --repo <path> --worktree <path> --branch <ref> --base <ref>",
+    "             --remote <name> --pr <url|number> --poll-sec <n> --timeout-sec <n>",
     "  agent-manager cancel <runId> [--remove-worktrees]",
     "  agent-manager cleanup <runId> [--keep-logs] | --stale [--older-than-days 30]",
     "  agent-manager integrate <runId> [--json]",
@@ -52,6 +64,57 @@ function usage() {
     "Dangerous permission bypass requires both workflow policy and",
     "--allow-dangerous-permissions (or AGENT_MANAGER_ALLOW_DANGEROUS_PERMISSIONS=1).",
   ].join("\n"));
+}
+
+function parseShipFlags(rest) {
+  const flags = {
+    runId: null,
+    approve: null,
+    detach: false,
+    json: false,
+    repo: null,
+    worktree: null,
+    branch: null,
+    base: null,
+    remote: null,
+    pr: null,
+    commitMessage: null,
+    version: null,
+    summary: null,
+    pollSec: null,
+    timeoutSec: null,
+  };
+  const valued = new Map([
+    ["--approve", "approve"],
+    ["--repo", "repo"],
+    ["--worktree", "worktree"],
+    ["--branch", "branch"],
+    ["--base", "base"],
+    ["--remote", "remote"],
+    ["--pr", "pr"],
+    ["--commit-message", "commitMessage"],
+    ["--version", "version"],
+    ["--summary", "summary"],
+    ["--poll-sec", "pollSec"],
+    ["--timeout-sec", "timeoutSec"],
+  ]);
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === "--detach") flags.detach = true;
+    else if (arg === "--json") flags.json = true;
+    else if (valued.has(arg)) {
+      const value = rest[++index];
+      if (!value) throw new Error(`${arg} requires a value`);
+      flags[valued.get(arg)] = value;
+    } else if (arg.startsWith("-")) {
+      throw new Error(`unknown ship flag: ${arg}`);
+    } else if (flags.runId) {
+      throw new Error(`unexpected ship argument: ${arg}`);
+    } else {
+      flags.runId = arg;
+    }
+  }
+  return flags;
 }
 
 function flagValue(name, source = args) {
@@ -155,6 +218,50 @@ function detachReply(runId, laneId, message, json) {
   console.log(json ? JSON.stringify(payload) : [`runId: ${runId}`, `laneId: ${laneId}`, "state: running", `sessionId: ${prepared.lane.sessionId}`, `telemetry: ${payload.telemetry}`].join("\n"));
 }
 
+function detachShip(flags) {
+  if (!flags.detach) {
+    throw new Error("ship must use --detach so the host chat does not babysit CI or merge");
+  }
+  if (!flags.runId) throw new Error("ship requires <runId>");
+  const handoff = prepareShipHandoff(flags.runId, flags);
+  preflightShipHandoff(handoff);
+  const queued = queueShip(flags.runId, handoff);
+  const logPath = join(runDir(flags.runId), "ship", "supervisor.log");
+  let child;
+  try {
+    child = spawnDetached(["_ship-run", flags.runId], logPath);
+    markShipSupervisor(flags.runId, child.pid);
+  } catch (error) {
+    blockQueuedShip(flags.runId, error);
+    throw error;
+  }
+  const payload = {
+    schema: "agent-manager.ship-launch.v1",
+    runId: flags.runId,
+    state: "detached",
+    phase: "ship",
+    approve: handoff.approve,
+    pid: child.pid,
+    telemetry: join(runDir(flags.runId), "status.json"),
+    supervisorLog: logPath,
+    handoff: queued.handoffPath,
+    statusCommand: `agent-manager status ${flags.runId}`,
+    watchCommand: `agent-manager watch-signal ${flags.runId}`,
+  };
+  console.log(flags.json ? JSON.stringify(payload) : [
+    `runId: ${flags.runId}`,
+    "state: detached",
+    "phase: ship",
+    `approve: ${handoff.approve}`,
+    `pid: ${child.pid}`,
+    `telemetry: ${payload.telemetry}`,
+    `supervisorLog: ${logPath}`,
+    `status: ${payload.statusCommand}`,
+    `watch-signal: ${payload.watchCommand}`,
+  ].join("\n"));
+  return payload;
+}
+
 async function main() {
   if (cmd === "--version" || cmd === "-v") { console.log(packageJson.version); return; }
   if (!cmd || cmd === "-h" || cmd === "--help") { usage(); process.exitCode = cmd ? 0 : 1; return; }
@@ -228,6 +335,18 @@ async function main() {
     if (!runId) throw new Error("review requires <runId>");
     const result = buildDeliveryReview(runId, { pass: Number(flagValue("--pass") || 1) });
     console.log(args.includes("--json") ? JSON.stringify(result) : result.markdown);
+    return;
+  }
+
+  if (cmd === "ship") {
+    detachShip(parseShipFlags(args.slice(1)));
+    return;
+  }
+  if (cmd === "_ship-run") {
+    if (!args[1]) throw new Error("_ship-run requires <runId>");
+    const handoffPath = join(runDir(args[1]), "ship", "handoff.json");
+    const handoff = JSON.parse(readFileSync(handoffPath, "utf8"));
+    await runShip(args[1], handoff);
     return;
   }
 

@@ -70,6 +70,19 @@ export function formatMonitorBoard(status, { previousLaneStates = {} } = {}) {
       lines.push(`  error: ${status.integrate.error}`);
     }
   }
+  if (status.ship) {
+    lines.push("");
+    lines.push(
+      `ship: ${status.ship.state}  phase=${status.ship.phase || "-"}  approve=${status.ship.approve || "-"}`,
+    );
+    lines.push(`  branch: ${status.ship.branch || "-"}  base=${status.ship.base || "-"}`);
+    if (status.ship.prUrl) lines.push(`  PR: ${status.ship.prUrl}`);
+    if (status.ship.tag) lines.push(`  tag: ${status.ship.tag}`);
+    if (status.ship.lastActivity) lines.push(`  last: ${truncate(status.ship.lastActivity, 64)}`);
+    if (status.ship.needsInput?.prompt) {
+      lines.push(`  needs-input: ${truncate(status.ship.needsInput.prompt, 64)}`);
+    }
+  }
 
   lines.push("");
   lines.push("Ctrl+C to stop · exits automatically on done/failed/cancelled");

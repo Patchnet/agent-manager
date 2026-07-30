@@ -15,6 +15,8 @@ Master Dev (chat)
               → $AGENT_MANAGER_RUNS_ROOT/<runId>/status.json  (supervisor polls ~2s)
     → Master arms watch-signal (3m heartbeat + state wakes) → chat templates
     → optional side terminal: monitor
+    → accepted Delivery Review + Ship Gate
+         → ship --detach → PR / CI / merge / release telemetry in status.ship
 ```
 
 Not a bridge/daemon. Master Dev **must** arm `watch-signal` after detach so
@@ -87,8 +89,8 @@ When `integrate: true` and all coding lanes exit `done`, the supervisor snapshot
 dirty lane worktrees, merges them into `am/<runId>/integrate` from the recorded immutable base SHA,
 and writes `integrate/summary.json` + `integrate/README.md`. Conflicts →
 `needs-input` / run `blocked`. Integrate never pushes, opens a PR, stamps
-versions, or merges to `main` — Master Dev + Ship Gate do that
-(`gh pr merge --auto --squash`).
+versions, or merges to `main`. After Delivery Review and Ship Gate, PR Manager
+owns those approved operations through the detached `ship` phase.
 
 ## CLI notes (Windows)
 
@@ -102,7 +104,7 @@ versions, or merges to `main` — Master Dev + Ship Gate do that
 ```json
 {
   "runId": "run-YYYYMMDD-HHMMSS-random",
-  "state": "running|blocked|done|failed|cancelled",
+  "state": "running|shipping|blocked|done|failed|cancelled",
   "repo": "my-repo",
   "workflow": "/abs/path/workflow.yaml",
   "target_dev_flow": "simple",
@@ -132,11 +134,21 @@ versions, or merges to `main` — Master Dev + Ship Gate do that
     "worktree": "…/runs/…/integrate/wt",
     "merged": ["lane-a", "lane-b"],
     "shipGateHint": "…"
+  },
+  "ship": {
+    "state": "queued|running|blocked|done|failed|cancelled",
+    "phase": "preflight|commit|push|pr|merge|release|release-push|ci|tag|done",
+    "approve": "through-pr|all",
+    "prUrl": "https://example.invalid/pull/1",
+    "mergeSha": "…",
+    "releaseSha": "…",
+    "tag": "v1.2.0"
   }
 }
 ```
 
 `integrate` is omitted when the workflow did not set `integrate: true`.
+`ship` is omitted until an approved detached shipping phase starts.
 
 ## Coordination lifecycle
 

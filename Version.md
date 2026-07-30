@@ -1,11 +1,16 @@
 ---
 enabled: true
-current: 1.1.0
+current: 1.2.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.2.0 - 2026-07-30
+
+Added detached PR Manager shipping with same-run telemetry, policy gates,
+CI monitoring, and release tagging.
 
 ## 1.1.0 - 2026-07-30
 

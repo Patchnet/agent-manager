@@ -62,6 +62,54 @@ agent-manager integrate <runId>
 
 Integration snapshots successful lane worktrees and merges them into `am/<runId>/integrate` from the immutable base SHA recorded at launch. It does not push or merge to the target repository default branch. Conflicts are aborted and reported as a resumable escalation.
 
+## PR Manager after Ship Gate
+
+PR Manager starts only after an accepted Delivery Review and an explicit Ship
+Gate approval. It uses the same run ID and `status.json`.
+
+Formal Flow through the pull request:
+
+```bash
+agent-manager ship <runId> \
+  --approve through-pr \
+  --commit-message "feat: approved change" \
+  --detach --json
+```
+
+Formal or Simple Flow through version and tag:
+
+```bash
+agent-manager ship <runId> \
+  --approve all \
+  --commit-message "feat: approved change" \
+  --version 1.2.0 \
+  --summary "Add the approved capability." \
+  --detach --json
+```
+
+The detached supervisor commits only when the approved worktree is dirty,
+pushes the recorded branch, finds or creates the pull request, enables
+`gh pr merge --auto --squash`, and watches checks until merge. For `all`, it
+updates the existing version stamp set, runs `check:version` when provided,
+pushes the release commit, waits for configured GitHub Actions workflows, and
+then publishes the matching tag.
+
+Optional overrides are `--repo`, `--worktree`, `--branch`, `--base`,
+`--remote`, and `--pr`. Use them only when the run metadata is incomplete and
+the operator has confirmed the target.
+
+After launch:
+
+```bash
+agent-manager watch-signal <runId> --heartbeat-sec 180
+```
+
+Read `status.json.ship` on every wake. Report with
+[`skills/pr-manager/reporting.md`](../skills/pr-manager/reporting.md). A
+blocked ship phase is resumable by correcting the external condition and
+rerunning the same detached command. Cancel with the normal `cancel` command.
+The ship phase never bypasses failed checks or creates a GitHub Release.
+
 ## Cancellation and retention
 
 ```bash
@@ -70,7 +118,11 @@ agent-manager cleanup <runId>
 agent-manager cleanup --stale --older-than-days 30
 ```
 
-Cancellation writes an authoritative marker. The live supervisor then terminates the process trees it owns. The cancel command does not kill an unverified stale PID. Stale cleanup skips running and blocked runs.
+Cancellation writes an authoritative marker. The live supervisor then
+terminates lane process trees it owns. The detached ship supervisor stops
+between bounded Git or GitHub commands and polling cycles. The cancel command
+does not kill an unverified stale PID. Stale cleanup skips running, shipping,
+and blocked runs.
 
 ## Claims
 
@@ -104,7 +156,10 @@ agent-manager install cursor
 agent-manager install cursor --project /path/to/repo
 ```
 
-The first command installs the canonical user skill. Project mode also installs a concise `.cursor/rules` fallback. Reporting templates remain canonical in the skill; the rule points to the CLI flow instead of duplicating them.
+The first command installs the canonical agent-manager and PR Manager user
+skills. Project mode also installs a concise `.cursor/rules` fallback.
+Reporting templates remain canonical in the skills; the rule points to the
+CLI flow instead of duplicating them.
 
 ## Public repository hygiene
 

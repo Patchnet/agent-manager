@@ -12,6 +12,7 @@ A detached CLI supervisor for running Claude Code and Codex CLI in parallel Git 
 - Host-neutral JSONL events and wake signals
 - Evidence-backed Delivery Review before Ship Gate
 - Optional integration branch without automatic merge
+- Detached PR Manager for approved push, PR, CI, merge, version, and tag work
 - Cursor skill installer and project-rule fallback
 
 agent-manager is not a sandbox, terminal multiplexer, fleet dashboard, or auto-merge service. Harness permission systems remain the execution boundary. Command-event inspection is best-effort detection.
@@ -19,7 +20,7 @@ agent-manager is not a sandbox, terminal multiplexer, fleet dashboard, or auto-m
 ## Requirements
 
 - Node.js 24 or later
-- Git
+- Git and GitHub CLI (`gh`) for the detached shipping phase
 - Claude Code, Codex CLI, or both, already authenticated through their normal subscription CLI
 
 ## Install from a clone
@@ -69,13 +70,13 @@ Review the generated scopes before launch. The initializer produces at most thre
 
 ## Cursor cockpit
 
-Install the user-level Cursor skill:
+Install the user-level agent-manager and PR Manager skills:
 
 ```bash
 agent-manager install cursor
 ```
 
-Install the skill plus a project rule:
+Install both skills plus a project rule:
 
 ```bash
 agent-manager install cursor --project /path/to/repo
@@ -104,12 +105,46 @@ agent-manager watch-signal <runId>
 agent-manager reply <runId> <laneId> --message <text>
 agent-manager review <runId> [--pass 1|2]
 agent-manager integrate <runId>
+agent-manager ship <runId> --approve through-pr|all --detach
 agent-manager cancel <runId>
 agent-manager cleanup <runId>
 agent-manager cleanup --stale --older-than-days 30
 ```
 
 Dangerous permission bypass requires two independent inputs: `policy.dangerously_skip_permissions: true` in the workflow and `--allow-dangerous-permissions` on that invocation (or the matching environment confirmation).
+
+## Detached PR Manager
+
+After Delivery Review accepts the work and the operator approves Ship Gate,
+hand shipping to the same run instead of polling GitHub in the host chat:
+
+```bash
+agent-manager ship <runId> \
+  --approve through-pr \
+  --commit-message "feat: approved change" \
+  --detach --json
+```
+
+`through-pr` stops after the pull request merges. `all` also requires an
+explicit version and public release summary:
+
+```bash
+agent-manager ship <runId> \
+  --approve all \
+  --commit-message "feat: approved change" \
+  --version 1.2.0 \
+  --summary "Add the approved capability." \
+  --detach --json
+```
+
+Formal Flow uses squash auto-merge. Release tags are created only after the
+version stamp passes and configured GitHub Actions workflows are green. Merge
+conflicts, failed checks, branch protection, authentication failures, and
+version mismatches become `status.ship.needsInput`; they are never bypassed.
+
+Keep `watch-signal` armed and use the templates in
+[`skills/pr-manager/reporting.md`](skills/pr-manager/reporting.md). PR Manager
+does not create GitHub Releases.
 
 ## Configuration
 
@@ -132,7 +167,10 @@ See [SECURITY.md](SECURITY.md), [public repository hygiene](docs/PUBLIC-REPO-HYG
 
 ## Contracts
 
-Published JSON schemas live under [`schemas/`](schemas/): workflow, detached launch, status, JSONL events, and Delivery Review. `status.json` remains authoritative; integrations stay thin and replaceable.
+Published JSON schemas live under [`schemas/`](schemas/): workflow, detached
+launch, status, JSONL events, Delivery Review, ship handoff, and detached ship
+launch. `status.json` remains authoritative; integrations stay thin and
+replaceable.
 
 ## Development
 

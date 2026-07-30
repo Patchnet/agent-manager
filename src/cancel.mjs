@@ -29,6 +29,12 @@ export async function cancelRun(runId, { removeWorktrees = false } = {}) {
     lane.pid = null;
     lane.endedAt ||= cancelledAt;
   }
+  if (status.ship && ["queued", "running", "blocked"].includes(status.ship.state)) {
+    status.ship.state = "cancelled";
+    status.ship.pid = null;
+    status.ship.endedAt = cancelledAt;
+    status.ship.lastActivity = "cancel requested";
+  }
   status.state = "cancelled";
   status.endedAt = cancelledAt;
   writeStatus(runId, status);

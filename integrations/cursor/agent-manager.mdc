@@ -11,5 +11,8 @@ When the user asks for agent-manager, multi-lane work, or both Claude and Codex:
 4. On `needs_input`, ask the operator and use `agent-manager reply <runId> <laneId> --message "..."`.
 5. On completion, run `agent-manager review <runId>` and present Delivery Review Pass 1.
 6. Do not commit, push, open or merge a PR, tag, or release without the explicit Ship Gate.
+7. After Ship Gate `through-pr` or `all`, load the installed `pr-manager` skill,
+   launch `agent-manager ship <runId> ... --detach`, post its Handoff board, and
+   stop polling CI or merge in the Cursor chat.
 
 Use `agent-manager watch-signal <runId>` or `agent-manager events <runId> --jsonl` as the host-neutral wake source. A blocked run is resumable, not terminal.

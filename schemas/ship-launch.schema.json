@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/ship-launch.schema.json",
+  "title": "agent-manager detached ship launch",
+  "type": "object",
+  "required": ["schema", "runId", "state", "phase", "approve", "pid", "telemetry"],
+  "properties": {
+    "schema": { "const": "agent-manager.ship-launch.v1" },
+    "runId": { "type": "string" },
+    "state": { "const": "detached" },
+    "phase": { "const": "ship" },
+    "approve": { "enum": ["through-pr", "all"] },
+    "pid": { "type": "integer" },
+    "telemetry": { "type": "string" },
+    "supervisorLog": { "type": "string" },
+    "handoff": { "type": "string" },
+    "statusCommand": { "type": "string" },
+    "watchCommand": { "type": "string" }
+  }
+}

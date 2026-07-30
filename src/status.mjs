@@ -29,6 +29,15 @@ export function writeStatus(runId, status) {
         exitCode: lane.exitCode ?? null,
         needsInput: lane.needsInput || null,
       })),
+      ship: payload.ship
+        ? {
+            state: payload.ship.state,
+            phase: payload.ship.phase,
+            approve: payload.ship.approve,
+            prUrl: payload.ship.prUrl || null,
+            needsInput: payload.ship.needsInput || null,
+          }
+        : null,
     });
   }
   return payload;
@@ -106,6 +115,16 @@ export function formatStatus(status) {
     if (status.integrate.error) lines.push(`      error: ${status.integrate.error}`);
     lines.push("");
   }
+  if (status.ship) {
+    lines.push(`ship: ${status.ship.state}  phase=${status.ship.phase || "-"}  approve=${status.ship.approve || "-"}`);
+    lines.push(`      branch: ${status.ship.branch || "-"}  base=${status.ship.base || "-"}`);
+    if (status.ship.prUrl) lines.push(`      pr: ${status.ship.prUrl}`);
+    if (status.ship.mergeSha) lines.push(`      merge: ${status.ship.mergeSha}`);
+    if (status.ship.tag) lines.push(`      tag: ${status.ship.tag}`);
+    if (status.ship.lastActivity) lines.push(`      last: ${status.ship.lastActivity}`);
+    if (status.ship.needsInput?.prompt) lines.push(`      needs input: ${status.ship.needsInput.prompt}`);
+    lines.push("");
+  }
   if (status.feed?.lastError) lines.push(`feed warning: ${status.feed.lastError}`);
   return lines.join("\n");
 }
@@ -133,5 +152,15 @@ function eventFingerprint(status) {
       exitCode: lane.exitCode ?? null,
       needsInput: lane.needsInput || null,
     })),
+    ship: status.ship
+      ? {
+          state: status.ship.state,
+          phase: status.ship.phase,
+          prUrl: status.ship.prUrl || null,
+          mergeSha: status.ship.mergeSha || null,
+          tag: status.ship.tag || null,
+          needsInput: status.ship.needsInput || null,
+        }
+      : null,
   });
 }

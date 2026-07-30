@@ -39,6 +39,10 @@ Commit messages are permanent history — a separate leak surface from file cont
 - Describe the technical change only; do not cite internal projects, clients, or incidents as rationale unless the operator explicitly approves a public disclosure.
 - No emails, hostnames, tokens, or internal IDs in subject or body.
 
+PR Manager receives the approved commit message and release summary as command
+inputs. Both can become permanent public history. Review them with the same
+hygiene rules before launching `agent-manager ship`.
+
 ## What stays local (gitignored)
 
 Operator-specific and fleet-specific material must never be tracked:
@@ -53,6 +57,10 @@ Operator-specific and fleet-specific material must never be tracked:
 | `workflows/` | Operator workflows targeting private sibling repos |
 | `CHANGELOG.md` | Internal dev log — public release notes use GitHub Releases |
 | `brains/`, `user-data/` | Runtime / tenant data |
+
+Ship handoffs, logs, pull-request metadata, and summaries remain under the
+private runs root. Never copy `$AGENT_MANAGER_RUNS_ROOT/<runId>/ship/` into the
+repository.
 
 If you need a new local-only category, add it to `.gitignore` **before** creating files there.
 

@@ -7,6 +7,8 @@
   "properties": {
     "schema": { "const": "agent-manager.event.v1" }, "type": { "const": "status" },
     "at": { "type": "string", "format": "date-time" }, "runId": { "type": "string" },
-    "state": { "enum": ["running", "blocked", "done", "failed", "cancelled"] }, "lanes": { "type": "array" }
+    "state": { "enum": ["running", "shipping", "blocked", "done", "failed", "cancelled"] },
+    "lanes": { "type": "array" },
+    "ship": { "type": ["object", "null"] }
   }
 }

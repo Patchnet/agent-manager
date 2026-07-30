@@ -17,6 +17,16 @@ export function statusFingerprint(status) {
       needsInput: Boolean(lane.needsInput),
       exitCode: lane.exitCode ?? null,
     })),
+    ship: status.ship
+      ? {
+          state: status.ship.state,
+          phase: status.ship.phase,
+          prUrl: status.ship.prUrl || null,
+          mergeSha: status.ship.mergeSha || null,
+          tag: status.ship.tag || null,
+          needsInput: Boolean(status.ship.needsInput),
+        }
+      : null,
   });
 }
 
@@ -42,6 +52,15 @@ export function classifyWake(previous, next, { heartbeatDue = false } = {}) {
   const changed = prevFp !== nextFp;
 
   if (changed) {
+    if (
+      next.ship?.needsInput &&
+      !previous?.ship?.needsInput
+    ) {
+      return buildPayload(next, "needs_input", {
+        phase: "ship",
+        shipPhase: next.ship.phase,
+      });
+    }
     const needsLane = (next.lanes || []).find(
       (lane) => lane.state === "blocked" || lane.needsInput,
     );
@@ -74,6 +93,17 @@ function buildPayload(status, reason, extra = {}) {
     repo: status.repo || null,
     updatedAt: status.updatedAt || null,
     lanes: laneSummary(status),
+    ship: status.ship
+      ? {
+          state: status.ship.state,
+          phase: status.ship.phase,
+          approve: status.ship.approve,
+          prUrl: status.ship.prUrl || null,
+          tag: status.ship.tag || null,
+          lastActivity: status.ship.lastActivity || null,
+          needsInput: status.ship.needsInput || null,
+        }
+      : null,
     ...extra,
   };
 }

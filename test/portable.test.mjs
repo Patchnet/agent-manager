@@ -29,5 +29,6 @@ test("version, init, validate, and project Cursor install work from a fresh dire
   const installed = JSON.parse(run(["install", "cursor", "--project", repo, "--json"]));
   assert.equal(installed.host, "cursor");
   assert.ok(existsSync(join(repo, ".cursor", "skills", "agent-manager", "SKILL.md")));
+  assert.ok(existsSync(join(repo, ".cursor", "skills", "pr-manager", "SKILL.md")));
   assert.ok(existsSync(join(repo, ".cursor", "rules", "agent-manager.mdc")));
 });
