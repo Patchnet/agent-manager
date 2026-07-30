@@ -36,8 +36,15 @@ Read [reporting.md](./reporting.md) before posting any ship status.
 8. A blocked ship phase escalates once with actionable options. Do not guess,
    open another Delivery Review pass, or silently downgrade `all` to
    `through-pr`.
-9. Do not create a GitHub Release. Release-note publication remains a separate
-   reviewed action.
+9. When `mergeStateStatus` is `BLOCKED` but CI conclusions look green and
+   `reviewDecision` is empty: **diagnose required status-check name mismatch
+   before asking for a human Approve.** Compare branch-protection contexts to
+   `statusCheckRollup[].name` (exact string). Formal Flow expects the check
+   name to stay the CI job id (commonly `quality`) — not a marketing
+   `name:` label. Prefer restoring the job display name over changing
+   protection.
+10. Do not create a GitHub Release. Release-note publication remains a separate
+    reviewed action.
 
 ## Launch
 

@@ -19,10 +19,12 @@ process.env.AGENT_MANAGER_RUNS_ROOT = runsRoot;
 mkdirSync(runsRoot, { recursive: true });
 
 const {
+  diagnoseBlockedMerge,
   execCommand,
   prepareShipHandoff,
   queueShip,
   runShip,
+  ShipBlockedError,
 } = await import("../src/ship-run.mjs?ship-test");
 const { readEvents, readStatus, writeStatus } = await import("../src/status.mjs?ship-test");
 const { classifyWake } = await import("../src/watch-signal.mjs?ship-test");
@@ -346,4 +348,49 @@ test("CLI ship detaches and completes in the background", async () => {
   }
   assert.equal(status?.state, "done", readFileSync(launch.supervisorLog, "utf8"));
   assert.equal(status.ship.tag, "v1.1.0");
+});
+
+test("diagnoseBlockedMerge detects required check name mismatch", () => {
+  const pr = {
+    state: "OPEN",
+    mergeStateStatus: "BLOCKED",
+    mergeable: "MERGEABLE",
+    reviewDecision: "",
+    baseRefName: "main",
+    statusCheckRollup: [
+      {
+        name: "Quality + mandatory Chromium journey",
+        status: "COMPLETED",
+        conclusion: "SUCCESS",
+      },
+    ],
+  };
+  const exec = (command, args) => {
+    assert.equal(command, "gh");
+    assert.ok(args.includes("repos/{owner}/{repo}/branches/main/protection/required_status_checks"));
+    return ok(JSON.stringify(["quality"]));
+  };
+  const error = diagnoseBlockedMerge(pr, exec, root);
+  assert.ok(error instanceof ShipBlockedError);
+  assert.match(error.message, /exact name: quality/);
+  assert.match(error.message, /Quality \+ mandatory Chromium journey/);
+  assert.ok(error.options.some((option) => /display name/i.test(option)));
+  assert.ok(error.options.some((option) => /human PR approval/i.test(option)));
+});
+
+test("diagnoseBlockedMerge waits while checks are still running", () => {
+  const error = diagnoseBlockedMerge(
+    {
+      state: "OPEN",
+      mergeStateStatus: "BLOCKED",
+      reviewDecision: "",
+      baseRefName: "main",
+      statusCheckRollup: [
+        { name: "quality", status: "IN_PROGRESS", conclusion: "" },
+      ],
+    },
+    () => ok(JSON.stringify(["quality"])),
+    root,
+  );
+  assert.equal(error, null);
 });

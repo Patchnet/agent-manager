@@ -1,11 +1,17 @@
 ---
 enabled: true
-current: 1.2.0
+current: 1.2.1
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.2.1 - 2026-07-30
+
+PR Manager diagnoses BLOCKED PRs with green CI as required status-check name
+mismatch (not a missing human Approve), and documents the Formal check-name
+contract in the skill.
 
 ## 1.2.0 - 2026-07-30
 

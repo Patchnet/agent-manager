@@ -525,6 +525,8 @@ async function waitForPr(runId, status, handoff, { exec, sleep, now }) {
         "Reject or abandon the release.",
       ]);
     }
+    const blockedDiag = diagnoseBlockedMerge(pr, exec, handoff.worktree);
+    if (blockedDiag) throw blockedDiag;
     if (pr.mergeStateStatus === "BEHIND" && !updatedBehind) {
       must(
         exec,
@@ -540,7 +542,8 @@ async function waitForPr(runId, status, handoff, { exec, sleep, now }) {
     await sleep(handoff.pollSec * 1000);
   }
   throw new ShipBlockedError("Timed out waiting for the pull request to merge.", [
-    "Inspect branch protection, reviews, and CI, then rerun ship.",
+    "Compare branch-protection required status checks to the PR check names (exact match).",
+    "Inspect reviews and CI, then rerun ship.",
   ]);
 }
 
@@ -813,6 +816,94 @@ function failedChecks(checks = []) {
   return checks
     .filter((check) => FAILURE_CONCLUSIONS.has(String(check.conclusion || "").toLowerCase()))
     .map((check) => check.name || check.context || "unnamed check");
+}
+
+function checkIsPending(check) {
+  const status = String(check.status || "").toUpperCase();
+  return status === "QUEUED" || status === "IN_PROGRESS" || status === "WAITING" || status === "PENDING";
+}
+
+function checkLooksComplete(check) {
+  if (checkIsPending(check)) return false;
+  const conclusion = String(check.conclusion || "").toLowerCase();
+  return conclusion === "success" || conclusion === "skipped" || conclusion === "neutral" || conclusion === "";
+}
+
+function reportedCheckNames(checks = []) {
+  return checks.map((check) => check.name || check.context || "unnamed check");
+}
+
+export function requiredStatusContexts(exec, cwd, baseBranch) {
+  const result = exec(
+    "gh",
+    [
+      "api",
+      `repos/{owner}/{repo}/branches/${baseBranch}/protection/required_status_checks`,
+      "--jq",
+      ".contexts // []",
+    ],
+    { cwd },
+  );
+  if (!result.ok) return null;
+  try {
+    const parsed = JSON.parse(String(result.stdout || "null"));
+    return Array.isArray(parsed) ? parsed.map(String) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * When GitHub reports BLOCKED but CI conclusions look fine, detect required
+ * status-check name mismatch (or leftover review requirements) instead of
+ * implying a human Approve click.
+ */
+export function diagnoseBlockedMerge(pr, exec, cwd) {
+  if (!pr || pr.state === "MERGED") return null;
+  if (pr.mergeStateStatus !== "BLOCKED") return null;
+  const checks = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : [];
+  if (failedChecks(checks).length) return null;
+  if (pr.reviewDecision === "CHANGES_REQUESTED") return null;
+  if (checks.some(checkIsPending)) return null;
+
+  const reported = reportedCheckNames(checks);
+  const required = requiredStatusContexts(exec, cwd, pr.baseRefName);
+  if (required?.length) {
+    const missingOrNotGreen = required.filter((ctx) => {
+      const match = checks.find((check) => (check.name || check.context) === ctx);
+      if (!match) return true;
+      const conclusion = String(match.conclusion || "").toLowerCase();
+      return conclusion !== "success" && conclusion !== "skipped" && conclusion !== "neutral";
+    });
+    if (missingOrNotGreen.length) {
+      return new ShipBlockedError(
+        `Branch protection requires status check(s) that are missing or not green under that exact name: ${missingOrNotGreen.join(", ")}. CI reported: ${reported.join(", ") || "(none)"}.`,
+        [
+          "Restore the workflow job display name to match protection (preferred), or update required status checks to the real check name.",
+          "Do not treat this as a missing human PR approval unless reviewDecision is REVIEW_REQUIRED.",
+          "Rerun ship after the check names match and CI is green.",
+        ],
+      );
+    }
+  }
+
+  if (pr.reviewDecision === "REVIEW_REQUIRED") {
+    return new ShipBlockedError("Branch protection still requires a pull-request review.", [
+      "Lower required approving review count or approve the PR, then rerun ship.",
+    ]);
+  }
+
+  if (checks.length && checks.every(checkLooksComplete)) {
+    return new ShipBlockedError(
+      `Pull request is BLOCKED while reported checks look complete (${reported.join(", ") || "none"}). Often a required status-check name mismatch (protection expects a different exact name than CI reports).`,
+      [
+        "Compare Settings → Branches → required status checks to statusCheckRollup names.",
+        "Do not assume a human Approve click is required if reviewDecision is empty and required_approving_review_count is 0.",
+        "Fix the name mismatch, then rerun ship.",
+      ],
+    );
+  }
+  return null;
 }
 
 function validatePrTarget(pr, handoff) {
