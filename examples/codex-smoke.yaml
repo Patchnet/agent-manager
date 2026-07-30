@@ -1,0 +1,20 @@
+# Minimal Codex harness smoke workflow (read-only style prompt).
+# Run: node bin/agent-manager.mjs run examples/codex-smoke.yaml --detach
+
+repo: agent-manager
+harness_default: codex
+target_dev_flow: simple
+
+policy:
+  allow_commit: false
+  allow_pr: false
+  stall_timeout_sec: 600
+  permission_mode: acceptEdits
+
+lanes:
+  - id: codex-ping
+    scope: "README.md"
+    prompt: |
+      You are a read-only smoke lane for agent-manager's Codex harness.
+      Confirm the worktree cwd contains README.md and summarize the first
+      heading in one short sentence. Do not edit files. Do not commit.

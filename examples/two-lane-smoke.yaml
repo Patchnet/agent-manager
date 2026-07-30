@@ -1,0 +1,31 @@
+# Two parallel read-only lanes against this repo (smoke / demo).
+# Run from a parent that contains `agent-manager` as a folder, or set
+# AGENT_MANAGER_DEV_ROOT to that parent:
+#   node bin/agent-manager.mjs run examples/two-lane-smoke.yaml --detach
+
+repo: agent-manager
+harness_default: claude
+target_dev_flow: simple
+
+feed:
+  enabled: false
+
+policy:
+  allow_commit: false
+  allow_pr: false
+  stall_timeout_sec: 600
+  permission_mode: acceptEdits
+
+lanes:
+  - id: readme-summary
+    scope: "README.md"
+    prompt: |
+      You are on a dedicated worktree for lane readme-summary only.
+      Summarize README.md in three short bullets. Do not edit files. Do not commit.
+
+  - id: version-check
+    scope: "Version.md"
+    prompt: |
+      You are on a dedicated worktree for lane version-check only.
+      Report the frontmatter `current` version from Version.md in one sentence.
+      Do not edit files. Do not commit.

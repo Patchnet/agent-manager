@@ -1,0 +1,35 @@
+# Example: two parallel lanes against a sibling repo named patchnet-mr-markdown.
+# Replace `repo` with any folder under AGENT_MANAGER_DEV_ROOT (default: cwd).
+# Workers inherit that repo's agent files / skills / MCP.
+# No commit — Master Dev / Ship Gate owns shipping.
+
+repo: patchnet-mr-markdown
+harness_default: claude
+
+feed:
+  enabled: false
+  baseUrl: http://localhost:8787
+  topic: agent-manager/example-repo
+
+policy:
+  allow_commit: false
+  allow_pr: false
+  stall_timeout_sec: 900
+  permission_mode: acceptEdits
+
+lanes:
+  - id: build-plan
+    scope: "BUILD_PLAN.md"
+    prompt: |
+      You are on a dedicated worktree/branch for lane build-plan only.
+      Update BUILD_PLAN.md so the current-state summary matches the repo.
+      Stay in BUILD_PLAN.md only. Do not invent hostnames or internal IDs.
+      Do not commit.
+
+  - id: version-md
+    scope: "Version.md"
+    prompt: |
+      You are on a dedicated worktree/branch for lane version-md only.
+      Create or update root Version.md from CHANGELOG / package.json as needed.
+      Prefer omitting inventing Formal Flow; mark TBD where operator must set
+      dev_flow / test_gate. Stay in Version.md only. Do not commit.
