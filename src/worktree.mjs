@@ -1,6 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { copyFileSync, existsSync, lstatSync, mkdirSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
+
+const AGENT_INSTRUCTION_FILES = [
+  "AGENTS.md",
+  "AGENTS.override.md",
+  "AGENTS.local.md",
+  "CLAUDE.md",
+  "CLAUDE.local.md",
+  "Codex.local.md",
+];
 
 function git(repoRoot, args) {
   const r = spawnSync("git", ["-C", repoRoot, ...args], {
@@ -40,6 +49,38 @@ export function addWorktree({ repoRoot, worktreePath, branch, baseBranch }) {
     throw new Error(`worktree add failed: ${r.stderr || r.stdout}`);
   }
   return worktreePath;
+}
+
+export function inheritIgnoredAgentFiles(repoRoot, worktreePath) {
+  const pathspecs = AGENT_INSTRUCTION_FILES.flatMap((name) => [
+    name,
+    `:(glob)**/${name}`,
+  ]);
+  const listed = git(repoRoot, [
+    "ls-files",
+    "--others",
+    "--ignored",
+    "--exclude-standard",
+    "-z",
+    "--",
+    ...pathspecs,
+  ]);
+  if (!listed.ok || !listed.stdout) return [];
+
+  const copied = [];
+  for (const relativePath of new Set(listed.stdout.split("\0").filter(Boolean))) {
+    if (isAbsolute(relativePath) || relativePath.split(/[\\/]/).includes("..")) continue;
+    const source = join(repoRoot, relativePath);
+    const target = join(worktreePath, relativePath);
+    if (relative(repoRoot, source).startsWith("..") || relative(worktreePath, target).startsWith("..")) {
+      continue;
+    }
+    if (!existsSync(source) || existsSync(target) || !lstatSync(source).isFile()) continue;
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(source, target);
+    copied.push(relativePath.replace(/\\/g, "/"));
+  }
+  return copied.sort();
 }
 
 export function removeWorktree({ repoRoot, worktreePath, force = true, bestEffort = false }) {

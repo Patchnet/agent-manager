@@ -727,8 +727,9 @@ export function verifyVersionStamp(repoRoot, version, exec = execCommand) {
 
 export function execCommand(command, args, { cwd } = {}) {
   const override = command === "gh" ? process.env.AGENT_MANAGER_GH_BIN : null;
-  const actualCommand = override?.endsWith(".mjs") ? process.execPath : override || command;
-  const actualArgs = override?.endsWith(".mjs") ? [override, ...args] : args;
+  const resolved = resolveSpawnCommand(command, args, override);
+  const actualCommand = resolved.command;
+  const actualArgs = resolved.args;
   const result = spawnSync(actualCommand, actualArgs, {
     cwd,
     encoding: "utf8",
@@ -742,6 +743,20 @@ export function execCommand(command, args, { cwd } = {}) {
     stdout: String(result.stdout || "").trim(),
     stderr: String(result.error?.message || result.stderr || "").trim(),
   };
+}
+
+export function resolveSpawnCommand(command, args, override = null, {
+  platform = process.platform,
+  comspec = process.env.ComSpec || process.env.COMSPEC || "cmd.exe",
+} = {}) {
+  if (override?.endsWith(".mjs")) {
+    return { command: process.execPath, args: [override, ...args] };
+  }
+  if (override) return { command: override, args };
+  if (platform === "win32" && command === "npm") {
+    return { command: comspec, args: ["/d", "/s", "/c", "npm", ...args] };
+  }
+  return { command, args };
 }
 
 function preflight(handoff, exec) {

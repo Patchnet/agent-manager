@@ -40,6 +40,8 @@ execFileSync("git", ["-C", repo, "remote", "add", "origin", repo]);
 const fixtureBase = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], {
   encoding: "utf8",
 }).trim();
+appendFileSync(join(repo, ".git", "info", "exclude"), "\nAGENTS.md\n");
+writeFileSync(join(repo, "AGENTS.md"), "# Local fixture instructions\n");
 
 const claimScript = join(tools, "claim.mjs");
 writeFileSync(
@@ -185,6 +187,13 @@ test("detached run publishes feed events, resumes the exact session, and release
   assert.equal(question.state, "blocked");
   assert.match(question.sessionId, /^fake-/);
   assert.equal(question.claim.state, "retained");
+  for (const lane of [writer, question]) {
+    assert.deepEqual(lane.inheritedInstructionFiles, ["AGENTS.md"]);
+    assert.equal(
+      readFileSync(join(lane.worktree, "AGENTS.md"), "utf8"),
+      "# Local fixture instructions\n",
+    );
+  }
   assert.equal(blocked.planning.state, "verified");
   assert.equal(blocked.planning.reviewedBaseSha, fixtureBase);
   assert.match(blocked.planning.contextDigest, /^[0-9a-f]{64}$/);

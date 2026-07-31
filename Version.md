@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.3.0
+current: 1.3.1
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.3.1 - 2026-07-31
+
+Align harness permissions and repo instructions.
 
 ## 1.3.0 - 2026-07-31
 

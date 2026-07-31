@@ -104,6 +104,16 @@ test("codex harness is supported and parses thread_id session ids", async () => 
   );
 });
 
+test("Claude permission modes translate manager policy to native CLI values", async () => {
+  const { permissionModeForClaude } = await import("../src/harness/claude.mjs?permission-core");
+
+  assert.equal(permissionModeForClaude("readOnly"), "plan");
+  assert.equal(permissionModeForClaude("read-only"), "plan");
+  assert.equal(permissionModeForClaude("read_only"), "plan");
+  assert.equal(permissionModeForClaude("workspace-write"), "acceptEdits");
+  assert.equal(permissionModeForClaude("acceptEdits"), "acceptEdits");
+});
+
 test("allow_commit=false blocks mutators but allows read-only git tag/show/log", async () => {
   const { createPolicyEventInspector, isForbiddenGitMutation } = await import(
     "../src/guardrails.mjs?git-ro"

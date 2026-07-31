@@ -52,6 +52,17 @@ export function spawnClaude({
   });
 }
 
+export function permissionModeForClaude(permissionMode) {
+  const mode = String(permissionMode || "").toLowerCase();
+  if (mode === "readonly" || mode === "read-only" || mode === "read_only") {
+    return "plan";
+  }
+  if (mode === "workspace-write") {
+    return "acceptEdits";
+  }
+  return permissionMode || "acceptEdits";
+}
+
 export function resumeClaude({
   sessionId,
   cwd,
@@ -112,7 +123,7 @@ function spawnClaudeProcess({
     "--verbose",
   );
   if (permissionMode) {
-    args.push("--permission-mode", permissionMode);
+    args.push("--permission-mode", permissionModeForClaude(permissionMode));
   }
   if (dangerouslySkipPermissions) {
     args.push("--dangerously-skip-permissions");

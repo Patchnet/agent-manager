@@ -23,6 +23,7 @@ const {
   execCommand,
   prepareShipHandoff,
   queueShip,
+  resolveSpawnCommand,
   runShip,
   ShipBlockedError,
 } = await import("../src/ship-run.mjs?ship-test");
@@ -38,6 +39,23 @@ function ok(stdout = "") {
 function fail(stderr = "failed") {
   return { ok: false, status: 1, stdout: "", stderr };
 }
+
+test("Windows npm commands run through cmd.exe without enabling shell mode", () => {
+  assert.deepEqual(
+    resolveSpawnCommand("npm", ["run", "check:version"], null, {
+      platform: "win32",
+      comspec: "C:\\Windows\\System32\\cmd.exe",
+    }),
+    {
+      command: "C:\\Windows\\System32\\cmd.exe",
+      args: ["/d", "/s", "/c", "npm", "run", "check:version"],
+    },
+  );
+  assert.deepEqual(
+    resolveSpawnCommand("git", ["status"], null, { platform: "win32" }),
+    { command: "git", args: ["status"] },
+  );
+});
 
 function writeRun(runId, overrides = {}) {
   const dir = join(runsRoot, runId);

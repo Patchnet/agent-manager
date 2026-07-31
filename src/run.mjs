@@ -20,6 +20,7 @@ import {
 } from "./claim.mjs";
 import {
   addWorktree,
+  inheritIgnoredAgentFiles,
   removeWorktree,
   resolveGitRef,
 } from "./worktree.mjs";
@@ -233,6 +234,7 @@ export async function runWorkflow(workflowPath, {
     lastActivity: "queued",
     exitCode: null,
     worktree: null,
+    inheritedInstructionFiles: [],
     logPath: null,
     runBaseCommit: immutableBaseCommit,
     baseCommit: null,
@@ -398,6 +400,10 @@ export async function runWorkflow(workflowPath, {
         });
         createdWorktrees.push(worktree);
         laneState.worktree = worktree;
+        laneState.inheritedInstructionFiles = inheritIgnoredAgentFiles(
+          workflow.repoRoot,
+          worktree,
+        );
 
         const dependencies = laneState.dependsOn.map((id) =>
           laneStates.find((candidate) => candidate.id === id),
