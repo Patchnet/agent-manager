@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { releaseLane } from "./claim.mjs";
+import { claimLane, releaseLane } from "./claim.mjs";
 import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
 import { createPolicyEventInspector, validateLaneGuardrails } from "./guardrails.mjs";
 import { getHarnessAdapter } from "./harness/index.mjs";
@@ -22,6 +22,15 @@ export function prepareReply(runId, laneId, message) {
   if (lane.state !== "blocked") throw new Error("lane " + laneId + " is not blocked");
   if (!lane.sessionId) throw new Error("lane " + laneId + " has no harness session id to resume");
   const previousNeedsInput = lane.needsInput;
+  const reacquired = claimLane({
+    repo: status.repo,
+    branch: lane.branch,
+    lane: lane.id,
+    scope: lane.scope,
+    agent: "agt-agent-manager-" + lane.harness,
+    group: lane.claim?.group || runId,
+    mode: status.claimMode,
+  });
 
   const root = runDir(runId);
   const laneDir = join(root, laneId);
@@ -42,7 +51,20 @@ export function prepareReply(runId, laneId, message) {
   lane.replyStartedAt = new Date().toISOString();
   status.supervisor = { pid: null, startedAt: lane.replyStartedAt, kind: "resume" };
   lane.lastActivity = "reply queued for harness resume";
-  lane.claim = { state: "active", resumedAt: lane.replyStartedAt };
+  lane.claim = reacquired.skipped
+    ? { state: "skipped", resumedAt: lane.replyStartedAt }
+    : reacquired.ok
+      ? {
+          ...lane.claim,
+          state: "active",
+          group: lane.claim?.group || runId,
+          resumedAt: lane.replyStartedAt,
+        }
+      : {
+          state: "advisory-failed",
+          error: reacquired.error,
+          resumedAt: lane.replyStartedAt,
+        };
   status.state = "running";
   status.endedAt = null;
   writeStatus(runId, status);
@@ -56,12 +78,32 @@ export async function resumeLane(runId, laneId, messagePath) {
   if (!status) throw new Error("no status for " + runId);
   const lane = (status.lanes || []).find((item) => item.id === laneId);
   if (!lane) throw new Error("no lane " + laneId + " in " + runId);
+  const persistReplyStatus = () => {
+    const disk = readStatus(runId);
+    if (disk?.lanes) {
+      status.lanes = status.lanes.map((item) =>
+        item.id === laneId
+          ? item
+          : disk.lanes.find((candidate) => candidate.id === item.id) || item,
+      );
+    }
+    return writeStatus(runId, status);
+  };
   const safeMessagePath = assertPathInside(join(runDir(runId), laneId), messagePath, "reply message");
   if (!existsSync(safeMessagePath)) throw new Error("reply message not found: " + safeMessagePath);
 
   const workflow = loadWorkflow(join(runDir(runId), "workflow.yaml"), {
     repoOverride: status.repoRoot || status.repo,
+    planningContextOverride: existsSync(join(runDir(runId), "planning-context.md"))
+      ? join(runDir(runId), "planning-context.md")
+      : null,
   });
+  if (
+    status.planning?.contextDigest &&
+    workflow.planning?.context_digest !== status.planning.contextDigest
+  ) {
+    throw new Error("frozen planning context digest does not match recorded run evidence");
+  }
   if (workflow.policy.dangerously_skip_permissions && status.dangerousPermissionsApproved !== true) {
     throw new Error("run did not record dangerous permission approval");
   }
@@ -97,7 +139,7 @@ export async function resumeLane(runId, laneId, messagePath) {
   lane.pid = handle.pid ?? null;
   lane.logPath = join(laneDir, "resume-" + lane.attempt + ".log");
   lane.sessionId = handle.getSessionId?.() || lane.sessionId;
-  writeStatus(runId, status);
+  persistReplyStatus();
   await publishFeedEvent(publisher, status, "lane_started", {
     laneId,
     harness: lane.harness,
@@ -139,7 +181,7 @@ export async function resumeLane(runId, laneId, messagePath) {
       lane.lastActivity = "stalled (silence exceeded timeout)";
       adapter.cancel(handle);
     }
-    writeStatus(runId, status);
+    persistReplyStatus();
   }, pollMs);
 
   const result = await handle.done;
@@ -171,17 +213,21 @@ export async function resumeLane(runId, laneId, messagePath) {
       const check = validateLaneGuardrails({
         worktree: lane.worktree,
         scope: lane.scope,
+        readOnlyScope: lane.readOnly || laneConfig.read_only,
         baseCommit: lane.baseCommit,
         policy: workflow.policy,
       });
       lane.changedFiles = check.changedFiles;
       lane.scopeViolations = check.scopeViolations;
+      lane.readOnlyViolations = check.readOnlyViolations;
       lane.policyViolations = [...new Set([...(lane.policyViolations || []), ...check.policyViolations])];
       lane.state = check.ok ? "done" : "failed";
       if (!check.ok) {
-        lane.lastActivity = check.scopeViolations.length
-          ? "scope violation: " + check.scopeViolations.join(", ")
-          : check.policyViolations.join("; ");
+        lane.lastActivity = check.readOnlyViolations.length
+          ? "read-only violation: " + check.readOnlyViolations.join(", ")
+          : check.scopeViolations.length
+            ? "scope violation: " + check.scopeViolations.join(", ")
+            : check.policyViolations.join("; ");
       }
     } catch (error) {
       const violation = "guardrail inspection failed: " + String(error?.message || error);
@@ -194,7 +240,11 @@ export async function resumeLane(runId, laneId, messagePath) {
   }
 
   lane.endedAt = new Date().toISOString();
-  if (lane.state !== "blocked" && lane.branch) {
+  if (
+    lane.state !== "blocked" &&
+    lane.branch &&
+    ["active", "retained"].includes(lane.claim?.state)
+  ) {
     const released = releaseLane({ repo: status.repo, branch: lane.branch, mode: status.claimMode });
     lane.claim = { state: released.ok ? "released" : "release-failed", at: lane.endedAt };
     await publishFeedEvent(publisher, status, "lane_done", {
@@ -210,7 +260,7 @@ export async function resumeLane(runId, laneId, messagePath) {
   status.state = deriveRunState(status);
   if (status.state === "done" && workflow.integrate) {
     status.integrate = { state: "running" };
-    writeStatus(runId, status);
+    persistReplyStatus();
     try {
       status.integrate = integrateLanes({ workflow, runId, laneStates: status.lanes });
       status.state = status.integrate.state === "ready" ? "done" : "blocked";
@@ -221,7 +271,7 @@ export async function resumeLane(runId, laneId, messagePath) {
   }
 
   status.endedAt = status.state === "blocked" || status.state === "running" ? null : new Date().toISOString();
-  writeStatus(runId, status);
+  persistReplyStatus();
   writeReport(runId, status);
   if (status.state === "done") {
     await publishFeedEvent(publisher, status, "run_done", {
@@ -234,7 +284,7 @@ export async function resumeLane(runId, laneId, messagePath) {
       attempt: lane.attempt,
     });
   }
-  const saved = writeStatus(runId, status);
+  const saved = persistReplyStatus();
   writeReport(runId, saved);
   return saved;
 }

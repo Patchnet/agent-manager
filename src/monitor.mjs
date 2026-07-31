@@ -56,8 +56,14 @@ export function formatMonitorBoard(status, { previousLaneStates = {} } = {}) {
     if (lane.needsInput?.prompt) {
       lines.push(`  needs-input: ${truncate(lane.needsInput.prompt, 60)}`);
     }
+    if (lane.waitingFor?.length) {
+      lines.push(`  waiting for: ${lane.waitingFor.join(", ")} (${lane.queueReason || "queued"})`);
+    }
     if (lane.scopeViolations?.length) {
       lines.push(`  scope violations: ${lane.scopeViolations.join(", ")}`);
+    }
+    if (lane.readOnlyViolations?.length) {
+      lines.push(`  read-only violations: ${lane.readOnlyViolations.join(", ")}`);
     }
   }
 
@@ -68,6 +74,9 @@ export function formatMonitorBoard(status, { previousLaneStates = {} } = {}) {
     );
     if (status.integrate.error) {
       lines.push(`  error: ${status.integrate.error}`);
+    }
+    if (status.integrate.verification) {
+      lines.push(`  verification: ${status.integrate.verification.state}`);
     }
   }
   if (status.ship) {

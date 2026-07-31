@@ -9,11 +9,18 @@ function makeHandle(options, resumed = false) {
   const fixture = resumed ? options.lane?.fake?.resume || {} : options.lane?.fake || {};
   const sessionId = options.sessionId || "fake-" + randomUUID();
   const logPath = join(options.laneDir, options.logName || (resumed ? "resume.log" : "stdout.log"));
+  const promptPath = join(
+    options.laneDir,
+    resumed
+      ? (options.logName || "resume.log").replace(/\.log$/, ".prompt.md")
+      : "prompt.md",
+  );
   const delayMs = Number(fixture.delay_ms ?? 20);
   let killed = false;
   let lastActivity = resumed ? "fake resumed" : "fake spawned";
   let lastByteAt = Date.now();
   ensurePrivateDir(options.laneDir);
+  writePrivateFile(promptPath, String(options.prompt || ""), "utf8");
   if (resumed) {
     rmSync(join(options.laneDir, "needs-input.json"), { force: true });
   }

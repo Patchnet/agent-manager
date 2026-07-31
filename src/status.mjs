@@ -1,4 +1,13 @@
-import { appendFileSync, existsSync, readFileSync, readdirSync, renameSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import { RUNS_ROOT, assertSafeSlug, runDir } from "./paths.mjs";
 import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
@@ -7,40 +16,48 @@ export function writeStatus(runId, status) {
   assertSafeSlug(runId, "run id");
   const dir = ensurePrivateDir(runDir(runId));
   const path = join(dir, "status.json");
-  if (status.state !== "cancelled" && existsSync(join(dir, "cancelled.json"))) {
-    return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : status;
+  const lockPath = join(dir, ".status-lock");
+  acquireStatusLock(lockPath);
+  try {
+    if (status.state !== "cancelled" && existsSync(join(dir, "cancelled.json"))) {
+      return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : status;
+    }
+    const previous = existsSync(path) ? safeParse(path) : null;
+    const lanes = preserveNewerLaneAttempts(status.lanes, previous?.lanes);
+    const payload = { ...status, lanes, runId, updatedAt: new Date().toISOString() };
+    const tempPath = path + "." + process.pid + "." + Date.now() + ".tmp";
+    writePrivateFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+    replaceFileWithRetry(tempPath, path);
+    if (eventFingerprint(previous) !== eventFingerprint(payload)) {
+      appendEvent(runId, {
+        schema: "agent-manager.event.v1",
+        type: "status",
+        at: payload.updatedAt,
+        runId,
+        state: payload.state,
+        lanes: (payload.lanes || []).map((lane) => ({
+          id: lane.id,
+          harness: lane.harness,
+          state: lane.state,
+          exitCode: lane.exitCode ?? null,
+          needsInput: lane.needsInput || null,
+          waitingFor: lane.waitingFor || [],
+        })),
+        ship: payload.ship
+          ? {
+              state: payload.ship.state,
+              phase: payload.ship.phase,
+              approve: payload.ship.approve,
+              prUrl: payload.ship.prUrl || null,
+              needsInput: payload.ship.needsInput || null,
+            }
+          : null,
+      });
+    }
+    return payload;
+  } finally {
+    rmSync(lockPath, { recursive: true, force: true });
   }
-  const previous = existsSync(path) ? safeParse(path) : null;
-  const payload = { ...status, runId, updatedAt: new Date().toISOString() };
-  const tempPath = path + ".tmp";
-  writePrivateFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
-  renameSync(tempPath, path);
-  if (eventFingerprint(previous) !== eventFingerprint(payload)) {
-    appendEvent(runId, {
-      schema: "agent-manager.event.v1",
-      type: "status",
-      at: payload.updatedAt,
-      runId,
-      state: payload.state,
-      lanes: (payload.lanes || []).map((lane) => ({
-        id: lane.id,
-        harness: lane.harness,
-        state: lane.state,
-        exitCode: lane.exitCode ?? null,
-        needsInput: lane.needsInput || null,
-      })),
-      ship: payload.ship
-        ? {
-            state: payload.ship.state,
-            phase: payload.ship.phase,
-            approve: payload.ship.approve,
-            prUrl: payload.ship.prUrl || null,
-            needsInput: payload.ship.needsInput || null,
-          }
-        : null,
-    });
-  }
-  return payload;
 }
 
 export function appendEvent(runId, event) {
@@ -63,9 +80,11 @@ export function readEvents(runId) {
 export function deriveRunState(status) {
   if (status.state === "cancelled") return "cancelled";
   const states = (status.lanes || []).map((lane) => lane.state);
-  if (states.some((state) => state === "running" || state === "queued")) return "running";
-  if (states.some((state) => state === "failed")) return "failed";
   if (states.some((state) => state === "blocked")) return "blocked";
+  if (states.some((state) => ["running", "queued", "dependency-waiting"].includes(state))) {
+    return "running";
+  }
+  if (states.some((state) => state === "failed")) return "failed";
   return "done";
 }
 
@@ -95,6 +114,8 @@ export function formatStatus(status) {
     `run ${status.runId}  state=${status.state}  repo=${status.repo}  updated=${status.updatedAt || "-"}`,
     `target_dev_flow=${status.target_dev_flow || "-"}  workflow=${status.workflow || "-"}`,
     `started=${status.startedAt || "-"}  ended=${status.endedAt || "-"}  initialDirty=${status.initialRepo?.dirty ? "yes" : "no"}`,
+    `planning=${status.planning?.state || "legacy/unrecorded"}  plan=${status.planning?.planRef || "-"}`,
+    `reviewedBase=${status.planning?.reviewedBaseSha || "-"}  contextSha256=${status.planning?.contextDigest || "-"}`,
     "",
   ];
   for (const lane of status.lanes || []) {
@@ -107,7 +128,10 @@ export function formatStatus(status) {
     if (lane.sessionId) lines.push(`      session: ${lane.sessionId}`);
     if (lane.endedAt) lines.push(`      ended: ${lane.endedAt}`);
     if (lane.claim?.state) lines.push(`      claim: ${lane.claim.state}`);
+    if (lane.waitingFor?.length) lines.push(`      waiting for: ${lane.waitingFor.join(", ")}`);
+    if (lane.queueReason) lines.push(`      queue: ${lane.queueReason}`);
     if (lane.scopeViolations?.length) lines.push(`      scope violations: ${lane.scopeViolations.join(", ")}`);
+    if (lane.readOnlyViolations?.length) lines.push(`      read-only violations: ${lane.readOnlyViolations.join(", ")}`);
     lines.push("");
   }
   if (status.integrate) {
@@ -142,6 +166,53 @@ function safeParse(path) {
   }
 }
 
+function preserveNewerLaneAttempts(nextLanes = [], previousLanes = []) {
+  return nextLanes.map((lane) => {
+    const previous = previousLanes.find((item) => item.id === lane.id);
+    return Number(previous?.attempt || 1) > Number(lane.attempt || 1)
+      ? previous
+      : lane;
+  });
+}
+
+function acquireStatusLock(lockPath) {
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      mkdirSync(lockPath, { mode: 0o700 });
+      return;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > 30_000) {
+          rmSync(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      Atomics.wait(sleeper, 0, 0, 10);
+    }
+  }
+  throw new Error("timed out waiting for status lock");
+}
+
+function replaceFileWithRetry(source, target) {
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      renameSync(source, target);
+      return;
+    } catch (error) {
+      if (!["EACCES", "EPERM"].includes(error?.code) || attempt === 99) {
+        rmSync(source, { force: true });
+        throw error;
+      }
+      Atomics.wait(sleeper, 0, 0, 10);
+    }
+  }
+}
+
 function eventFingerprint(status) {
   if (!status) return null;
   return JSON.stringify({
@@ -151,6 +222,7 @@ function eventFingerprint(status) {
       state: lane.state,
       exitCode: lane.exitCode ?? null,
       needsInput: lane.needsInput || null,
+      waitingFor: lane.waitingFor || [],
     })),
     ship: status.ship
       ? {

@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
 import { resolveCodexBin } from "./harness/codex.mjs";
+import { assertPlanningReady } from "./planning.mjs";
 
 export function checkCommand(command, args = ["--version"]) {
   const result = spawnSync(command, args, { encoding: "utf8", windowsHide: true, timeout: 10_000 });
@@ -28,6 +29,7 @@ export function validateRepository(workflow) {
 }
 
 export function preflightWorkflow(workflow) {
+  assertPlanningReady(workflow);
   const checks = [checkCommand("git"), ...validateRepository(workflow)];
   for (const name of new Set(workflow.lanes.map((lane) => lane.harness))) {
     getHarnessAdapter(name);

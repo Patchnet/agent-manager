@@ -9,11 +9,34 @@ npm ci
 npm link
 agent-manager doctor
 agent-manager init --repo /path/to/repo --request "Describe the change" --harnesses claude,codex
+# Complete workflow.planning and agent-manager.context.md after reviewing the
+# work source, repository instructions, relevant code, and lane scopes.
 agent-manager validate /path/to/repo/agent-manager.yaml
 agent-manager run /path/to/repo/agent-manager.yaml --detach --json
 ```
 
 Always inspect generated lane scopes before launch.
+
+The invoking manager owns source check-in and close-out. Agent Manager remains
+source-neutral and does not require workers to query a ticket, planning, or
+session system. `init` creates a draft planning block with false attestations.
+Before validation, record the authoritative source and plan references, the
+reviewed repository paths and instruction files, and the full reviewed base SHA.
+Set the attestations true only after completing those checks.
+The workflow schema accepts this draft structure; `validate` and `run` enforce
+launch readiness and require all four attestations to be true.
+
+Validation and launch fail closed when planning is missing or incomplete, or
+when `reviewed_base_sha` differs from the commit resolved by `base_ref`. The
+shared context file must be a relative, non-empty file inside the target repo.
+Launch copies it to the private run directory, records its SHA-256 digest, and
+injects the same frozen contents into every worker prompt. Resume and integration
+continue to use that frozen copy.
+
+Workflows may define up to five lanes. `max_concurrency` defaults to three and
+controls how many workers are active at once; other lanes remain visibly
+queued. Workflow validation rejects overlapping write scopes before launch.
+Use one writable owner per path.
 
 ## Detach is mandatory from a host chat
 
@@ -21,7 +44,10 @@ Always inspect generated lane scopes before launch.
 agent-manager run <workflow.yaml> --detach --json
 ```
 
-The command validates the workflow, repository, base ref, harness names, and required binaries before reporting detach success. It returns a `runId`, telemetry path, supervisor log, and status command in milliseconds. A foreground run is for a dedicated terminal, not a chat turn.
+The command validates the workflow, planning evidence, repository, base ref,
+harness names, and required binaries before reporting detach success. It returns
+a `runId`, telemetry path, supervisor log, and status command in milliseconds.
+A foreground run is for a dedicated terminal, not a chat turn.
 
 ## Observe without blocking
 
@@ -60,7 +86,41 @@ Only an accepted Delivery Review can proceed to Ship Gate. Workers do not own co
 agent-manager integrate <runId>
 ```
 
-Integration snapshots successful lane worktrees and merges them into `am/<runId>/integrate` from the immutable base SHA recorded at launch. It does not push or merge to the target repository default branch. Conflicts are aborted and reported as a resumable escalation.
+Integration snapshots successful lane worktrees and merges them into
+`am/<runId>/integrate` from the immutable base SHA recorded at launch. Before
+merging, it blocks any file changed by multiple unordered lanes even when Git
+could merge that file cleanly. A `depends_on` chain explicitly approves
+sequential edits to the same file; the overlap is recorded as a Delivery Review
+risk. Configured `verification.commands` then run without a shell in the
+integration worktree. A merge conflict or failed verification becomes a
+resumable escalation. Integration does not push or merge to the target
+repository default branch.
+
+## Dependencies and ownership
+
+Use `depends_on` when a lane needs completed prerequisite output. Independent
+lanes still run in parallel. A dependent worktree receives snapshot commits
+from successful prerequisites before its worker starts. If a prerequisite asks
+for input, dependent lanes remain in `dependency-waiting` and start after the
+exact prerequisite session resumes successfully.
+
+Dependency ordering may also sequence two writable lanes over the same scope.
+This is the supported multi-writer case: the dependent starts from the
+prerequisite snapshot, and the resulting same-file overlap remains visible in
+Delivery Review.
+
+Scope exceptions remain single-writer:
+
+```yaml
+scope_overrides:
+  - path: src/ui/**
+    lanes: [platform, ui]
+    owner: ui
+    reason: The platform lane reads the UI contract; the UI lane owns edits.
+```
+
+The non-owner receives a read-only guardrail for the override path. A
+multi-writer exception is not supported.
 
 ## PR Manager after Ship Gate
 
@@ -132,7 +192,11 @@ Workflow claim modes:
 - `off`: do not claim. Useful for a single local operator.
 - `required`: fail if the claim cannot be recorded.
 
-The bundled registry defaults to `~/.agent-manager/claims`. Set `AGENT_MANAGER_CLAIM_BIN` to use another implementation.
+The bundled registry defaults to `~/.agent-manager/claims`. Claims are leased
+and renewed by the supervisor. An expired claim is recovered automatically only
+when its recorded local supervisor process is confirmed inactive; unverifiable
+remote or legacy claims remain blocking until explicit release. Set
+`AGENT_MANAGER_CLAIM_BIN` to use another implementation.
 
 ## Dangerous permissions
 

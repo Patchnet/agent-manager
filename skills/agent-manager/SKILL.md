@@ -35,7 +35,11 @@ themselves in one chat — that stays a normal focused session.
 
 ## Hard rules
 
-1. **Master Dev stays the human channel.** Workers never own the conversation.
+1. **Master Dev stays the human channel and owns source check-in.** Before launch,
+   the invoking manager reviews the source references, repository instructions,
+   relevant code, and lane scope. Record that evidence in `workflow.planning`.
+   Agent Manager is source-neutral: workers do not query the planning system and
+   receive one frozen context packet from the manager.
 2. **Never await a full `run`.** Always use `run <workflow> --detach`. Capture
    `runId` from stdout, post the **Run board**, then arm **watch-signal**. A
    foreground / long-blocking await on `run` freezes the Master Dev chat turn
@@ -94,7 +98,10 @@ parent that contains the `agent-manager` folder).
 
 ## Operator flow (Master Dev)
 
-1. **Clarify** target repo + lane scopes + prompts (or confirm a workflow file).
+1. **Check in and plan** - review the authoritative work source, target-repo
+   instructions, relevant code, base commit, lane scopes, and shared context.
+   Complete `workflow.planning`; `validate` and `run` fail closed if it is
+   missing, incomplete, or stale.
 2. **Run detached** — `agent-manager run <workflow> --detach`. Read `runId` /
    `telemetry` from stdout (exits immediately). **Do not** await a non-detach run.
 3. **Report** immediately with **Run board** template ([reporting.md](./reporting.md)).
@@ -176,6 +183,7 @@ Runs root defaults to `~/.agent-manager/runs` (`AGENT_MANAGER_RUNS_ROOT`).
 | `<runs>/<runId>/status.json` | Source of truth for live state |
 | `<runs>/<runId>/events.jsonl` | Host-neutral state-change stream |
 | `<runs>/<runId>/report.md` | End-of-run synthesis for Master |
+| `<runs>/<runId>/planning-context.md` | Private frozen context packet shared by every lane |
 | `<runs>/<runId>/supervisor.log` | Detached supervisor stdout/stderr |
 | `<runs>/<runId>/ship/` | Private ship handoff, supervisor log, and summary |
 | `<runs>/<runId>/<lane>/stdout.log` | Harness stream (debug) |
@@ -183,7 +191,8 @@ Runs root defaults to `~/.agent-manager/runs` (`AGENT_MANAGER_RUNS_ROOT`).
 | `<runs>/<runId>/<lane>/wt/` | Lane worktree (code changes) |
 
 `status.json` fields used in boards: `runId`, `state`, `repo`, `target_dev_flow`,
-`startedAt`, `updatedAt`, `lanes[]` (`id`, `harness`, `state`, `branch`, `scope`,
+`startedAt`, `updatedAt`, `maxConcurrency`, `baseCommit`, `planning`, `lanes[]` (`id`,
+`harness`, `state`, `branch`, `scope`, `readOnly`, `dependsOn`, `waitingFor`,
 `elapsedSec`, `lastActivity`, `exitCode`, `needsInput`, `worktree`, `logPath`).
 Lanes also record `sessionId`, `endedAt`, changed files, guardrail
 violations, and claim state. Runs record terminal `endedAt` and optional feed health.

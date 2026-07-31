@@ -1,0 +1,58 @@
+# Five scoped lanes with three active workers at a time.
+# Review every scope and prompt before using this as a real workflow.
+repo: agent-manager
+harness_default: codex
+claim_mode: required
+max_concurrency: 3
+integrate: true
+
+policy:
+  allow_commit: false
+  allow_pr: false
+  permission_mode: workspace-write
+
+verification:
+  commands:
+    - command: npm
+      args: [test]
+planning:
+  source_refs: [replace-with-source-reference]
+  plan_ref: replace-with-approved-plan-reference
+  context_file: examples/agent-manager.context.md
+  reviewed_base_sha: "0000000000000000000000000000000000000000"
+  verified_by: replace-with-manager-agent
+  verified_at: 2026-01-01T00:00:00Z
+  reviewed_paths: [src/**, test/**, docs/**, examples/**, schemas/**]
+  repository_instruction_refs: [AGENTS.md]
+  attestations:
+    source_reviewed: true
+    repository_instructions_reviewed: true
+    relevant_code_reviewed: true
+    scope_verified: true
+
+lanes:
+  - id: implementation
+    scope:
+      - src/**
+    prompt: Implement the approved source changes. Do not modify tests or documentation.
+
+  - id: tests
+    depends_on: [implementation]
+    scope:
+      - test/**
+    prompt: Add focused tests against the completed implementation.
+
+  - id: documentation
+    scope:
+      - docs/**
+    prompt: Update operator documentation for the approved behavior.
+
+  - id: examples
+    scope:
+      - examples/**
+    prompt: Update checked-in examples without including private environment details.
+
+  - id: schema
+    scope:
+      - schemas/**
+    prompt: Update the public workflow schema for the approved behavior.

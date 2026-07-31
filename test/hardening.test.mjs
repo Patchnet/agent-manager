@@ -22,9 +22,9 @@ test.after(() => rmSync(root, { recursive: true, force: true }));
 const { loadWorkflow, assertDangerousPermissionApproval } = await import("../src/workflow.mjs?hardening");
 const { runDir } = await import("../src/paths.mjs?hardening");
 const { currentHead, validateLaneGuardrails } = await import("../src/guardrails.mjs?hardening");
-const { buildHarnessEnv } = await import("../src/environment.mjs?hardening");
+const { buildHarnessEnv, buildVerificationEnv } = await import("../src/environment.mjs?hardening");
 const { getHarnessAdapter } = await import("../src/harness/index.mjs?hardening");
-const { isTerminalState, readEvents, writeStatus } = await import("../src/status.mjs?hardening");
+const { isTerminalState, readEvents, readStatus, writeStatus } = await import("../src/status.mjs?hardening");
 const { prepareReply, resumeLane } = await import("../src/reply.mjs?hardening");
 
 function workflow(name, value) {
@@ -81,6 +81,26 @@ test("worker environment is allowlisted and fake harness requires test process o
   else process.env.AGENT_MANAGER_TEST_MODE = previous;
 });
 
+test("integrated verification excludes provider credentials unless explicitly allowlisted", () => {
+  const source = {
+    PATH: "bin",
+    HOME: "home",
+    OPENAI_API_KEY: "secret",
+    SAFE_TEST_VALUE: "visible",
+  };
+  assert.deepEqual(buildVerificationEnv([], source), {
+    PATH: "bin",
+    HOME: "home",
+    AGENT_MANAGER_VERIFICATION: "1",
+  });
+  assert.deepEqual(buildVerificationEnv(["SAFE_TEST_VALUE"], source), {
+    PATH: "bin",
+    HOME: "home",
+    SAFE_TEST_VALUE: "visible",
+    AGENT_MANAGER_VERIFICATION: "1",
+  });
+});
+
 test("blocked is resumable, and status transitions produce JSONL events", () => {
   const runId = "run-event-test";
   writeStatus(runId, { runId, state: "running", repo: "repo", startedAt: new Date().toISOString(), lanes: [{ id: "lane", harness: "claude", state: "running" }] });
@@ -93,6 +113,22 @@ test("blocked is resumable, and status transitions produce JSONL events", () => 
   assert.equal(events[1].schema, "agent-manager.event.v1");
   assert.match(readFileSync(join(runsRoot, runId, "events.jsonl"), "utf8"), /"state":"blocked"/);
 });
+
+test("stale supervisors cannot overwrite a resumed lane attempt", () => {
+  const runId = "run-attempt-race-test";
+  const shared = { runId, state: "running", repo: "repo", startedAt: new Date().toISOString() };
+  writeStatus(runId, {
+    ...shared,
+    lanes: [{ id: "lane", harness: "fake", state: "running", attempt: 2 }],
+  });
+  writeStatus(runId, {
+    ...shared,
+    lanes: [{ id: "lane", harness: "fake", state: "blocked", attempt: 1 }],
+  });
+  assert.equal(readStatus(runId).lanes[0].attempt, 2);
+  assert.equal(readStatus(runId).lanes[0].state, "running");
+});
+
 test("reply and resume reject forged paths outside the run", async () => {
   const runId = "run-reply-path-test";
   writeStatus(runId, {

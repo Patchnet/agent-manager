@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { matchesScope } from "./scope.mjs";
+
+export { matchesScope } from "./scope.mjs";
 
 function git(cwd, args) {
   const result = spawnSync("git", ["-C", cwd, ...args], {
@@ -49,11 +52,21 @@ export function inspectLaneChanges(worktree, baseCommit = "HEAD") {
   ].map(normalizePath))].sort();
 }
 
-export function validateLaneGuardrails({ worktree, scope, baseCommit, policy = {} }) {
+export function validateLaneGuardrails({
+  worktree,
+  scope,
+  readOnlyScope = [],
+  baseCommit,
+  policy = {},
+}) {
   if (!baseCommit) throw new Error("guardrail inspection requires baseCommit");
   const changedFiles = inspectLaneChanges(worktree, baseCommit);
   const patterns = parseScope(scope);
   const scopeViolations = changedFiles.filter((file) => !patterns.some((pattern) => matchesScope(file, pattern)));
+  const readOnlyPatterns = parseScope(readOnlyScope);
+  const readOnlyViolations = changedFiles.filter((file) =>
+    readOnlyPatterns.some((pattern) => matchesScope(file, pattern)),
+  );
   const commits = git(worktree, ["rev-list", "--count", baseCommit + "..HEAD"]);
   if (!commits.ok) throw new Error(commits.stderr || "unable to inspect worker commits");
   const commitCount = Number.parseInt(commits.stdout || "0", 10);
@@ -65,9 +78,13 @@ export function validateLaneGuardrails({ worktree, scope, baseCommit, policy = {
     policyViolations.push("worker created " + commitCount + " commit(s) while allow_commit=false");
   }
   return {
-    ok: scopeViolations.length === 0 && policyViolations.length === 0,
+    ok:
+      scopeViolations.length === 0 &&
+      readOnlyViolations.length === 0 &&
+      policyViolations.length === 0,
     changedFiles,
     scopeViolations,
+    readOnlyViolations,
     commitCount,
     policyViolations,
   };
@@ -146,24 +163,6 @@ function isMutatingGitTag(segment) {
     .replace(/(?:^|\s)--?[a-z][\w-]*/gi, " ")
     .trim();
   return positional.length > 0;
-}
-
-export function matchesScope(file, rawPattern) {
-  const value = normalizePath(file);
-  const pattern = normalizePath(rawPattern).replace(/^\.\//, "");
-  if (!pattern) return false;
-  if (!/[?*]/.test(pattern)) {
-    return value === pattern || value.startsWith(pattern.replace(/\/$/, "") + "/");
-  }
-  const escaped = pattern.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
-  const regex = escaped
-    .replace(/\*\*\//g, "::DOUBLE_STAR_SLASH::")
-    .replace(/\*\*/g, "::DOUBLE_STAR::")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\?/g, "[^/]")
-    .replace(/::DOUBLE_STAR_SLASH::/g, "(?:.*/)?")
-    .replace(/::DOUBLE_STAR::/g, ".*");
-  return new RegExp("^" + regex + "$").test(value);
 }
 
 function parseScope(scope) {

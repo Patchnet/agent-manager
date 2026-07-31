@@ -11,6 +11,20 @@ policy:
   permission_mode: acceptEdits
   poll_interval_ms: 100
   stall_timeout_sec: 30
+planning:
+  source_refs: [replace-with-source-reference]
+  plan_ref: replace-with-approved-plan-reference
+  context_file: examples/agent-manager.context.md
+  reviewed_base_sha: "0000000000000000000000000000000000000000"
+  verified_by: replace-with-manager-agent
+  verified_at: 2026-01-01T00:00:00Z
+  reviewed_paths: [examples/**]
+  repository_instruction_refs: [AGENTS.md]
+  attestations:
+    source_reviewed: true
+    repository_instructions_reviewed: true
+    relevant_code_reviewed: true
+    scope_verified: true
 lanes:
   - id: ship-smoke
     scope: ".ship-smoke-output.txt"

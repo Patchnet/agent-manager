@@ -8,6 +8,25 @@
     "runId": { "type": "string" }, "state": { "enum": ["running", "shipping", "blocked", "done", "failed", "cancelled"] },
     "repo": { "type": "string" }, "startedAt": { "type": "string", "format": "date-time" },
     "endedAt": { "type": ["string", "null"] }, "lanes": { "type": "array" },
+    "planning": {
+      "type": "object",
+      "required": ["state", "sourceRefs", "planRef", "contextFile", "contextDigest", "reviewedBaseSha", "actualBaseSha", "verifiedBy", "verifiedAt", "reviewedPaths", "repositoryInstructionRefs", "attestations"],
+      "properties": {
+        "state": { "const": "verified" },
+        "sourceRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "planRef": { "type": "string" },
+        "contextFile": { "type": "string" },
+        "contextDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "contextSnapshot": { "type": "string" },
+        "reviewedBaseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+        "actualBaseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+        "verifiedBy": { "type": "string" },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "reviewedPaths": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "repositoryInstructionRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "attestations": { "type": "object" }
+      }
+    },
     "ship": {
       "type": "object",
       "required": ["schema", "state", "phase", "approve", "branch", "base", "remote"],

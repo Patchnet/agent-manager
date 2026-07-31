@@ -65,6 +65,8 @@ side-terminal cooking view (`status --watch` aliases it).
 ```yaml
 repo: <folder-under-DEV_ROOT>
 harness_default: claude
+claim_mode: required
+max_concurrency: 3        # 1..5; extra lanes remain queued
 target_dev_flow: simple   # optional override; else Version.md; else simple
 integrate: true           # optional — fold lanes into am/<runId>/integrate when done
 feed:
@@ -76,14 +78,44 @@ policy:
   allow_pr: false
   stall_timeout_sec: 900
   permission_mode: acceptEdits
+planning:
+  source_refs: [<work-source-reference>]
+  plan_ref: <approved-plan-reference>
+  context_file: agent-manager.context.md
+  reviewed_base_sha: <full-git-commit-sha>
+  verified_by: <manager-agent>
+  verified_at: <ISO-date-time>
+  reviewed_paths: [src/**, test/**]
+  repository_instruction_refs: [AGENTS.md]
+  attestations:
+    source_reviewed: true
+    repository_instructions_reviewed: true
+    relevant_code_reviewed: true
+    scope_verified: true
 lanes:
   - id: <lane>
+    depends_on: []        # optional lane ids that must finish first
     scope: "path/or/glob/**"
     prompt: |
       …task…
 ```
 
-Max **3** lanes per run (coordination policy).
+Max **5** lanes per run. Active concurrency defaults to three and is bounded by
+`max_concurrency`. Remaining lanes report `queued`; lanes waiting on unfinished
+prerequisites report `dependency-waiting`.
+
+`planning` is a launch attestation owned by the invoking manager. `validate`
+and `run` require every attestation and require `reviewed_base_sha` to equal the
+commit resolved by `base_ref`. The context file must be a non-empty relative
+path inside the target repo. At launch it is copied to the private run directory,
+hashed, and injected identically into every lane prompt. Resume and integration
+use the frozen copy, not a later edit to the source file.
+
+Write scopes are validated pairwise before claims or worktrees are created.
+Unapproved overlap fails closed. `scope_overrides` may name exactly one writable
+owner and make the overlapping path read-only for participating non-owners.
+Lanes ordered through `depends_on` may write the same scope sequentially. Their
+actual same-file changes are recorded as approved sequential overlap evidence.
 
 When `integrate: true` and all coding lanes exit `done`, the supervisor snapshots
 dirty lane worktrees, merges them into `am/<runId>/integrate` from the recorded immutable base SHA,
@@ -91,6 +123,12 @@ and writes `integrate/summary.json` + `integrate/README.md`. Conflicts →
 `needs-input` / run `blocked`. Integrate never pushes, opens a PR, stamps
 versions, or merges to `main`. After Delivery Review and Ship Gate, PR Manager
 owns those approved operations through the detached `ship` phase.
+
+Before a merge, integration blocks any file changed by multiple unordered
+lanes even if Git could merge it cleanly. Ordered same-file edits remain visible
+as Delivery Review risk evidence. After merging, configured
+`verification.commands` run without a shell in the integration worktree; a
+failed command blocks delivery and is included in Delivery Review evidence.
 
 ## CLI notes (Windows)
 
@@ -108,6 +146,14 @@ owns those approved operations through the detached `ship` phase.
   "repo": "my-repo",
   "workflow": "/abs/path/workflow.yaml",
   "target_dev_flow": "simple",
+  "maxConcurrency": 3,
+  "baseCommit": "immutable SHA",
+  "planning": {
+    "state": "verified",
+    "planRef": "approved plan reference",
+    "reviewedBaseSha": "immutable SHA",
+    "contextDigest": "SHA-256"
+  },
   "startedAt": "ISO",
   "updatedAt": "ISO",
   "lanes": [
@@ -117,7 +163,10 @@ owns those approved operations through the detached `ship` phase.
       "repo": "…",
       "branch": "am/<runId>/<lane>",
       "scope": "BUILD_PLAN.md",
-      "state": "running",
+      "readOnly": "",
+      "dependsOn": [],
+      "waitingFor": [],
+      "state": "queued|dependency-waiting|running|blocked|done|failed|cancelled",
       "pid": 123,
       "startedAt": "ISO",
       "elapsedSec": 42,
@@ -133,6 +182,8 @@ owns those approved operations through the detached `ship` phase.
     "branch": "am/<runId>/integrate",
     "worktree": "…/runs/…/integrate/wt",
     "merged": ["lane-a", "lane-b"],
+    "changedFileOverlaps": [],
+    "verification": { "state": "passed|failed|not-configured", "commands": [] },
     "shipGateHint": "…"
   },
   "ship": {
@@ -160,6 +211,8 @@ owns those approved operations through the detached `ship` phase.
 - `reply` clears the prior escalation, resumes the stored session, and runs
   guardrails again before the lane becomes `done`.
 - Terminal lanes release advisory claims. Blocked lanes record retained claims.
+- Claim leases renew while the supervisor runs. Expired local claims are
+  recoverable only after the recorded supervisor process is confirmed inactive.
 - `cleanup` preserves top-level telemetry while removing abandoned worktrees/logs.
 - `integrate <runId>` invokes the same integration path used by `integrate: true`.
 
@@ -167,7 +220,10 @@ owns those approved operations through the detached `ship` phase.
 
 Workers run with cwd = lane worktree under the **target repo**. They load that
 repo’s `CLAUDE.md` / skills / MCP like a normal in-repo session. Do not pass
-`--bare`.
+`--bare`. Because lanes are Git worktrees, tracked repository instructions are
+present automatically. Gitignored or otherwise untracked local instruction files
+are not copied into new worktrees; include required guidance in the shared
+planning context or make it available through the target repo's normal tooling.
 
 ## Harnesses
 

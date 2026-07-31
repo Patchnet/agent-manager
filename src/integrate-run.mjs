@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { integrateLanes } from "./integrate.mjs";
 import { runDir } from "./paths.mjs";
@@ -18,7 +19,16 @@ export function integrateRun(runId) {
 
   const workflow = loadWorkflow(join(runDir(runId), "workflow.yaml"), {
     repoOverride: status.repoRoot || status.repo,
+    planningContextOverride: existsSync(join(runDir(runId), "planning-context.md"))
+      ? join(runDir(runId), "planning-context.md")
+      : null,
   });
+  if (
+    status.planning?.contextDigest &&
+    workflow.planning?.context_digest !== status.planning.contextDigest
+  ) {
+    throw new Error("frozen planning context digest does not match recorded run evidence");
+  }
   status.integrate = { state: "running" };
   writeStatus(runId, status);
   try {
@@ -28,7 +38,9 @@ export function integrateRun(runId) {
     status.integrate = { state: "failed", error: String(error?.message || error) };
     status.state = "failed";
   }
-  status.endedAt ||= new Date().toISOString();
+  status.endedAt = status.state === "blocked"
+    ? null
+    : status.endedAt || new Date().toISOString();
   const saved = writeStatus(runId, status);
   writeReport(runId, saved);
   return saved;

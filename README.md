@@ -7,8 +7,13 @@ A detached CLI supervisor for running Claude Code and Codex CLI in parallel Git 
 - One isolated Git worktree per lane
 - Claude and Codex harnesses behind one workflow format
 - Detached launch with authoritative `status.json`
+- Fail-closed manager planning attestation with one frozen shared context packet
 - Resumable `needs_input` and same-session `reply`
 - Changed-file, scope, commit, and pull-request guardrails
+- Up to five lanes with configurable bounded concurrency
+- Fail-closed write-scope overlap validation and single-owner exceptions
+- Dependency-aware lane scheduling from completed prerequisite branches
+- Cross-lane changed-file checks and configured post-integration verification
 - Host-neutral JSONL events and wake signals
 - Evidence-backed Delivery Review before Ship Gate
 - Optional integration branch without automatic merge
@@ -62,11 +67,80 @@ AGENT_MANAGER_TEST_MODE=1 agent-manager run examples/fake-demo.yaml --detach --j
 agent-manager init --repo /path/to/repo \
   --request "Implement the feature and update its documentation" \
   --harnesses claude,codex
+# Review the source, repository instructions, relevant code, and generated scopes.
+# Complete workflow.planning and agent-manager.context.md before validation.
 agent-manager validate /path/to/repo/agent-manager.yaml
 agent-manager run /path/to/repo/agent-manager.yaml --detach --json
 ```
 
-Review the generated scopes before launch. The initializer produces at most three independent lanes and never enables commits, pull requests, integration, or dangerous permission bypass.
+Review the generated scopes and complete the draft `planning` block before
+launch. The initializer records the current full Git SHA, creates
+`agent-manager.context.md`, and leaves all planning attestations false. The
+invoking manager must supply the source and plan references, review repository
+instructions and relevant code, then set the four attestations true. Validation
+fails if planning is incomplete or if the reviewed SHA no longer matches
+`base_ref`. Agent Manager does not query the source system itself.
+
+The initializer produces up to five
+independent lanes, defaults active concurrency to three, and never enables
+commits, pull requests, integration, or dangerous permission bypass.
+
+Lane count and active concurrency are separate:
+
+```yaml
+repo: .
+claim_mode: required
+max_concurrency: 3
+integrate: true
+
+planning:
+  source_refs: [work-item-reference]
+  plan_ref: approved-plan-reference
+  context_file: agent-manager.context.md
+  reviewed_base_sha: 0123456789abcdef0123456789abcdef01234567
+  verified_by: manager-agent
+  verified_at: 2026-01-01T12:00:00Z
+  reviewed_paths: [src/**, test/**]
+  repository_instruction_refs: [AGENTS.md]
+  attestations:
+    source_reviewed: true
+    repository_instructions_reviewed: true
+    relevant_code_reviewed: true
+    scope_verified: true
+
+verification:
+  commands:
+    - command: npm
+      args: [test]
+
+lanes:
+  - id: contracts
+    scope: src/contracts/**
+    prompt: Implement the shared contracts.
+
+  - id: api
+    depends_on: [contracts]
+    scope: src/api/**
+    prompt: Implement the API against the completed contracts.
+
+  - id: ui
+    depends_on: [contracts]
+    scope: src/ui/**
+    prompt: Implement the UI against the completed contracts.
+```
+
+Write scopes must be provably disjoint. When one broad scope must include a
+narrow path owned by another lane, use `scope_overrides` to designate exactly
+one writer. Agent Manager adds the path to every non-owner lane's read-only
+guardrail. Ambiguous or unapproved overlap stops validation before claims or
+worktrees are created. A `depends_on` chain can instead sequence writable
+ownership of the same path; any actual same-file edit is retained as Delivery
+Review risk evidence.
+
+At launch, the context file is copied into the private run directory and its
+SHA-256 digest is recorded in status and review evidence. Every lane receives
+that exact packet. Resume and integration use the frozen copy, so later edits
+to the original context file cannot change an active run.
 
 ## Cursor cockpit
 
@@ -157,7 +231,11 @@ does not create GitHub Releases.
 | `AGENT_MANAGER_ENV_ALLOWLIST` | empty | Extra comma-separated variables passed to workers |
 | `AGENT_MANAGER_ALLOW_DANGEROUS_PERMISSIONS` | unset | Invocation-level dangerous-mode confirmation |
 
-Workflow claim modes are `auto`, `off`, and `required`. `auto` uses the bundled registry but treats registry failure as advisory; `required` fails closed.
+Workflow claim modes are `auto`, `off`, and `required`. `auto` uses the bundled
+registry but treats registry failure as advisory; `required` fails closed.
+Required admission is all-or-nothing. Leases renew while the supervisor is
+active, and an expired claim is recovered only after its recorded local
+supervisor process is confirmed inactive.
 
 ## Security and privacy
 

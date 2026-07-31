@@ -7,6 +7,14 @@ const BASE_ENV = [
   "OPENAI_API_KEY", "CODEX_MODEL",
 ];
 
+const VERIFICATION_ENV = [
+  "PATH", "Path", "PATHEXT", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+  "TEMP", "TMP", "TMPDIR", "SHELL", "COMSPEC", "ComSpec", "SYSTEMROOT", "SystemRoot",
+  "WINDIR", "SystemDrive", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR",
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS", "CI",
+];
+
 export function buildHarnessEnv(extraNames = [], source = process.env) {
   const requested = String(source.AGENT_MANAGER_ENV_ALLOWLIST || "")
     .split(",")
@@ -23,4 +31,14 @@ export function buildHarnessEnv(extraNames = [], source = process.env) {
 
 export function visibleHarnessEnvNames(extraNames = [], source = process.env) {
   return Object.keys(buildHarnessEnv(extraNames, source)).sort();
+}
+
+export function buildVerificationEnv(extraNames = [], source = process.env) {
+  const names = new Set([...VERIFICATION_ENV, ...extraNames]);
+  const env = {};
+  for (const name of names) {
+    if (typeof source[name] === "string") env[name] = source[name];
+  }
+  env.AGENT_MANAGER_VERIFICATION = "1";
+  return env;
 }

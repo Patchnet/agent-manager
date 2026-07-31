@@ -21,11 +21,16 @@ export async function cancelRun(runId, { removeWorktrees = false } = {}) {
   writePrivateFile(join(dir, "cancelled.json"), JSON.stringify({ at: cancelledAt }, null, 2) + "\n", "utf8");
 
   for (const lane of status.lanes || []) {
-    if (lane.branch) {
+    if (
+      lane.branch &&
+      !["released", "skipped", "advisory-failed", "release-failed"].includes(lane.claim?.state)
+    ) {
       const released = releaseLane({ repo: status.repo, branch: lane.branch, mode: status.claimMode });
       lane.claim = { state: released.ok ? "released" : "release-failed", at: cancelledAt };
     }
-    if (["running", "queued", "blocked"].includes(lane.state)) lane.state = "cancelled";
+    if (["running", "queued", "dependency-waiting", "blocked"].includes(lane.state)) {
+      lane.state = "cancelled";
+    }
     lane.pid = null;
     lane.endedAt ||= cancelledAt;
   }

@@ -3,8 +3,12 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { addWorktree } from "./worktree.mjs";
 import { claimLane, releaseLane } from "./claim.mjs";
+import { snapshotLane } from "./lane-snapshot.mjs";
 import { runDir } from "./paths.mjs";
 import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
+import { findChangedFileOverlaps } from "./scope.mjs";
+import { runVerification } from "./verification.mjs";
+import { lanesAreSequential } from "./workflow.mjs";
 
 function git(cwd, args) {
   const r = spawnSync("git", ["-C", cwd, ...args], {
@@ -62,6 +66,46 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     };
   }
 
+  const allChangedFileOverlaps = findChangedFileOverlaps(doneLanes);
+  const approvedChangedFileOverlaps = allChangedFileOverlaps.filter((item) => {
+    for (let left = 0; left < item.lanes.length; left += 1) {
+      for (let right = left + 1; right < item.lanes.length; right += 1) {
+        if (!lanesAreSequential(workflow.lanes, item.lanes[left], item.lanes[right])) {
+          return false;
+        }
+      }
+    }
+    return true;
+  });
+  const changedFileOverlaps = allChangedFileOverlaps.filter(
+    (item) => !approvedChangedFileOverlaps.includes(item),
+  );
+  if (changedFileOverlaps.length) {
+    const needs = {
+      type: "blocked",
+      prompt:
+        "Integration stopped because multiple lanes changed the same file: " +
+        changedFileOverlaps
+          .map((item) => `${item.file} (${item.lanes.join(", ")})`)
+          .join("; "),
+      blocking: true,
+      changedFileOverlaps,
+      approvedChangedFileOverlaps,
+    };
+    writePrivateFile(join(integrateDir, "needs-input.json"), JSON.stringify(needs, null, 2));
+    return {
+      state: "blocked",
+      branch,
+      worktree: null,
+      merged: [],
+      changedFileOverlaps,
+      approvedChangedFileOverlaps,
+      needsInput: needs,
+      error: needs.prompt,
+      claim: { state: "not-acquired" },
+    };
+  }
+
   const scopes = [
     ...new Set(
       doneLanes.flatMap((l) =>
@@ -73,21 +117,33 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     ),
   ];
 
-  const baseShas = [...new Set(doneLanes.map((lane) => lane.baseCommit).filter(Boolean))];
+  const baseShas = [
+    ...new Set(doneLanes.map((lane) => lane.runBaseCommit || lane.baseCommit).filter(Boolean)),
+  ];
   if (baseShas.length !== 1) {
     throw new Error("lanes do not share one immutable base commit");
   }
   const baseSha = baseShas[0];
 
-  claimLane({
+  const integrationClaim = claimLane({
     repo: workflow.repo,
     branch,
     lane: "integrate",
     scope: scopes,
     agent: "agt-agent-manager-integrate",
+    group: runId,
     mode: workflow.claim_mode,
   });
   const finish = (result) => {
+    if (integrationClaim.skipped) {
+      return { ...result, claim: { state: "skipped" } };
+    }
+    if (!integrationClaim.ok) {
+      return {
+        ...result,
+        claim: { state: "advisory-failed", error: integrationClaim.error },
+      };
+    }
     const released = releaseLane({ repo: workflow.repo, branch, mode: workflow.claim_mode });
     return {
       ...result,
@@ -108,7 +164,7 @@ export function integrateLanes({ workflow, runId, laneStates }) {
 
   const merged = [];
   for (const lane of doneLanes) {
-    const snap = ensureLaneCommitted(lane.worktree, lane.id);
+    const snap = snapshotLane(lane.worktree, lane.id);
     if (!snap.ok) {
       const needs = {
         type: "blocked",
@@ -122,6 +178,7 @@ export function integrateLanes({ workflow, runId, laneStates }) {
         worktree: wt,
         needsInput: needs,
         merged,
+        approvedChangedFileOverlaps,
         error: snap.error,
       });
     }
@@ -144,6 +201,7 @@ export function integrateLanes({ workflow, runId, laneStates }) {
         worktree: wt,
         needsInput: needs,
         merged,
+        approvedChangedFileOverlaps,
         error: needs.prompt,
       });
     }
@@ -152,6 +210,34 @@ export function integrateLanes({ workflow, runId, laneStates }) {
 
   const log = git(wt, ["log", "--oneline", baseSha + "..HEAD"]);
   const diffStat = git(wt, ["diff", "--stat", baseSha + "...HEAD"]);
+  const verification = runVerification(wt, workflow.verification, {
+    envAllowlist: workflow.env_allowlist,
+  });
+  writePrivateFile(
+    join(integrateDir, "verification.json"),
+    JSON.stringify(verification, null, 2) + "\n",
+  );
+  if (!verification.passed) {
+    const needs = {
+      type: "blocked",
+      prompt: verification.error,
+      blocking: true,
+      verification,
+    };
+    writePrivateFile(join(integrateDir, "needs-input.json"), JSON.stringify(needs, null, 2));
+    return finish({
+      state: "blocked",
+      branch,
+      worktree: wt,
+      merged,
+      baseSha,
+      changedFileOverlaps,
+      approvedChangedFileOverlaps,
+      verification,
+      needsInput: needs,
+      error: needs.prompt,
+    });
+  }
 
   const summary = {
     state: "ready",
@@ -162,6 +248,9 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     remote: workflow.remote,
     commits: log.ok ? log.stdout.split("\n").filter(Boolean) : [],
     diffStat: diffStat.ok ? diffStat.stdout : "",
+    changedFileOverlaps,
+    approvedChangedFileOverlaps,
+    verification,
     shipGateHint:
       "Present Ship Gate for this integrate branch. On approval, detach PR Manager to push, open the PR, and merge explicitly.",
   };
@@ -191,7 +280,9 @@ export function integrateLanes({ workflow, runId, laneStates }) {
 
   return finish(summary);
   } catch (error) {
-    releaseLane({ repo: workflow.repo, branch, mode: workflow.claim_mode });
+    if (integrationClaim.ok && !integrationClaim.skipped) {
+      releaseLane({ repo: workflow.repo, branch, mode: workflow.claim_mode });
+    }
     throw error;
   }
 }

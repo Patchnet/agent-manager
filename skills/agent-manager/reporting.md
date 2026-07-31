@@ -51,6 +51,8 @@ Post once when a run starts, then again on meaningful updates
 | **state** | `running \| shipping \| blocked \| done \| failed \| cancelled` |
 | **target_dev_flow** | `simple \| formal` |
 | **workflow** | `<path>` |
+| **plan** | `<planning.planRef>` |
+| **planning context** | `sha256:<planning.contextDigest>` |
 | **started** | `<ISO or local>` |
 | **updated** | `<from status.json updatedAt>` |
 | **telemetry** | `$AGENT_MANAGER_RUNS_ROOT/<runId>/status.json` |
@@ -145,6 +147,8 @@ or close.
 Workers exiting 0 is **not** acceptance. Master Dev must:
 
 1. Re-read the **original proposal** (decision, followup, workflow prompts, checklist).
+   Confirm it matches the recorded planning reference, reviewed base, and frozen
+   context digest.
 2. **Verify** each deliverable in the worktrees against that proposal (not against
    lane self-summary alone). Cross-check coupled artifacts (schema ↔ sample ↔
    docs ↔ UI).
@@ -177,6 +181,7 @@ sample ≠ live Zod). Call that out explicitly under Gaps.
 | **correction_used** | `no \| revise \| relaunch` (Pass 2 must show which; Pass 1 usually `no`) |
 | **repo** | `<repo>` |
 | **proposal** | `<decision id / follow-up id / workflow path / checklist>` |
+| **planning context** | `sha256:<status.planning.contextDigest>` |
 | **reviewed** | `<ISO or local>` |
 | **verdict** | Pass 1: `accept \| accept-with-notes \| revise \| relaunch \| reject` · Pass 2: `accept \| accept-with-notes \| reject` only |
 

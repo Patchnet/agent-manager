@@ -13,6 +13,7 @@ import { installCursor } from "../src/install.mjs";
 import { integrateRun } from "../src/integrate-run.mjs";
 import { assertSafeSlug, runDir } from "../src/paths.mjs";
 import { preflightWorkflow, validateRepository } from "../src/preflight.mjs";
+import { assertPlanningReady } from "../src/planning.mjs";
 import { prepareReply, resumeLane } from "../src/reply.mjs";
 import { buildDeliveryReview } from "../src/review.mjs";
 import { newRunId, runWorkflow } from "../src/run.mjs";
@@ -123,8 +124,8 @@ function flagValue(name, source = args) {
 }
 
 function parseRunFlags(rest) {
-  const flags = { detach: false, json: false, runId: null, repo: null, dangerous: false, file: null };
-  const valued = new Set(["--run-id", "--repo"]);
+  const flags = { detach: false, json: false, runId: null, repo: null, dangerous: false, expectedPlanningDigest: null, file: null };
+  const valued = new Set(["--run-id", "--repo", "--expected-planning-digest"]);
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     if (arg === "--detach") flags.detach = true;
@@ -134,7 +135,8 @@ function parseRunFlags(rest) {
       const value = rest[++index];
       if (!value) throw new Error(`${arg} requires a value`);
       if (arg === "--run-id") flags.runId = value;
-      else flags.repo = value;
+      else if (arg === "--repo") flags.repo = value;
+      else flags.expectedPlanningDigest = value;
     } else if (arg.startsWith("-")) throw new Error("unknown run flag: " + arg);
     else if (flags.file) throw new Error("unexpected argument: " + arg);
     else flags.file = arg;
@@ -181,6 +183,7 @@ function detachRun(flags) {
   const childArgs = ["run", workflowPath, "--run-id", runId];
   if (flags.repo) childArgs.push("--repo", resolve(flags.repo));
   if (flags.dangerous) childArgs.push("--allow-dangerous-permissions");
+  childArgs.push("--expected-planning-digest", workflow.planning.context_digest);
   const child = spawnDetached(childArgs, logPath, flags.dangerous ? { AGENT_MANAGER_ALLOW_DANGEROUS_PERMISSIONS: "1" } : {});
   const payload = {
     runId, state: "detached", pid: child.pid,
@@ -271,7 +274,12 @@ async function main() {
     if (!flags.file) throw new Error("run requires <workflow.yaml>");
     if (!existsSync(resolve(flags.file))) throw new Error("workflow not found: " + resolve(flags.file));
     if (flags.detach) { detachRun(flags); return; }
-    const result = await runWorkflow(resolve(flags.file), { runId: flags.runId || undefined, repoOverride: flags.repo, allowDangerousPermissions: flags.dangerous });
+    const result = await runWorkflow(resolve(flags.file), {
+      runId: flags.runId || undefined,
+      repoOverride: flags.repo,
+      allowDangerousPermissions: flags.dangerous,
+      expectedPlanningDigest: flags.expectedPlanningDigest,
+    });
     if (flags.json) console.log(JSON.stringify({ runId: result.runId, status: result.status }));
     return;
   }
@@ -282,7 +290,23 @@ async function main() {
     const workflow = loadWorkflow(resolve(file), { repoOverride: flagValue("--repo") });
     assertDangerousPermissionApproval(workflow, args.includes("--allow-dangerous-permissions"));
     validateRepository(workflow);
-    const payload = { schema: "agent-manager.validation.v1", ok: true, repo: workflow.repoRoot, lanes: workflow.lanes.map(({ id, harness, scope }) => ({ id, harness, scope })) };
+    const planning = assertPlanningReady(workflow);
+    const payload = {
+      schema: "agent-manager.validation.v1",
+      ok: true,
+      repo: workflow.repoRoot,
+      maxConcurrency: workflow.max_concurrency,
+      lanes: workflow.lanes.map(({
+        id,
+        harness,
+        scope,
+        read_only: readOnly,
+        depends_on: dependsOn,
+      }) => ({ id, harness, scope, readOnly, dependsOn })),
+      scopeOverrides: workflow.scope_overrides,
+      verificationCommands: workflow.verification.commands.length,
+      planning,
+    };
     console.log(args.includes("--json") ? JSON.stringify(payload) : `valid: ${file}\nrepo: ${payload.repo}\nlanes: ${payload.lanes.length}`);
     return;
   }
@@ -298,7 +322,12 @@ async function main() {
     const repo = resolve(flagValue("--repo") || process.cwd());
     const harnesses = (flagValue("--harnesses") || "claude,codex").split(",").map((value) => value.trim()).filter(Boolean);
     const result = initWorkflow({ repo, output: flagValue("--output") || "agent-manager.yaml", request: flagValue("--request") || "Implement the requested change", harnesses });
-    console.log(args.includes("--json") ? JSON.stringify(result) : `created: ${result.path}\nnext: agent-manager validate "${result.path}"`);
+    console.log(args.includes("--json") ? JSON.stringify(result) : [
+      `created: ${result.path}`,
+      `planning context: ${result.contextPath}`,
+      "next: review the repository and source, complete workflow.planning, then run:",
+      `agent-manager validate "${result.path}"`,
+    ].join("\n"));
     return;
   }
 

@@ -1,11 +1,17 @@
 ---
 enabled: true
-current: 1.2.1
+current: 1.3.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.3.0 - 2026-07-31
+
+Added five-lane orchestration with bounded concurrency, conflict-safe scopes
+and claims, dependency-aware integration, and manager-verified shared planning
+context.
 
 ## 1.2.1 - 2026-07-30
 

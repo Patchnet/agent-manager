@@ -13,7 +13,24 @@ export function writeReport(runId, status) {
     `- **started:** ${status.startedAt || "-"}`,
     `- **ended:** ${status.endedAt || "-"}`,
     `- **workflow:** ${status.workflow || "-"}`,
+    `- **immutable base:** ${status.baseCommit || status.initialRepo?.head || "-"}`,
+    `- **max concurrency:** ${status.maxConcurrency || "-"}`,
     `- **initial repo dirty:** ${status.initialRepo?.dirty ? "yes" : "no"}`,
+    "",
+    "## Planning preflight",
+    "",
+    `- **state:** ${status.planning?.state || "legacy/unrecorded"}`,
+    `- **plan:** ${status.planning?.planRef || "-"}`,
+    `- **source references:** ${status.planning?.sourceRefs?.join(", ") || "-"}`,
+    `- **reviewed base:** ${status.planning?.reviewedBaseSha || "-"}`,
+    `- **launch base:** ${status.planning?.actualBaseSha || "-"}`,
+    `- **context file:** ${status.planning?.contextFile || "-"}`,
+    `- **context SHA-256:** ${status.planning?.contextDigest || "-"}`,
+    `- **verified by:** ${status.planning?.verifiedBy || "-"}`,
+    `- **verified at:** ${status.planning?.verifiedAt || "-"}`,
+    `- **reviewed paths:** ${status.planning?.reviewedPaths?.join(", ") || "-"}`,
+    `- **repository instructions:** ${status.planning?.repositoryInstructionRefs?.join(", ") || "-"}`,
+    `- **attestations:** ${status.planning?.attestations ? Object.entries(status.planning.attestations).map(([key, value]) => `${key}=${value}`).join(", ") : "-"}`,
     "",
     "## Lanes",
     "",
@@ -26,6 +43,11 @@ export function writeReport(runId, status) {
     lines.push(`- branch: ${lane.branch || "-"}`);
     lines.push(`- worktree: ${lane.worktree || "-"}`);
     lines.push(`- scope: ${lane.scope}`);
+    lines.push(`- read-only: ${lane.readOnly || "-"}`);
+    lines.push(`- depends on: ${lane.dependsOn?.length ? lane.dependsOn.join(", ") : "-"}`);
+    lines.push(`- dependencies integrated: ${lane.dependenciesIntegrated?.length ? lane.dependenciesIntegrated.join(", ") : "-"}`);
+    if (lane.waitingFor?.length) lines.push(`- waiting for: ${lane.waitingFor.join(", ")}`);
+    if (lane.queueReason) lines.push(`- queue reason: ${lane.queueReason}`);
     lines.push(`- elapsed: ${lane.elapsedSec ?? "-"}s`);
     lines.push(`- exit: ${lane.exitCode ?? "-"}`);
     lines.push(`- session: ${lane.sessionId || "-"}`);
@@ -37,6 +59,9 @@ export function writeReport(runId, status) {
     }
     if (lane.scopeViolations?.length) {
       lines.push(`- **scope violations:** ${lane.scopeViolations.join(", ")}`);
+    }
+    if (lane.readOnlyViolations?.length) {
+      lines.push(`- **read-only violations:** ${lane.readOnlyViolations.join(", ")}`);
     }
     if (lane.policyViolations?.length) {
       lines.push(`- **policy violations:** ${lane.policyViolations.join("; ")}`);
@@ -81,6 +106,28 @@ export function writeReport(runId, status) {
     lines.push(`- worktree: ${status.integrate.worktree || "-"}`);
     if (status.integrate.merged?.length) {
       lines.push(`- merged lanes: ${status.integrate.merged.join(", ")}`);
+    }
+    if (status.integrate.changedFileOverlaps?.length) {
+      lines.push(
+        `- **changed-file overlaps:** ${status.integrate.changedFileOverlaps
+          .map((item) => `${item.file} (${item.lanes.join(", ")})`)
+          .join("; ")}`,
+      );
+    }
+    if (status.integrate.approvedChangedFileOverlaps?.length) {
+      lines.push(
+        `- approved sequential overlaps: ${status.integrate.approvedChangedFileOverlaps
+          .map((item) => `${item.file} (${item.lanes.join(" -> ")})`)
+          .join("; ")}`,
+      );
+    }
+    if (status.integrate.verification) {
+      lines.push(`- verification: ${status.integrate.verification.state}`);
+      for (const command of status.integrate.verification.commands || []) {
+        lines.push(
+          `  - \`${command.command.join(" ")}\`: ${command.passed ? "passed" : `failed (${command.exitCode})`}`,
+        );
+      }
     }
     if (status.integrate.shipGateHint) {
       lines.push(`- hint: ${status.integrate.shipGateHint}`);

@@ -20,6 +20,14 @@ export function currentBranch(repoRoot) {
   return r.ok ? r.stdout : "main";
 }
 
+export function resolveGitRef(repoRoot, ref = "HEAD") {
+  const result = git(repoRoot, ["rev-parse", "--verify", ref + "^{commit}"]);
+  if (!result.ok) {
+    throw new Error(`unable to resolve immutable base ${ref}: ${result.stderr || result.stdout}`);
+  }
+  return result.stdout;
+}
+
 export function addWorktree({ repoRoot, worktreePath, branch, baseBranch }) {
   mkdirSync(dirname(worktreePath), { recursive: true });
   if (existsSync(worktreePath)) {
