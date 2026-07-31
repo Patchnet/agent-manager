@@ -114,7 +114,7 @@ test("Claude permission modes translate manager policy to native CLI values", as
   assert.equal(permissionModeForClaude("acceptEdits"), "acceptEdits");
 });
 
-test("runtime profiles and command adapters distinguish Windows from Linux", async () => {
+test("runtime profiles and command adapters distinguish Windows, macOS, and Linux", async () => {
   const { detectRuntimeProfile, runtimePrompt } = await import("../src/runtime.mjs?runtime-core");
   const { resolveSpawnCommand } = await import("../src/command.mjs?runtime-core");
   const windows = detectRuntimeProfile({
@@ -129,6 +129,12 @@ test("runtime profiles and command adapters distinguish Windows from Linux", asy
     release: "6.1.0",
     env: { SHELL: "/bin/bash" },
   });
+  const macos = detectRuntimeProfile({
+    platform: "darwin",
+    arch: "arm64",
+    release: "24.5.0",
+    env: { SHELL: "/bin/zsh" },
+  });
 
   assert.deepEqual(windows, {
     hostPlatform: "win32",
@@ -142,6 +148,15 @@ test("runtime profiles and command adapters distinguish Windows from Linux", asy
   assert.equal(linux.os, "linux");
   assert.equal(linux.shell, "bash");
   assert.equal(linux.pathStyle, "posix");
+  assert.deepEqual(macos, {
+    hostPlatform: "darwin",
+    os: "macos",
+    arch: "arm64",
+    release: "24.5.0",
+    shell: "zsh",
+    commandMode: "spawn-no-shell",
+    pathStyle: "posix",
+  });
   assert.match(runtimePrompt(windows), /Do not assume Bash on Windows/);
   assert.equal(
     resolveSpawnCommand("npm", ["--version"], {
@@ -152,6 +167,10 @@ test("runtime profiles and command adapters distinguish Windows from Linux", asy
   );
   assert.deepEqual(
     resolveSpawnCommand("npm", ["--version"], { platform: "linux" }),
+    { command: "npm", args: ["--version"] },
+  );
+  assert.deepEqual(
+    resolveSpawnCommand("npm", ["--version"], { platform: "darwin" }),
     { command: "npm", args: ["--version"] },
   );
   const { formatDoctor } = await import("../src/doctor.mjs?runtime-core");

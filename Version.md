@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.3.1
+current: 1.3.2
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.3.2 - 2026-07-31
+
+Expanded public documentation with operator report examples and added macOS CI coverage.
 
 ## 1.3.1 - 2026-07-31
 

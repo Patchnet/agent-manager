@@ -6,6 +6,19 @@
 
 **One operator. Up to five isolated coding lanes. Explicit approval before anything ships.**
 
+> **Why we built it**
+>
+> Agent Manager started as an internal tool for coordinating coding agents
+> across our own repositories. In practice, three to five focused agents is
+> the current sweet spot for this kind of work: enough parallelism to matter,
+> but still small enough for one operator to understand and review.
+>
+> This is a deliberately focused tool. More advanced orchestration platforms
+> exist, but if you want a straightforward way to run multiple Claude Code or
+> Codex harnesses in isolated worktrees, Agent Manager provides the core loop.
+> Its optional PR Manager and Ship Gate flow also keeps review, approval, CI,
+> and shipping explicit, which reduces the operator's cognitive load.
+
 agent-manager is a detached CLI supervisor for Claude Code and Codex CLI. It
 runs parallel work in isolated Git worktrees while the host chat stays free for
 decisions, questions, and review.
@@ -43,6 +56,206 @@ flowchart LR
 | Approved work should ship without blocking the host chat | All three |
 | A human will handle GitHub after review | 🎛️ Agent Manager only; stop after Delivery Review |
 
+## What the operator sees
+
+The process is designed to make the next decision obvious. Agent Manager posts
+the same structured boards in every supported harness, wakes the operator only
+for meaningful changes or questions, and shows the exact authority requested
+before any Git or shipping action. The examples below use illustrative data.
+
+```mermaid
+flowchart LR
+    Run["Run board<br/>what is running"] --> Question{"Decision needed?"}
+    Question -->|yes| Escalation["Escalation<br/>one focused question"]
+    Question -->|no| Review["Delivery Review<br/>what was delivered"]
+    Escalation --> Review
+    Review --> Gate{"Ship Gate<br/>exact approval scope"}
+    Gate --> Handoff["PR Manager<br/>detached execution"]
+```
+
+<details>
+<summary><strong>1. Kickoff — a compact live run board</strong></summary>
+
+## Agent Manager · Run board
+
+| | |
+|---|---|
+| **runId** | `run-20260731-1432` |
+| **repo** | `sample-app` |
+| **state** | `running` |
+| **target_dev_flow** | `formal` |
+| **runtime** | `macos/arm64 (darwin) · zsh · spawn-no-shell` |
+| **workflow** | `.agent-manager/profile-settings.yaml` |
+| **plan** | `docs/plans/profile-settings.md` |
+| **planning context** | `sha256:7d4b…91ac` |
+| **started** | `2026-07-31 14:32 EDT` |
+| **updated** | `2026-07-31 14:36 EDT` |
+| **telemetry** | `$AGENT_MANAGER_RUNS_ROOT/run-20260731-1432/status.json` |
+
+### Lanes
+
+| Lane | State | Harness | Branch | Elapsed | Last activity |
+|------|-------|---------|--------|---------|---------------|
+| `contracts` | `done` | `codex` | `am/run-20260731-1432/contracts` | `94s` | Contract tests passed |
+| `api` | `running` | `claude` | `am/run-20260731-1432/api` | `211s` | Updating request validation |
+| `ui` | `running` | `codex` | `am/run-20260731-1432/ui` | `208s` | Adding the profile form |
+
+### Actions
+
+- Monitor (side terminal): `agent-manager monitor run-20260731-1432`
+- Watch-signal (Master loop): `agent-manager watch-signal run-20260731-1432`
+- Cancel: `agent-manager cancel run-20260731-1432`
+- Logs: `$AGENT_MANAGER_RUNS_ROOT/run-20260731-1432/<lane>/stdout.log`
+
+</details>
+
+<details>
+<summary><strong>2. Decision needed — one lane asks, independent work continues</strong></summary>
+
+## Agent Manager · Escalation
+
+| | |
+|---|---|
+| **runId** | `run-20260731-1432` |
+| **lane** | `api` |
+| **branch** | `am/run-20260731-1432/api` |
+| **type** | `question` |
+| **runtime** | `macos/arm64 (darwin) · zsh · spawn-no-shell` |
+
+### Question
+
+Should an empty display name preserve the current value or clear it?
+
+### Options (if any)
+
+- `A` — Preserve the current value
+- `B` — Clear the value
+
+### Waiting on
+
+Operator reply in this chat. Other independent lanes may keep running.
+
+### Reply command
+
+- `agent-manager reply run-20260731-1432 api --message "Preserve the current value"`
+
+</details>
+
+<details>
+<summary><strong>3. Delivery Review — evidence replaces lane self-reporting</strong></summary>
+
+## Agent Manager · Delivery Review · Pass 1
+
+| | |
+|---|---|
+| **runId** | `run-20260731-1432` |
+| **eval_pass** | `1` |
+| **correction_used** | `no` |
+| **repo** | `sample-app` |
+| **runtime** | `macos/arm64 (darwin) · zsh · spawn-no-shell` |
+| **proposal** | `docs/plans/profile-settings.md` |
+| **planning context** | `sha256:7d4b…91ac` |
+| **reviewed** | `2026-07-31 14:51 EDT` |
+| **verdict** | `accept` |
+
+### Proposal checklist
+
+| Item | Asked | Delivered? | Evidence (path / test / note) |
+|------|-------|------------|-------------------------------|
+| Shared contract | Define the profile update shape | `yes` | `src/contracts/profile.ts` · contract tests pass |
+| API | Validate and save profile changes | `yes` | `src/api/profile.ts` · API tests pass |
+| UI | Add an accessible profile form | `yes` | `src/ui/ProfileForm.tsx` · component tests pass |
+
+### Cross-lane / contract checks
+
+| Couple | OK? | Note |
+|--------|-----|------|
+| Contract ↔ API | `yes` | API imports the shared schema |
+| Contract ↔ UI | `yes` | Form fields and defaults match the schema |
+| Documentation ↔ behavior | `yes` | Empty display names preserve the current value |
+
+### Gaps / feedback (by lane)
+
+| Lane | Grade | Feedback for worker (actionable) |
+|------|-------|----------------------------------|
+| `contracts` | `A` | No changes requested |
+| `api` | `A` | No changes requested |
+| `ui` | `A` | No changes requested |
+
+### Recommended next
+
+- [x] Pass 1 `accept` → integrate if needed → **Ship Gate**
+- [ ] Pass 1 `revise` / `relaunch` → one correction → Pass 2 report
+- [ ] Pass 1 `reject` → release claims; do not ship
+- [ ] Pass 2 `accept` / `accept-with-notes` → **Ship Gate**
+- [ ] Pass 2 `reject` → stop; only the operator may order a new run
+
+### Waiting on
+
+Operator `accept` | `accept-with-notes` | `revise` | `relaunch` | `reject`
+
+</details>
+
+<details>
+<summary><strong>4. Ship Gate — the operator approves an exact boundary</strong></summary>
+
+## Ship Gate · Formal
+
+| | |
+|---|---|
+| **Repo** | `sample-app` |
+| **Branch** | `am/run-20260731-1432/integrate` |
+| **Agent** | `Codex · Master Dev` |
+| **Role** | `reviewer/integrator` |
+| **Claim** | `n/a` |
+| **Version** | at merge (not on branch) · current `1.4.0` |
+| **Test gate** | `full` · suite **pass** |
+| **CI** | `n/a` (not pushed yet) |
+| **PR** | `none` |
+| **check:version** | **n/a** (no stamp on branch) |
+
+### Done
+
+- [x] Work complete on branch
+- [x] Tests (if required)
+- [x] Claim held / scope clear (when claims apply)
+- [ ] Code-review run (required before merge)
+- [ ] Full stamp set ready on `main`
+- [ ] `npm run check:version` pass on stamp
+- [ ] CI quality green on stamp commit (before tag)
+
+### Needs your OK
+
+| Step | Action | Detail |
+|------|--------|--------|
+| COMMIT | waiting | `feat: add profile settings flow` |
+| PUSH | waiting | `origin am/run-20260731-1432/integrate` |
+| PR | waiting | open + `gh pr merge --auto --squash` |
+| MERGE | waiting | only after CI and independent review are green |
+| VERSION | waiting | on `main` after merge → `1.5.0` |
+| TAG | waiting | only after stamp verification and CI |
+
+### Approve — reply with one
+
+| Reply | Does |
+|-------|------|
+| `all` | reviewer/integrator — commit → push → PR + auto-merge → release/stamp on `main` |
+| `through-pr` | reviewer/integrator — commit → push → PR + auto-merge; version/tag later |
+| `commit+push` | stop before PR |
+| `commit` | commit only |
+| `reject` | stop — add why |
+
+After `through-pr` or `all`, PR Manager runs the approved steps in the
+background and reports any CI or policy blocker. It never expands the approval
+or invents a workaround.
+
+</details>
+
+These filled examples follow the canonical
+[Agent Manager report templates](skills/agent-manager/reporting.md),
+[Ship Gate boards](skills/ship-gate/SKILL.md), and
+[PR Manager reports](skills/pr-manager/reporting.md).
+
 ## What the core provides
 
 - One isolated Git worktree per lane
@@ -62,7 +275,24 @@ flowchart LR
 - Detached PR Manager for approved push, PR, CI, merge, version, and tag work
 - Cursor skill installer and project-rule fallback
 
-agent-manager is not a sandbox, terminal multiplexer, fleet dashboard, or auto-merge service. Harness permission systems remain the execution boundary. Command-event inspection is best-effort detection.
+## Sandboxing and permissions
+
+Agent Manager is not a sandbox. It launches each worker through its existing
+agent CLI inside an isolated Git worktree. The underlying harness—such as
+Claude Code or Codex—continues to enforce its native sandbox, approval,
+authentication, and permission configuration.
+
+Agent Manager passes the requested native permission mode and adds
+orchestration guardrails such as file scopes, environment filtering,
+Git-operation checks, and explicit shipping approval. Command-event inspection
+is best-effort detection. These controls reduce accidental drift, but they do
+not replace the harness security model or operating-system isolation.
+
+Dangerous permission bypass is disabled by default. Enabling it requires two
+explicit approvals: one in the workflow and one at launch.
+
+Agent Manager is also not a terminal multiplexer, fleet dashboard, or automatic
+merge service.
 
 ## Requirements
 
@@ -392,7 +622,8 @@ npm run hygiene
 npm pack --dry-run
 ```
 
-CI runs the tests and package review on Windows and Linux. Dependency review runs on pull requests.
+CI runs the tests and package review on Windows, Linux, and macOS. Dependency
+review runs on pull requests.
 
 ## License
 
