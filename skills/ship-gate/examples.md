@@ -45,6 +45,7 @@
 | **Repo** | `my-app` |
 | **Branch** | `fix/version-stamp-lockfile` |
 | **Agent** | Cursor · Grok |
+| **Role** | reviewer/integrator |
 | **Claim** | lane `version-stamp` · scope `scripts/bump-version.mjs` |
 | **Version** | at merge (not on branch) · current `1.2.0` |
 | **Test gate** | `full` · suite **pass** |
@@ -76,6 +77,48 @@
 |-------|------|
 | `all` | commit → push → PR + auto-merge → release/stamp on main |
 | `through-pr` | commit → push → PR + auto-merge (version/tag later) |
+| `commit+push` | stop before PR |
+| `commit` | commit only |
+| `reject` | stop — add why |
+
+## Formal (PR author handoff)
+
+## Ship Gate · Formal
+
+| | |
+|---|---|
+| **Repo** | `my-app` |
+| **Branch** | `feat/subordinate-approval` |
+| **Agent** | Claude Code · Sonnet |
+| **Role** | author |
+| **Claim** | n/a |
+| **Version** | at merge (not on branch) · current `1.2.0` |
+| **Test gate** | `local` · suite **pass** |
+| **CI** | n/a (not pushed yet) |
+| **PR** | none |
+| **check:version** | **n/a** (no stamp on branch) |
+
+### Done
+- [x] Work complete on branch
+- [x] Tests (if required)
+- [x] Claim held / scope clear (when claims apply)
+- [ ] Independent code review (owned by Master Dev/reviewer)
+- [ ] Merge-time version, tag, and release (not author scope)
+
+### Needs your OK
+| Step | Action | Detail |
+|------|--------|--------|
+| COMMIT | waiting | `feat: add subordinate approval flow` |
+| PUSH | waiting | `origin feat/subordinate-approval` |
+| PR | waiting | open/update + labels + tests, risks, dependencies, review notes |
+| MERGE | n/a | forbidden for author |
+| VERSION | n/a | owned by reviewer/integrator after merge |
+| TAG | n/a | owned by reviewer/integrator |
+
+### Approve — reply with one
+| Reply | Does |
+|-------|------|
+| `open-pr` | commit → push → create/update PR → attach evidence → stop |
 | `commit+push` | stop before PR |
 | `commit` | commit only |
 | `reject` | stop — add why |
