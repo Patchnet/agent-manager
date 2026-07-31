@@ -6,6 +6,7 @@
   "required": ["runId", "state", "pid", "telemetry", "supervisorLog", "statusCommand"],
   "properties": {
     "runId": { "type": "string" }, "state": { "const": "detached" }, "pid": { "type": "integer" },
-    "telemetry": { "type": "string" }, "supervisorLog": { "type": "string" }, "statusCommand": { "type": "string" }
+    "telemetry": { "type": "string" }, "supervisorLog": { "type": "string" }, "statusCommand": { "type": "string" },
+    "runtime": { "$ref": "status.schema.json#/$defs/runtime" }
   }
 }

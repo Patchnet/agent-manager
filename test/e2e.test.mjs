@@ -179,6 +179,7 @@ test("detached run publishes feed events, resumes the exact session, and release
   const launchPayload = JSON.parse(launch.stdout.trim());
   assert.equal(launchPayload.runId, runId);
   assert.equal(launchPayload.state, "detached");
+  assert.equal(launchPayload.runtime.hostPlatform, process.platform);
 
   const blocked = await waitForStatus(runId, (status) => status.state === "blocked");
   const writer = blocked.lanes.find((lane) => lane.id === "writer");
@@ -195,6 +196,7 @@ test("detached run publishes feed events, resumes the exact session, and release
     );
   }
   assert.equal(blocked.planning.state, "verified");
+  assert.equal(blocked.runtime.hostPlatform, process.platform);
   assert.equal(blocked.planning.reviewedBaseSha, fixtureBase);
   assert.match(blocked.planning.contextDigest, /^[0-9a-f]{64}$/);
   const frozenContext = readFileSync(join(runsRoot, runId, "planning-context.md"), "utf8");

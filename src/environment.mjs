@@ -1,3 +1,5 @@
+import { detectRuntimeProfile, runtimeEnv } from "./runtime.mjs";
+
 const BASE_ENV = [
   "PATH", "Path", "PATHEXT", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
   "TEMP", "TMP", "TMPDIR", "SHELL", "COMSPEC", "ComSpec", "SYSTEMROOT", "SystemRoot",
@@ -15,7 +17,11 @@ const VERIFICATION_ENV = [
   "NODE_EXTRA_CA_CERTS", "CI",
 ];
 
-export function buildHarnessEnv(extraNames = [], source = process.env) {
+export function buildHarnessEnv(
+  extraNames = [],
+  source = process.env,
+  runtime = detectRuntimeProfile({ env: source }),
+) {
   const requested = String(source.AGENT_MANAGER_ENV_ALLOWLIST || "")
     .split(",")
     .map((name) => name.trim())
@@ -26,6 +32,7 @@ export function buildHarnessEnv(extraNames = [], source = process.env) {
     if (typeof source[name] === "string") env[name] = source[name];
   }
   env.AGENT_MANAGER_WORKER = "1";
+  Object.assign(env, runtimeEnv(runtime));
   return env;
 }
 
@@ -33,12 +40,17 @@ export function visibleHarnessEnvNames(extraNames = [], source = process.env) {
   return Object.keys(buildHarnessEnv(extraNames, source)).sort();
 }
 
-export function buildVerificationEnv(extraNames = [], source = process.env) {
+export function buildVerificationEnv(
+  extraNames = [],
+  source = process.env,
+  runtime = detectRuntimeProfile({ env: source }),
+) {
   const names = new Set([...VERIFICATION_ENV, ...extraNames]);
   const env = {};
   for (const name of names) {
     if (typeof source[name] === "string") env[name] = source[name];
   }
   env.AGENT_MANAGER_VERIFICATION = "1";
+  Object.assign(env, runtimeEnv(runtime));
   return env;
 }

@@ -1,6 +1,7 @@
 import { writePrivateFile } from "./fs-safe.mjs";
 import { join } from "node:path";
 import { runDir } from "./paths.mjs";
+import { formatRuntime } from "./runtime.mjs";
 
 export function writeReport(runId, status) {
   const lines = [
@@ -10,6 +11,7 @@ export function writeReport(runId, status) {
     `- **repo:** ${status.repo}`,
     `- **state:** ${status.state}`,
     `- **target_dev_flow:** ${status.target_dev_flow || "-"}`,
+    `- **runtime:** ${formatRuntime(status.runtime)}`,
     `- **started:** ${status.startedAt || "-"}`,
     `- **ended:** ${status.endedAt || "-"}`,
     `- **workflow:** ${status.workflow || "-"}`,

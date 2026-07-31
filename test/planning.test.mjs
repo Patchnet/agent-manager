@@ -72,6 +72,8 @@ test("planning evidence validates the immutable base and prefixes every lane pro
   assert.match(prompt, /One frozen contract for every lane/);
   assert.match(prompt, new RegExp(evidence.contextDigest));
   assert.match(prompt, /## Lane assignment/);
+  assert.match(prompt, /## Host runtime \(automatic; authoritative\)/);
+  assert.match(prompt, new RegExp(loaded.runtime.hostPlatform));
 });
 
 test("planning gate rejects missing, incomplete, stale, and escaping context", () => {

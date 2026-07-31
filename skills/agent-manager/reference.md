@@ -34,6 +34,11 @@ still come from Master reading `status.json` on each wake
 | `AGENT_MANAGER_CLAIM_BIN` | `<pkg>/tools/claim.mjs` | Claims CLI |
 | `AGENT_MANAGER_ENV_ALLOWLIST` | empty | Extra worker environment names |
 
+Workers also receive automatically generated, non-secret runtime variables:
+`AGENT_MANAGER_HOST_PLATFORM`, `AGENT_MANAGER_HOST_OS`,
+`AGENT_MANAGER_HOST_ARCH`, `AGENT_MANAGER_HOST_SHELL`,
+`AGENT_MANAGER_COMMAND_MODE`, and `AGENT_MANAGER_PATH_STYLE`.
+
 ## Detach (Master Dev mandatory)
 
 ```bash
@@ -132,6 +137,10 @@ failed command blocks delivery and is included in Delivery Review evidence.
 
 ## CLI notes (Windows)
 
+- The detected runtime profile reports `win32`, `windows`, `powershell`,
+  `spawn-no-shell`, and Windows path style before work starts.
+- Command scripts such as `npm` and `*.cmd` run through `cmd.exe`; native
+  executables continue to launch without a shell.
 - Prompt is delivered on **stdin** (multiline argv is unreliable).
 - Binary resolved to `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`
   when present (`CLAUDE_BIN` override supported).
@@ -146,6 +155,15 @@ failed command blocks delivery and is included in Delivery Review evidence.
   "repo": "my-repo",
   "workflow": "/abs/path/workflow.yaml",
   "target_dev_flow": "simple",
+  "runtime": {
+    "hostPlatform": "win32",
+    "os": "windows",
+    "arch": "x64",
+    "release": "10.0.0",
+    "shell": "powershell",
+    "commandMode": "spawn-no-shell",
+    "pathStyle": "windows"
+  },
   "maxConcurrency": 3,
   "baseCommit": "immutable SHA",
   "planning": {

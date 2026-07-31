@@ -10,6 +10,7 @@
     "state": { "const": "detached" },
     "phase": { "const": "ship" },
     "approve": { "enum": ["through-pr", "all"] },
+    "runtime": { "$ref": "status.schema.json#/$defs/runtime" },
     "pid": { "type": "integer" },
     "telemetry": { "type": "string" },
     "supervisorLog": { "type": "string" },

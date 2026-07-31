@@ -27,6 +27,8 @@ another interval at any time; Master restarts `watch-signal` with the new value.
 
 ` <runId> ` still **running** · elapsed ~`<Ns>` · updated `<updatedAt>`
 
+Runtime: `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>`
+
 | Lane | State | Elapsed | Last activity |
 |------|-------|---------|---------------|
 | `<id>` | `running\|…` | `<Ns>` | `<lastActivity>` |
@@ -50,6 +52,7 @@ Post once when a run starts, then again on meaningful updates
 | **repo** | `<repo>` |
 | **state** | `running \| shipping \| blocked \| done \| failed \| cancelled` |
 | **target_dev_flow** | `simple \| formal` |
+| **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **workflow** | `<path>` |
 | **plan** | `<planning.planRef>` |
 | **planning context** | `sha256:<planning.contextDigest>` |
@@ -85,6 +88,7 @@ Post when any lane has `state: blocked` or `needsInput` set.
 | **lane** | `<id>` |
 | **branch** | `<branch>` |
 | **type** | `question \| permission \| blocked` |
+| **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 
 ### Question
 <prompt text from needs-input.json or lastActivity>
@@ -116,6 +120,7 @@ Post when run `state` is `done`, `failed`, or `cancelled`. A `blocked` run uses 
 | **final state** | `done \| failed \| cancelled` |
 | **report** | `$AGENT_MANAGER_RUNS_ROOT/<runId>/report.md` |
 | **target_dev_flow** | `simple \| formal` |
+| **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **integrate** | `n/a \| ready \| blocked \| failed` · branch `<am/…/integrate>` |
 
 ### Lanes
@@ -180,6 +185,7 @@ sample ≠ live Zod). Call that out explicitly under Gaps.
 | **eval_pass** | `1 \| 2` |
 | **correction_used** | `no \| revise \| relaunch` (Pass 2 must show which; Pass 1 usually `no`) |
 | **repo** | `<repo>` |
+| **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **proposal** | `<decision id / follow-up id / workflow path / checklist>` |
 | **planning context** | `sha256:<status.planning.contextDigest>` |
 | **reviewed** | `<ISO or local>` |

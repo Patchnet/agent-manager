@@ -4,12 +4,15 @@ import { RUNS_ROOT } from "./paths.mjs";
 import { checkCommand } from "./preflight.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
 import { resolveCodexBin } from "./harness/codex.mjs";
+import { detectRuntimeProfile, formatRuntime } from "./runtime.mjs";
 
 export function runDoctor({ repo = process.cwd() } = {}) {
   const root = resolve(repo);
+  const runtime = detectRuntimeProfile();
   const checks = [
     { name: "node", ok: Number(process.versions.node.split(".")[0]) >= 24, detail: process.version },
     asCheck("git", checkCommand("git")),
+    { ...asCheck("npm (version checks)", checkCommand("npm")), optional: true, shipping: true },
     { ...asCheck("gh (shipping)", checkCommand("gh")), optional: true },
     { ...asCheck("claude", checkCommand(resolveClaudeBin())), optional: true, harness: true },
     { ...asCheck("codex", checkCommand(resolveCodexBin())), optional: true, harness: true },
@@ -18,11 +21,17 @@ export function runDoctor({ repo = process.cwd() } = {}) {
   ];
   const coreReady = checks.filter((check) => !check.optional).every((check) => check.ok);
   const harnessReady = checks.filter((check) => check.harness).some((check) => check.ok);
-  return { schema: "agent-manager.doctor.v1", ok: coreReady && harnessReady, checks };
+  return { schema: "agent-manager.doctor.v1", ok: coreReady && harnessReady, runtime, checks };
 }
 
 function asCheck(name, result) {
-  return { name, ok: result.ok, detail: result.version || result.error || result.command };
+  return {
+    name,
+    ok: result.ok,
+    command: result.command,
+    invocation: result.invocation,
+    detail: result.version || result.error || result.command,
+  };
 }
 
 function writableCheck(name, path) {
@@ -35,10 +44,16 @@ function writableCheck(name, path) {
 }
 
 export function formatDoctor(result) {
-  const lines = [`agent-manager doctor: ${result.ok ? "ready" : "action required"}`];
+  const lines = [
+    `agent-manager doctor: ${result.ok ? "ready" : "action required"}`,
+    `runtime: ${formatRuntime(result.runtime)}`,
+  ];
   for (const check of result.checks) {
     const label = check.ok ? "PASS" : check.optional ? "WARN" : "FAIL";
-    lines.push(`${label}  ${check.name}: ${check.detail}`);
+    const via = check.invocation?.[0] && check.invocation[0] !== check.command
+      ? ` (via ${check.invocation.join(" ")})`
+      : "";
+    lines.push(`${label}  ${check.name}: ${check.detail}${via}`);
   }
   return lines.join("\n");
 }

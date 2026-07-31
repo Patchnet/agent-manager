@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import { RUNS_ROOT, assertSafeSlug, runDir } from "./paths.mjs";
 import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
+import { formatRuntime } from "./runtime.mjs";
 
 export function writeStatus(runId, status) {
   assertSafeSlug(runId, "run id");
@@ -35,6 +36,7 @@ export function writeStatus(runId, status) {
         at: payload.updatedAt,
         runId,
         state: payload.state,
+        runtime: payload.runtime || null,
         lanes: (payload.lanes || []).map((lane) => ({
           id: lane.id,
           harness: lane.harness,
@@ -113,6 +115,7 @@ export function formatStatus(status) {
   const lines = [
     `run ${status.runId}  state=${status.state}  repo=${status.repo}  updated=${status.updatedAt || "-"}`,
     `target_dev_flow=${status.target_dev_flow || "-"}  workflow=${status.workflow || "-"}`,
+    `runtime=${formatRuntime(status.runtime)}`,
     `started=${status.startedAt || "-"}  ended=${status.endedAt || "-"}  initialDirty=${status.initialRepo?.dirty ? "yes" : "no"}`,
     `planning=${status.planning?.state || "legacy/unrecorded"}  plan=${status.planning?.planRef || "-"}`,
     `reviewedBase=${status.planning?.reviewedBaseSha || "-"}  contextSha256=${status.planning?.contextDigest || "-"}`,

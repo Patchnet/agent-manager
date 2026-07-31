@@ -213,6 +213,7 @@ export async function runWorkflow(workflowPath, {
   writePrivateFile(planningContextSnapshot, workflow.planning._contextBody, "utf8");
 
   const startedAt = new Date().toISOString();
+  const runtime = workflow.runtime;
   const initialRepo = inspectInitialRepo(workflow.repoRoot);
   const laneStates = workflow.lanes.map((lane) => ({
     id: lane.id,
@@ -255,6 +256,7 @@ export async function runWorkflow(workflowPath, {
     dangerousPermissionsApproved: workflow.policy.dangerously_skip_permissions === true,
     workflow: workflow.absPath,
     target_dev_flow: workflow.target_dev_flow,
+    runtime,
     startedAt,
     endedAt: null,
     initialRepo,
@@ -288,6 +290,7 @@ export async function runWorkflow(workflowPath, {
       initialRepo,
       immutableBaseCommit,
       planning,
+      runtime,
     }, null, 2) + "\n",
   );
 
@@ -309,6 +312,7 @@ export async function runWorkflow(workflowPath, {
       contextDigest: planning.contextDigest,
       reviewedBaseSha: planning.reviewedBaseSha,
     },
+    runtime,
   });
 
   const activeHandles = new Map();

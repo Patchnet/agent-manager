@@ -191,7 +191,8 @@ Runs root defaults to `~/.agent-manager/runs` (`AGENT_MANAGER_RUNS_ROOT`).
 | `<runs>/<runId>/<lane>/wt/` | Lane worktree (code changes) |
 
 `status.json` fields used in boards: `runId`, `state`, `repo`, `target_dev_flow`,
-`startedAt`, `updatedAt`, `maxConcurrency`, `baseCommit`, `planning`, `lanes[]` (`id`,
+`runtime` (`hostPlatform`, `os`, `arch`, `release`, `shell`, `commandMode`,
+`pathStyle`), `startedAt`, `updatedAt`, `maxConcurrency`, `baseCommit`, `planning`, `lanes[]` (`id`,
 `harness`, `state`, `branch`, `scope`, `readOnly`, `dependsOn`, `waitingFor`,
 `elapsedSec`, `lastActivity`, `exitCode`, `needsInput`, `worktree`, `logPath`).
 Lanes also record `sessionId`, `endedAt`, changed files, guardrail

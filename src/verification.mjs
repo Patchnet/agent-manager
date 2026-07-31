@@ -1,5 +1,5 @@
-import { spawnSync } from "node:child_process";
 import { buildVerificationEnv } from "./environment.mjs";
+import { spawnCommandSync } from "./command.mjs";
 
 export function runVerification(
   worktree,
@@ -18,15 +18,17 @@ export function runVerification(
   for (const item of verification.commands) {
     const startedAt = new Date().toISOString();
     const started = Date.now();
-    const result = spawnSync(item.command, item.args, {
+    const env = buildVerificationEnv(envAllowlist, sourceEnv);
+    const { result, resolved } = spawnCommandSync(item.command, item.args, {
       cwd: worktree,
       encoding: "utf8",
       windowsHide: true,
       timeout: verification.timeout_sec * 1000,
-      env: buildVerificationEnv(envAllowlist, sourceEnv),
+      env,
     });
     const record = {
       command: [item.command, ...item.args],
+      invocation: [resolved.command, ...resolved.args],
       startedAt,
       elapsedMs: Date.now() - started,
       exitCode: result.status ?? 1,

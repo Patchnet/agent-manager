@@ -30,6 +30,7 @@
     "summary": { "type": ["string", "null"] },
     "pollSec": { "type": "number", "minimum": 1 },
     "timeoutSec": { "type": "number", "minimum": 1 },
+    "runtime": { "$ref": "status.schema.json#/$defs/runtime" },
     "requestedAt": { "type": "string", "format": "date-time" }
   }
 }

@@ -12,6 +12,7 @@ is not available.
 | **approval** | `through-pr \| all` |
 | **branch** | `<branch>` |
 | **base** | `<base>` |
+| **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **state** | `shipping` |
 | **telemetry** | `$AGENT_MANAGER_RUNS_ROOT/<runId>/status.json` |
 
@@ -28,6 +29,7 @@ outcome.
 | **phase** | `<ship.phase>` |
 | **approval** | `through-pr \| all` |
 | **branch** | `<branch>` |
+| **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **PR** | `<URL or n/a>` |
 | **last activity** | `<ship.lastActivity>` |
 
@@ -43,6 +45,7 @@ outcome.
 | **phase** | `<ship.phase>` |
 | **PR** | `<URL or n/a>` |
 | **state** | `blocked` |
+| **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 
 ### Blocker
 
@@ -68,6 +71,7 @@ Operator direction. PR Manager does not bypass or guess.
 | **release SHA** | `<SHA or n/a>` |
 | **tag** | `<tag or n/a>` |
 | **ended** | `<ISO timestamp>` |
+| **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 
 ### Result
 

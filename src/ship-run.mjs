@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -15,6 +14,10 @@ import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 import { assertPathInside, assertSafeSlug, runDir } from "./paths.mjs";
 import { writeReport } from "./report.mjs";
 import { readStatus, writeStatus } from "./status.mjs";
+import { resolveSpawnCommand, spawnCommandSync } from "./command.mjs";
+import { detectRuntimeProfile } from "./runtime.mjs";
+
+export { resolveSpawnCommand } from "./command.mjs";
 
 const APPROVALS = new Set(["all", "through-pr"]);
 const CONVENTIONAL_COMMIT =
@@ -143,6 +146,7 @@ export function prepareShipHandoff(runId, options = {}) {
     summary,
     pollSec,
     timeoutSec,
+    runtime: detectRuntimeProfile(),
     requestedAt: new Date().toISOString(),
   };
 }
@@ -159,6 +163,7 @@ export function queueShip(runId, handoff) {
   const handoffPath = join(dir, "handoff.json");
   writePrivateFile(handoffPath, JSON.stringify(handoff, null, 2) + "\n", "utf8");
   const attempt = Number(status.ship?.attempt || 0) + 1;
+  status.runtime = handoff.runtime || status.runtime || detectRuntimeProfile();
   status.state = "shipping";
   status.endedAt = null;
   status.ship = {
@@ -167,6 +172,7 @@ export function queueShip(runId, handoff) {
     phase: "preflight",
     approve: handoff.approve,
     flow: handoff.flow,
+    runtime: status.runtime,
     repoRoot: handoff.repoRoot,
     worktree: handoff.worktree,
     branch: handoff.branch,
@@ -727,15 +733,13 @@ export function verifyVersionStamp(repoRoot, version, exec = execCommand) {
 
 export function execCommand(command, args, { cwd } = {}) {
   const override = command === "gh" ? process.env.AGENT_MANAGER_GH_BIN : null;
-  const resolved = resolveSpawnCommand(command, args, override);
-  const actualCommand = resolved.command;
-  const actualArgs = resolved.args;
-  const result = spawnSync(actualCommand, actualArgs, {
+  const { result } = spawnCommandSync(command, args, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
     timeout: 120_000,
     env: process.env,
+    override,
   });
   return {
     ok: result.status === 0,
@@ -745,24 +749,13 @@ export function execCommand(command, args, { cwd } = {}) {
   };
 }
 
-export function resolveSpawnCommand(command, args, override = null, {
-  platform = process.platform,
-  comspec = process.env.ComSpec || process.env.COMSPEC || "cmd.exe",
-} = {}) {
-  if (override?.endsWith(".mjs")) {
-    return { command: process.execPath, args: [override, ...args] };
-  }
-  if (override) return { command: override, args };
-  if (platform === "win32" && command === "npm") {
-    return { command: comspec, args: ["/d", "/s", "/c", "npm", ...args] };
-  }
-  return { command, args };
-}
-
 function preflight(handoff, exec) {
   must(exec, "git", ["--version"], handoff.worktree, "find Git");
   must(exec, "gh", ["--version"], handoff.worktree, "find GitHub CLI");
   must(exec, "gh", ["auth", "status"], handoff.worktree, "verify GitHub authentication");
+  if (handoff.approve === "all") {
+    must(exec, "npm", ["--version"], handoff.worktree, "find npm for version checks");
+  }
   must(
     exec,
     "git",

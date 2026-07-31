@@ -1,14 +1,20 @@
-import { spawnSync } from "node:child_process";
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
 import { resolveCodexBin } from "./harness/codex.mjs";
 import { assertPlanningReady } from "./planning.mjs";
+import { spawnCommandSync } from "./command.mjs";
 
-export function checkCommand(command, args = ["--version"]) {
-  const result = spawnSync(command, args, { encoding: "utf8", windowsHide: true, timeout: 10_000 });
+export function checkCommand(command, args = ["--version"], options = {}) {
+  const { result, resolved } = spawnCommandSync(command, args, {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+    ...options,
+  });
   return {
     ok: result.status === 0,
     command,
+    invocation: [resolved.command, ...resolved.args],
     version: result.status === 0 ? String(result.stdout || result.stderr || "").trim().split(/\r?\n/)[0] : null,
     error: result.status === 0 ? null : String(result.error?.message || result.stderr || "command unavailable").trim(),
   };

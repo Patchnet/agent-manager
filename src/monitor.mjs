@@ -1,5 +1,6 @@
 import { RUNS_ROOT } from "./paths.mjs";
 import { isTerminalState, latestRunId, readStatus } from "./status.mjs";
+import { formatRuntime } from "./runtime.mjs";
 
 const DONE_EXIT_STATES = new Set(["done", "failed", "cancelled"]);
 
@@ -29,6 +30,7 @@ export function formatMonitorBoard(status, { previousLaneStates = {} } = {}) {
     `runId   ${status.runId}`,
     `repo    ${status.repo || "-"}`,
     `state   ${status.state}    target_dev_flow=${status.target_dev_flow || "-"}`,
+    `runtime ${formatRuntime(status.runtime)}`,
     `started ${status.startedAt || "-"}`,
     `updated ${status.updatedAt || "-"}    ended=${status.endedAt || "-"}`,
     `feed    enabled=${feedEnabled}${feedErr}`,

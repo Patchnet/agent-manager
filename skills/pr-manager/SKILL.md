@@ -97,6 +97,7 @@ override.
 
 `status.json.ship` contains:
 
+- the authoritative host `runtime` profile used for command selection;
 - `state`: `queued | running | blocked | done | failed | cancelled`
 - `phase`: `preflight | commit | push | pr | merge | release | release-push | ci | tag | done`
 - approval, branch, base, remote, pull-request URL, merge SHA, release SHA,

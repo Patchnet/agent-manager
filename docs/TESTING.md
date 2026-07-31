@@ -11,7 +11,8 @@ detached workflow behavior. Tests live in `test/`; temporary repositories and
 run directories are created outside the source tree and removed after use.
 
 CI runs the same suite on Windows and Linux. It also runs the public hygiene
-scanner and an npm package dry run.
+scanner and an npm package dry run. Runtime-profile and command-adapter tests
+cover both `win32` and `linux`, including Windows command-script resolution.
 
 Quality exemptions are recorded in
 [`quality-exemptions.md`](quality-exemptions.md). There are currently no active

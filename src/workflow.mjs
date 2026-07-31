@@ -4,6 +4,7 @@ import YAML from "yaml";
 import { DEFAULT_MAX_CONCURRENCY, MAX_LANES } from "./constants.mjs";
 import { normalizePlanning, planningPrompt } from "./planning.mjs";
 import { assertPathInside, assertSafeSlug, repoPath } from "./paths.mjs";
+import { detectRuntimeProfile, runtimePrompt } from "./runtime.mjs";
 import {
   normalizeScopePath,
   scopeConflictWitness,
@@ -99,6 +100,7 @@ export function loadWorkflow(filePath, {
   }
 
   const targetDevFlow = doc.target_dev_flow || readTargetDevFlow(repoRoot) || "simple";
+  const runtime = detectRuntimeProfile();
   return {
     ...doc,
     lanes,
@@ -107,6 +109,7 @@ export function loadWorkflow(filePath, {
     repoRoot,
     harness_default: harnessDefault,
     target_dev_flow: targetDevFlow,
+    runtime,
     integrate: doc.integrate === true,
     claim_mode: claimMode,
     max_concurrency: maxConcurrency,
@@ -467,7 +470,8 @@ export function lanePrompt(lane, workflow) {
 - Prefer finishing a thin slice over expanding scope.
 `.trim();
   const sharedPlanning = planningPrompt(workflow.planning);
-  return `${sharedPlanning}\n\n## Lane assignment\n${body.trim()}\n\n${policyBlock}\n`;
+  const hostRuntime = runtimePrompt(workflow.runtime || detectRuntimeProfile());
+  return `${sharedPlanning}\n\n${hostRuntime}\n\n## Lane assignment\n${body.trim()}\n\n${policyBlock}\n`;
 }
 
 export function assertDangerousPermissionApproval(workflow, approved = false) {

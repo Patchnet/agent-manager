@@ -42,9 +42,9 @@ function fail(stderr = "failed") {
 
 test("Windows npm commands run through cmd.exe without enabling shell mode", () => {
   assert.deepEqual(
-    resolveSpawnCommand("npm", ["run", "check:version"], null, {
+    resolveSpawnCommand("npm", ["run", "check:version"], {
       platform: "win32",
-      comspec: "C:\\Windows\\System32\\cmd.exe",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
     }),
     {
       command: "C:\\Windows\\System32\\cmd.exe",
@@ -52,7 +52,7 @@ test("Windows npm commands run through cmd.exe without enabling shell mode", () 
     },
   );
   assert.deepEqual(
-    resolveSpawnCommand("git", ["status"], null, { platform: "win32" }),
+    resolveSpawnCommand("git", ["status"], { platform: "win32" }),
     { command: "git", args: ["status"] },
   );
 });

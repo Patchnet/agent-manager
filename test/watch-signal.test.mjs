@@ -26,6 +26,15 @@ function sampleStatus(overrides = {}) {
     runId: "run-test-1",
     state: "running",
     repo: "fixture",
+    runtime: {
+      hostPlatform: "win32",
+      os: "windows",
+      arch: "x64",
+      release: "test",
+      shell: "powershell",
+      commandMode: "spawn-no-shell",
+      pathStyle: "windows",
+    },
     updatedAt: "2026-07-30T00:00:00.000Z",
     lanes: [
       {
@@ -101,6 +110,7 @@ test("classifyWake distinguishes heartbeat, state_change, needs_input, terminal"
   const shipWake = classifyWake(shipping, shipBlocked);
   assert.equal(shipWake.reason, "needs_input");
   assert.equal(shipWake.phase, "ship");
+  assert.equal(shipWake.runtime.hostPlatform, "win32");
 });
 
 test("formatWakeLine matches Cursor notify pattern", () => {
@@ -160,6 +170,7 @@ test("monitor board formats lanes and exits only on done/failed/cancelled", () =
   assert.match(board, /agent-manager · monitor/);
   assert.match(board, /core/);
   assert.match(board, /tool: Read/);
+  assert.match(board, /windows\/x64 \(win32\)/);
   assert.equal(shouldMonitorExit(sampleStatus({ state: "blocked" })), false);
   assert.equal(shouldMonitorExit(sampleStatus({ state: "done" })), true);
   assert.equal(shouldMonitorExit(sampleStatus({ state: "failed" })), true);

@@ -2,6 +2,20 @@
 
 agent-manager lets one host conversation supervise several isolated Claude Code or Codex CLI lanes. The host launches a detached supervisor, reads status from disk, escalates blocking questions, verifies delivery, and keeps shipping under explicit operator control.
 
+## Component boundary
+
+- **🎛️ Agent Manager** is the orchestration core. It plans and supervises lane
+  work, integration, telemetry, and Delivery Review.
+- **📦 PR Manager** is the deterministic `agent-manager ship` function. It is
+  not another autonomous agent and cannot grant its own approval.
+- **🚦 Ship Gate** is the standalone human approval skill. A single developer
+  can use it without Agent Manager; an Agent Manager run reaches it only after
+  Delivery Review.
+
+The controlled path is Agent Manager → Delivery Review → Ship Gate → PR
+Manager. See the README's [standalone instructions](../README.md#use-each-component-standalone)
+for the smallest supported setup for each use case.
+
 ## First run
 
 ```bash
@@ -26,6 +40,13 @@ Set the attestations true only after completing those checks.
 The workflow schema accepts this draft structure; `validate` and `run` enforce
 launch readiness and require all four attestations to be true.
 
+`doctor`, detached launch output, and `status.json` expose an automatically
+detected runtime profile. The profile records the actual host platform, OS,
+architecture, shell, shellless command mode, and path style. Every lane prompt
+receives this block before its assignment. Do not use a manual OS selector to
+override the host; a planning target must not disguise the machine that will
+execute commands.
+
 Validation and launch fail closed when planning is missing or incomplete, or
 when `reviewed_base_sha` differs from the commit resolved by `base_ref`. The
 shared context file must be a relative, non-empty file inside the target repo.
@@ -46,7 +67,8 @@ agent-manager run <workflow.yaml> --detach --json
 
 The command validates the workflow, planning evidence, repository, base ref,
 harness names, and required binaries before reporting detach success. It returns
-a `runId`, telemetry path, supervisor log, and status command in milliseconds.
+a `runId`, runtime profile, telemetry path, supervisor log, and status command
+in milliseconds.
 A foreground run is for a dedicated terminal, not a chat turn.
 
 ## Observe without blocking
@@ -224,6 +246,9 @@ The first command installs the canonical agent-manager and PR Manager user
 skills. Project mode also installs a concise `.cursor/rules` fallback.
 Reporting templates remain canonical in the skills; the rule points to the
 CLI flow instead of duplicating them.
+
+Ship Gate is installed or referenced separately because it is repository-owned
+approval policy, not part of the orchestration runtime.
 
 ## Public repository hygiene
 

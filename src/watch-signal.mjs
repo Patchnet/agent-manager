@@ -91,6 +91,7 @@ function buildPayload(status, reason, extra = {}) {
     runId: status.runId,
     state: status.state,
     repo: status.repo || null,
+    runtime: status.runtime || null,
     updatedAt: status.updatedAt || null,
     lanes: laneSummary(status),
     ship: status.ship

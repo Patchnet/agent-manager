@@ -114,6 +114,63 @@ test("Claude permission modes translate manager policy to native CLI values", as
   assert.equal(permissionModeForClaude("acceptEdits"), "acceptEdits");
 });
 
+test("runtime profiles and command adapters distinguish Windows from Linux", async () => {
+  const { detectRuntimeProfile, runtimePrompt } = await import("../src/runtime.mjs?runtime-core");
+  const { resolveSpawnCommand } = await import("../src/command.mjs?runtime-core");
+  const windows = detectRuntimeProfile({
+    platform: "win32",
+    arch: "x64",
+    release: "10.0.0",
+    env: {},
+  });
+  const linux = detectRuntimeProfile({
+    platform: "linux",
+    arch: "arm64",
+    release: "6.1.0",
+    env: { SHELL: "/bin/bash" },
+  });
+
+  assert.deepEqual(windows, {
+    hostPlatform: "win32",
+    os: "windows",
+    arch: "x64",
+    release: "10.0.0",
+    shell: "powershell",
+    commandMode: "spawn-no-shell",
+    pathStyle: "windows",
+  });
+  assert.equal(linux.os, "linux");
+  assert.equal(linux.shell, "bash");
+  assert.equal(linux.pathStyle, "posix");
+  assert.match(runtimePrompt(windows), /Do not assume Bash on Windows/);
+  assert.equal(
+    resolveSpawnCommand("npm", ["--version"], {
+      platform: "win32",
+      env: { ComSpec: "cmd.exe" },
+    }).command,
+    "cmd.exe",
+  );
+  assert.deepEqual(
+    resolveSpawnCommand("npm", ["--version"], { platform: "linux" }),
+    { command: "npm", args: ["--version"] },
+  );
+  const { formatDoctor } = await import("../src/doctor.mjs?runtime-core");
+  assert.match(
+    formatDoctor({
+      ok: true,
+      runtime: windows,
+      checks: [{
+        name: "npm (version checks)",
+        ok: true,
+        command: "npm",
+        invocation: ["cmd.exe", "/d", "/s", "/c", "npm", "--version"],
+        detail: "11.0.0",
+      }],
+    }),
+    /via cmd\.exe \/d \/s \/c npm --version/,
+  );
+});
+
 test("allow_commit=false blocks mutators but allows read-only git tag/show/log", async () => {
   const { createPolicyEventInspector, isForbiddenGitMutation } = await import(
     "../src/guardrails.mjs?git-ro"

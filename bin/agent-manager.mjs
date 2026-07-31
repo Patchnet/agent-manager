@@ -29,6 +29,7 @@ import { runMonitor } from "../src/monitor.mjs";
 import { formatStatus, latestRunId, readEvents, readStatus, writeStatus } from "../src/status.mjs";
 import { runWatchSignal } from "../src/watch-signal.mjs";
 import { assertDangerousPermissionApproval, loadWorkflow } from "../src/workflow.mjs";
+import { formatRuntime } from "../src/runtime.mjs";
 
 const selfPath = fileURLToPath(import.meta.url);
 const packageRoot = resolve(dirname(selfPath), "..");
@@ -187,11 +188,13 @@ function detachRun(flags) {
   const child = spawnDetached(childArgs, logPath, flags.dangerous ? { AGENT_MANAGER_ALLOW_DANGEROUS_PERMISSIONS: "1" } : {});
   const payload = {
     runId, state: "detached", pid: child.pid,
+    runtime: workflow.runtime,
     telemetry: join(dir, "status.json"), supervisorLog: logPath,
     statusCommand: `agent-manager status ${runId}`,
   };
   console.log(flags.json ? JSON.stringify(payload) : [
     `runId: ${runId}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
+    `runtime: ${formatRuntime(payload.runtime)}`,
     `supervisorLog: ${logPath}`, `status: ${payload.statusCommand}`,
     `monitor: agent-manager monitor ${runId}`, `watch-signal: agent-manager watch-signal ${runId}`,
   ].join("\n"));
@@ -244,6 +247,7 @@ function detachShip(flags) {
     state: "detached",
     phase: "ship",
     approve: handoff.approve,
+    runtime: handoff.runtime,
     pid: child.pid,
     telemetry: join(runDir(flags.runId), "status.json"),
     supervisorLog: logPath,
@@ -256,6 +260,7 @@ function detachShip(flags) {
     "state: detached",
     "phase: ship",
     `approve: ${handoff.approve}`,
+    `runtime: ${formatRuntime(payload.runtime)}`,
     `pid: ${child.pid}`,
     `telemetry: ${payload.telemetry}`,
     `supervisorLog: ${logPath}`,
@@ -306,8 +311,11 @@ async function main() {
       scopeOverrides: workflow.scope_overrides,
       verificationCommands: workflow.verification.commands.length,
       planning,
+      runtime: workflow.runtime,
     };
-    console.log(args.includes("--json") ? JSON.stringify(payload) : `valid: ${file}\nrepo: ${payload.repo}\nlanes: ${payload.lanes.length}`);
+    console.log(args.includes("--json")
+      ? JSON.stringify(payload)
+      : `valid: ${file}\nrepo: ${payload.repo}\nruntime: ${formatRuntime(payload.runtime)}\nlanes: ${payload.lanes.length}`);
     return;
   }
 

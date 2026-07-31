@@ -23,6 +23,7 @@ const { loadWorkflow, assertDangerousPermissionApproval } = await import("../src
 const { runDir } = await import("../src/paths.mjs?hardening");
 const { currentHead, validateLaneGuardrails } = await import("../src/guardrails.mjs?hardening");
 const { buildHarnessEnv, buildVerificationEnv } = await import("../src/environment.mjs?hardening");
+const { detectRuntimeProfile, runtimeEnv } = await import("../src/runtime.mjs?hardening");
 const { getHarnessAdapter } = await import("../src/harness/index.mjs?hardening");
 const { isTerminalState, readEvents, readStatus, writeStatus } = await import("../src/status.mjs?hardening");
 const { prepareReply, resumeLane } = await import("../src/reply.mjs?hardening");
@@ -71,7 +72,14 @@ test("scope checks include committed changes even when commits are allowed", () 
 
 test("worker environment is allowlisted and fake harness requires test process opt-in", () => {
   const source = { PATH: "bin", HOME: "home", UNRELATED_SECRET: "do-not-pass", EXTRA_SAFE: "yes" };
-  assert.deepEqual(buildHarnessEnv(["EXTRA_SAFE"], source), { PATH: "bin", HOME: "home", EXTRA_SAFE: "yes", AGENT_MANAGER_WORKER: "1" });
+  const runtime = detectRuntimeProfile({ platform: "win32", arch: "x64", release: "test", env: source });
+  assert.deepEqual(buildHarnessEnv(["EXTRA_SAFE"], source, runtime), {
+    PATH: "bin",
+    HOME: "home",
+    EXTRA_SAFE: "yes",
+    AGENT_MANAGER_WORKER: "1",
+    ...runtimeEnv(runtime),
+  });
   const previous = process.env.AGENT_MANAGER_TEST_MODE;
   delete process.env.AGENT_MANAGER_TEST_MODE;
   assert.throws(() => getHarnessAdapter("fake"), /test-only/);
@@ -88,16 +96,19 @@ test("integrated verification excludes provider credentials unless explicitly al
     OPENAI_API_KEY: "secret",
     SAFE_TEST_VALUE: "visible",
   };
-  assert.deepEqual(buildVerificationEnv([], source), {
+  const runtime = detectRuntimeProfile({ platform: "linux", arch: "x64", release: "test", env: source });
+  assert.deepEqual(buildVerificationEnv([], source, runtime), {
     PATH: "bin",
     HOME: "home",
     AGENT_MANAGER_VERIFICATION: "1",
+    ...runtimeEnv(runtime),
   });
-  assert.deepEqual(buildVerificationEnv(["SAFE_TEST_VALUE"], source), {
+  assert.deepEqual(buildVerificationEnv(["SAFE_TEST_VALUE"], source, runtime), {
     PATH: "bin",
     HOME: "home",
     SAFE_TEST_VALUE: "visible",
     AGENT_MANAGER_VERIFICATION: "1",
+    ...runtimeEnv(runtime),
   });
 });
 

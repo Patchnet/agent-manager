@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { readStatus } from "./status.mjs";
 import { runDir } from "./paths.mjs";
 import { writePrivateFile } from "./fs-safe.mjs";
+import { formatRuntime } from "./runtime.mjs";
 
 export function buildDeliveryReview(runId, { pass = 1, write = true } = {}) {
   if (![1, 2].includes(pass)) throw new Error("review pass must be 1 or 2");
@@ -14,6 +15,7 @@ export function buildDeliveryReview(runId, { pass = 1, write = true } = {}) {
     `- Repository: \`${status.repo}\``,
     `- Run state: **${status.state}**`,
     `- Base: \`${status.baseCommit || status.initialRepo?.head || status.baseRef || "unknown"}\``,
+    `- Runtime: ${formatRuntime(status.runtime)}`,
     `- Maximum concurrency: ${status.maxConcurrency || "-"}`,
     `- Planning preflight: **${status.planning?.state || "legacy/unrecorded"}**`,
     `- Plan: ${status.planning?.planRef || "-"}`,

@@ -1,12 +1,54 @@
-# agent-manager
+# agent-manager 🎛️
 
-A detached CLI supervisor for running Claude Code and Codex CLI in parallel Git worktrees. The host chat stays responsive, each lane has an explicit file scope, blocking questions return through one status contract, and delivery stops at review until the operator approves shipping.
+[![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4b5563)](#requirements)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-## What it provides
+**One operator. Up to five isolated coding lanes. Explicit approval before anything ships.**
+
+agent-manager is a detached CLI supervisor for Claude Code and Codex CLI. It
+runs parallel work in isolated Git worktrees while the host chat stays free for
+decisions, questions, and review.
+
+## Three components, three clear jobs
+
+| Component | What it is | Owns | Does not own |
+|---|---|---|---|
+| **[🎛️ Agent Manager — core](skills/agent-manager/SKILL.md)** | CLI supervisor + host skill | planning evidence, lane isolation, bounded concurrency, questions, telemetry, integration, Delivery Review | source-system check-in, approval, or automatic shipping |
+| **[📦 PR Manager — function](skills/pr-manager/SKILL.md)** | deterministic `agent-manager ship` phase + reporting skill | approved commit, push, pull request, CI wait, merge, version stamp, and tag | code authoring, approval decisions, policy bypasses, or GitHub Releases |
+| **[🚦 Ship Gate — approval](skills/ship-gate/SKILL.md)** | standalone, model-neutral skill | the human approval board and exact authorized Git actions | orchestration or background execution |
+
+Agent Manager is the product core. PR Manager is not another autonomous agent;
+it is the core's detached shipping function. Ship Gate is deliberately
+independent and can govern a normal single-agent pull request without Agent
+Manager.
+
+```mermaid
+flowchart LR
+    Plan["📝 Plan + source review"] --> AM["🎛️ Agent Manager<br/>parallel work"]
+    AM --> Review["🔍 Delivery Review"]
+    Single["👤 Single author"] --> Gate{"🚦 Ship Gate<br/>human approval"}
+    Review --> Gate
+    Gate -->|"open-pr"| Handoff["📬 Review-ready PR<br/>author stops"]
+    Gate -->|"through-pr / all"| PR["📦 PR Manager<br/>detached shipping"]
+    PR --> Done["✅ Merge / version / tag"]
+```
+
+### Choose the smallest useful setup
+
+| Need | Use |
+|---|---|
+| One agent should prepare a review-ready PR | 🚦 Ship Gate only (`open-pr`) |
+| Several agents should build in parallel | 🎛️ Agent Manager, then 🚦 Ship Gate |
+| Approved work should ship without blocking the host chat | All three |
+| A human will handle GitHub after review | 🎛️ Agent Manager only; stop after Delivery Review |
+
+## What the core provides
 
 - One isolated Git worktree per lane
 - Claude and Codex harnesses behind one workflow format
 - Detached launch with authoritative `status.json`
+- Automatic host runtime profile in doctor, prompts, telemetry, and shipping
 - Fail-closed manager planning attestation with one frozen shared context packet
 - Resumable `needs_input` and same-session `reply`
 - Changed-file, scope, commit, and pull-request guardrails
@@ -28,7 +70,7 @@ agent-manager is not a sandbox, terminal multiplexer, fleet dashboard, or auto-m
 - Git and GitHub CLI (`gh`) for the detached shipping phase
 - Claude Code, Codex CLI, or both, already authenticated through their normal subscription CLI
 
-## Install from a clone
+## Install the core CLI
 
 ```bash
 git clone https://github.com/Patchnet/agent-manager.git
@@ -40,6 +82,86 @@ agent-manager doctor
 ```
 
 You can also replace `agent-manager` in the examples with `node bin/agent-manager.mjs`.
+
+`doctor` detects the authoritative host platform, architecture, shell, command
+mode, and path style. Agent Manager injects the same profile into every lane
+prompt and worker environment. Operators do not select the host OS manually;
+platform-specific command adapters use the detected profile. On Windows, npm
+and other command scripts run through `cmd.exe` while authored lane commands
+are identified as PowerShell commands.
+
+## Use each component standalone
+
+### 🎛️ Agent Manager core only
+
+Use the core by itself when you want isolated parallel work and evidence-backed
+review, but a human or another system will handle Git afterward.
+
+```bash
+agent-manager init --repo /path/to/repo \
+  --request "Implement the approved plan" \
+  --harnesses claude,codex
+# Review and complete the generated planning block and context file.
+agent-manager validate /path/to/repo/agent-manager.yaml
+agent-manager run /path/to/repo/agent-manager.yaml --detach --json
+agent-manager watch-signal <runId> --heartbeat-sec 180
+agent-manager review <runId>
+```
+
+Stop after Delivery Review. Agent Manager does not require PR Manager when a
+person will perform integration, and it does not require Ship Gate until an
+outward shipping action is proposed.
+
+### 📦 PR Manager function
+
+PR Manager is not a separate agent or binary. It is the deterministic shipping
+phase exposed by the core CLI. It requires an existing run, an accepted
+Delivery Review, and an explicit Ship Gate approval.
+
+```bash
+agent-manager ship <runId> \
+  --approve through-pr \
+  --commit-message "feat: approved change" \
+  --detach --json
+agent-manager watch-signal <runId> --heartbeat-sec 180
+```
+
+The host can walk away after the detached handoff. PR Manager reads the same
+`status.json`, stops on policy or CI blockers, and reports the blocker through
+the run instead of inventing a workaround.
+
+### 🚦 Ship Gate only
+
+Ship Gate can govern a single developer or coding agent without Agent Manager.
+Copy or symlink [`skills/ship-gate/`](skills/ship-gate/) into the host's skill
+directory, or vendor it into the target repository.
+
+| Host | Typical destination |
+|---|---|
+| Claude Code | `~/.claude/skills/ship-gate/` |
+| Cursor | `~/.cursor/skills/ship-gate/` or `<repo>/.cursor/skills/ship-gate/` |
+| Codex | `~/.codex/skills/ship-gate/` |
+| Any repository | Point `AGENTS.md` or `CLAUDE.md` to the vendored skill |
+
+Portable repository instruction:
+
+```markdown
+Before any commit, push, or pull request, follow the repository Ship Gate.
+
+PR authors request `open-pr` and stop after the PR is review-ready. They must
+not approve, auto-merge, merge, version, tag, or release their own PR. A
+different developer or Master Dev owns integration and release.
+```
+
+The approval replies are intentionally narrow:
+
+| Reply | Authority |
+|---|---|
+| `open-pr` | Author: commit, push, create/update PR, attach evidence, then stop |
+| `through-pr` | Independent reviewer: ship through merge; version/tag later |
+| `all` | Independent reviewer: ship through merge, approved version, and tag |
+| `commit` / `commit+push` | Perform only the named Git steps |
+| `reject` | Stop |
 
 ## Local demo without a model subscription
 
@@ -61,7 +183,7 @@ bash or zsh:
 AGENT_MANAGER_TEST_MODE=1 agent-manager run examples/fake-demo.yaml --detach --json
 ```
 
-## Create a real workflow
+## 🎛️ Agent Manager: create a real workflow
 
 ```bash
 agent-manager init --repo /path/to/repo \
@@ -142,7 +264,7 @@ SHA-256 digest is recorded in status and review evidence. Every lane receives
 that exact packet. Resume and integration use the frozen copy, so later edits
 to the original context file cannot change an active run.
 
-## Cursor cockpit
+## Install host skills (Cursor)
 
 Install the user-level agent-manager and PR Manager skills:
 
@@ -156,6 +278,10 @@ Install both skills plus a project rule:
 agent-manager install cursor --project /path/to/repo
 ```
 
+This command installs the Agent Manager and PR Manager skills. Install or
+reference Ship Gate separately because approval policy belongs to the target
+repository, not to the orchestration runtime.
+
 Cursor launches runs with `--detach`, reads `status.json`, replies to blocking lanes, and generates Delivery Review. `watch-signal` and `events --jsonl` are the portable wake sources:
 
 ```bash
@@ -165,7 +291,9 @@ agent-manager events <runId> --jsonl
 
 Cursor does not currently document a stable API that wakes an idle chat from arbitrary external process output. Automatic chat re-entry is therefore experimental. A side-terminal watcher or operating-system notification can consume the same event stream without changing orchestration state.
 
-## Core commands
+## Command map
+
+### 🎛️ Core orchestration
 
 ```text
 agent-manager doctor [--repo <path>]
@@ -179,15 +307,20 @@ agent-manager watch-signal <runId>
 agent-manager reply <runId> <laneId> --message <text>
 agent-manager review <runId> [--pass 1|2]
 agent-manager integrate <runId>
-agent-manager ship <runId> --approve through-pr|all --detach
 agent-manager cancel <runId>
 agent-manager cleanup <runId>
 agent-manager cleanup --stale --older-than-days 30
 ```
 
+### 📦 PR Manager function
+
+```text
+agent-manager ship <runId> --approve through-pr|all --detach
+```
+
 Dangerous permission bypass requires two independent inputs: `policy.dangerously_skip_permissions: true` in the workflow and `--allow-dangerous-permissions` on that invocation (or the matching environment confirmation).
 
-## Detached PR Manager
+## 📦 PR Manager: detached shipping
 
 After Delivery Review accepts the work and the operator approves Ship Gate,
 hand shipping to the same run instead of polling GitHub in the host chat:
