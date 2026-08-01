@@ -56,7 +56,7 @@ node bin/agent-manager.mjs watch-signal <runId> --heartbeat-sec 180
 # prints: AGENT_MANAGER_WAKE_<runId> {"reason":"heartbeat|state_change|needs_input|terminal",...}
 
 node bin/agent-manager.mjs monitor <runId> [--interval 2]
-# live lane/delivery board; exits on merged/released/rejected/failed/cancelled
+# live lane/delivery board; exits on reviewed/merged/released/rejected/failed/cancelled
 ```
 
 `watch-signal` baselines `status.json`, then emits wakes for Cursor
@@ -103,7 +103,8 @@ policy:
 planning:
   source_refs: [<work-source-reference>]
   plan_ref: <approved-plan-reference>
-  context_file: agent-manager.context.md
+  context: |
+    <private shared planning packet>
   reviewed_base_sha: <full-git-commit-sha>
   verified_by: <manager-agent>
   verified_at: <ISO-date-time>
@@ -116,8 +117,10 @@ planning:
     scope_verified: true
 lanes:
   - id: <lane>
+    kind: implementation    # implementation | review
     depends_on: []        # optional lane ids that must finish first
     scope: "path/or/glob/**"
+    expected_outputs: [path/to/required-file.ts]
     prompt: |
       …task…
 ```
@@ -128,10 +131,16 @@ prerequisites report `dependency-waiting`.
 
 `planning` is a launch attestation owned by the invoking manager. `validate`
 and `run` require every attestation and require `reviewed_base_sha` to equal the
-commit resolved by `base_ref`. The context file must be a non-empty relative
-path inside the target repo. At launch it is copied to the private run directory,
-hashed, and injected identically into every lane prompt. Resume and integration
-use the frozen copy, not a later edit to the source file.
+commit resolved by `base_ref`. Use inline `context` to avoid target-repository
+files; `context_file` remains compatible with existing workflows. At launch the
+packet is copied to the private run directory, hashed, and injected identically
+into every lane prompt.
+
+An `implementation` lane must produce at least one changed file unless
+`allow_no_changes: true` is explicit. A `review` lane may finish without edits.
+Concrete `expected_outputs` must be covered by the lane scope and must exist at
+completion. Exit code 0 alone never proves delivery. The preflight records the
+dependency topology and warns when a multi-lane graph is fully serialized.
 
 Write scopes are validated pairwise before claims or worktrees are created.
 Unapproved overlap fails closed. `scope_overrides` may name exactly one writable
@@ -183,7 +192,7 @@ merged|released` as the machine-readable downstream gate.
 ```json
 {
   "runId": "run-YYYYMMDD-HHMMSS-random",
-  "state": "running|delivery_review_pending|correction_pending|ship_gate_pending|shipping|blocked|release_pending|merged|released|rejected|failed|cancelled",
+  "state": "running|delivery_review_pending|correction_pending|ship_gate_pending|shipping|blocked|release_pending|reviewed|merged|released|rejected|failed|cancelled",
   "repo": "my-repo",
   "workflow": "/abs/path/workflow.yaml",
   "target_dev_flow": "simple",
@@ -239,7 +248,7 @@ merged|released` as the machine-readable downstream gate.
   "delivery": {
     "schema": "agent-manager.delivery.v1",
     "mode": "single|train|review-only",
-    "state": "workers_running|review_pending|correction_pending|ship_gate_pending|shipping|targets_pending|release_pending|merged|released|rejected|blocked|failed|cancelled",
+    "state": "workers_running|review_pending|correction_pending|ship_gate_pending|shipping|targets_pending|release_pending|reviewed|merged|released|rejected|blocked|failed|cancelled",
     "review": {
       "state": "not_started|awaiting_operator|accepted|correction_required|rejected",
       "latestPass": 1,

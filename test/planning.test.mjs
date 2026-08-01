@@ -48,13 +48,13 @@ function planning(overrides = {}) {
   };
 }
 
-function workflow(name, planningValue) {
+function workflow(name, planningValue, laneOverrides = {}) {
   if (arguments.length < 2) planningValue = planning();
   const path = join(root, `${name}.json`);
   const doc = {
     repo: "repo",
     planning: planningValue,
-    lanes: [{ id: "one", scope: "README.md", prompt: "Do the lane work." }],
+    lanes: [{ id: "one", scope: "README.md", prompt: "Do the lane work.", ...laneOverrides }],
   };
   if (planningValue === undefined) delete doc.planning;
   writeFileSync(path, JSON.stringify(doc, null, 2));
@@ -74,6 +74,26 @@ test("planning evidence validates the immutable base and prefixes every lane pro
   assert.match(prompt, /## Lane assignment/);
   assert.match(prompt, /## Host runtime \(automatic; authoritative\)/);
   assert.match(prompt, new RegExp(loaded.runtime.hostPlatform));
+});
+
+test("planning accepts inline private context without creating repository files", () => {
+  const loaded = workflow("inline", planning({
+    context: "Private inline packet.\n",
+    context_file: undefined,
+  }));
+  const evidence = assertPlanningReady(loaded);
+  assert.equal(evidence.contextFile, "<inline>");
+  assert.match(lanePrompt(loaded.lanes[0], loaded), /Private inline packet/);
+});
+
+test("expected output preflight catches extension patterns that do not cover the file", () => {
+  assert.throws(
+    () => workflow("tsx-mismatch", planning(), {
+      scope: ["test/projects-*.test.ts"],
+      expected_outputs: ["test/projects-pane.test.tsx"],
+    }),
+    /not covered by its scope/,
+  );
 });
 
 test("planning gate rejects missing, incomplete, stale, and escaping context", () => {

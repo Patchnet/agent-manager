@@ -154,6 +154,12 @@ export function prepareShipHandoff(runId, options = {}) {
 
   const pollSec = boundedNumber(options.pollSec ?? 10, "poll seconds", 1, 300);
   const timeoutSec = boundedNumber(options.timeoutSec ?? 1800, "timeout seconds", 1, 86400);
+  const checkGraceSec = boundedNumber(
+    options.checkGraceSec ?? 90,
+    "check registration grace seconds",
+    0,
+    900,
+  );
   const prValue = options.pr || target?.pr || target?.prUrl || (!target ? status.ship?.prUrl : null) || null;
   const pr = prValue ? safeArgument(prValue, "pull request") : null;
 
@@ -174,6 +180,7 @@ export function prepareShipHandoff(runId, options = {}) {
     summary,
     pollSec,
     timeoutSec,
+    checkGraceSec,
     runtime: detectRuntimeProfile(),
     requestedAt: new Date().toISOString(),
   };
@@ -515,37 +522,20 @@ async function runSimple(runId, status, handoff, dependencies) {
 async function releaseFormal(runId, status, handoff, dependencies) {
   const { exec, sleep, now } = dependencies;
   status = phase(runId, status, "release", `preparing ${handoff.version} on ${handoff.base}`);
-  const dirty = must(
-    exec,
-    "git",
-    ["status", "--porcelain=v1"],
-    handoff.repoRoot,
-    "inspect release checkout",
-  ).stdout;
-  if (dirty) {
-    throw new ShipBlockedError("The base-branch checkout has local changes.", [
-      "Clean or preserve the local changes, then rerun ship.",
-    ]);
-  }
-  must(exec, "git", ["fetch", handoff.remote, handoff.base], handoff.repoRoot, "fetch base branch");
-  must(exec, "git", ["switch", handoff.base], handoff.repoRoot, "switch to base branch");
-  must(
-    exec,
-    "git",
-    ["pull", "--ff-only", handoff.remote, handoff.base],
-    handoff.repoRoot,
-    "fast-forward base branch",
-  );
-  const baseSha = must(exec, "git", ["rev-parse", "HEAD"], handoff.repoRoot, "read release base").stdout;
-  status = verifyDeliveryAncestry(runId, status, handoff, baseSha, exec);
-  const stamp = applyVersionStamp(handoff.repoRoot, handoff.version, handoff.summary, now());
-  verifyVersionStamp(handoff.repoRoot, handoff.version, exec);
-  must(exec, "git", ["add", ...stamp.files], handoff.repoRoot, "stage release stamp");
+  const releaseRoot = prepareReleaseWorkspace(runId, handoff, exec);
+  const releaseHandoff = { ...handoff, repoRoot: releaseRoot, releaseWorktree: releaseRoot };
+  status.ship.releaseWorktree = releaseRoot;
+  status = save(runId, status);
+  const baseSha = must(exec, "git", ["rev-parse", "HEAD"], releaseRoot, "read release base").stdout;
+  status = verifyDeliveryAncestry(runId, status, releaseHandoff, baseSha, exec);
+  const stamp = applyVersionStamp(releaseRoot, handoff.version, handoff.summary, now());
+  verifyVersionStamp(releaseRoot, handoff.version, exec);
+  must(exec, "git", ["add", ...stamp.files], releaseRoot, "stage release stamp");
   const stampDirty = must(
     exec,
     "git",
     ["status", "--porcelain=v1"],
-    handoff.repoRoot,
+    releaseRoot,
     "inspect release stamp",
   ).stdout;
   if (stampDirty) {
@@ -553,24 +543,55 @@ async function releaseFormal(runId, status, handoff, dependencies) {
       exec,
       "git",
       ["commit", "-m", `chore: release ${handoff.version}`],
-      handoff.repoRoot,
+      releaseRoot,
       "commit release stamp",
     );
   }
-  const sha = must(exec, "git", ["rev-parse", "HEAD"], handoff.repoRoot, "read release commit").stdout;
+  const sha = must(exec, "git", ["rev-parse", "HEAD"], releaseRoot, "read release commit").stdout;
   status.ship.releaseSha = sha;
   status = step(runId, status, "release", "done", sha);
 
   status = phase(runId, status, "release-push", `pushing ${handoff.base}`);
-  must(exec, "git", ["push", handoff.remote, handoff.base], handoff.repoRoot, "push release stamp");
+  must(exec, "git", ["push", handoff.remote, `HEAD:${handoff.base}`], releaseRoot, "push release stamp");
   status = step(runId, status, "release-push", "done", `${handoff.remote}/${handoff.base}`);
 
-  status = await waitForCiIfConfigured(runId, status, handoff.repoRoot, sha, handoff, {
+  status = await waitForCiIfConfigured(runId, status, releaseRoot, sha, handoff, {
     exec,
     sleep,
     now,
   });
-  return tagRelease(runId, status, handoff, sha, exec);
+  return tagRelease(runId, status, releaseHandoff, sha, exec);
+}
+
+export function prepareReleaseWorkspace(runId, handoff, exec = execCommand) {
+  const releaseParent = ensurePrivateDir(join(runDir(runId), "ship", "release"));
+  const releaseRoot = join(releaseParent, "wt");
+  const releaseBranch = `am/${runId}/release-${handoff.version}`;
+  must(exec, "git", ["fetch", handoff.remote, handoff.base], handoff.worktree, "fetch release base");
+  if (!existsSync(releaseRoot)) {
+    const branchExists = exec("git", ["show-ref", "--verify", `refs/heads/${releaseBranch}`], {
+      cwd: handoff.worktree,
+    });
+    const args = branchExists.ok
+      ? ["worktree", "add", releaseRoot, releaseBranch]
+      : ["worktree", "add", "-b", releaseBranch, releaseRoot, `${handoff.remote}/${handoff.base}`];
+    must(exec, "git", args, handoff.worktree, "create private release worktree");
+  }
+  assertPathInside(runDir(runId), releaseRoot, "release worktree");
+  ensureCurrentBranch(exec, releaseRoot, releaseBranch);
+  const dirty = must(exec, "git", ["status", "--porcelain=v1"], releaseRoot, "inspect private release worktree").stdout;
+  if (dirty) {
+    const allowed = new Set(["Version.md", "package.json", "package-lock.json"]);
+    const unexpected = dirty.split(/\r?\n/)
+      .map((line) => line.slice(3).replace(/^"|"$/g, ""))
+      .filter((path) => path && !allowed.has(path.replace(/\\/g, "/")));
+    if (unexpected.length) {
+      throw new ShipBlockedError("The private release worktree contains unexpected local changes.", [
+        `Inspect the run-owned release workspace: ${unexpected.join(", ")}`,
+      ]);
+    }
+  }
+  return releaseRoot;
 }
 
 export function verifyDeliveryAncestry(runId, status, handoff, releaseBaseSha, exec = execCommand) {
@@ -603,6 +624,7 @@ export function verifyDeliveryAncestry(runId, status, handoff, releaseBaseSha, e
 
 async function waitForPr(runId, status, handoff, { exec, sleep, now }) {
   const deadline = now() + handoff.timeoutSec * 1000;
+  const checkRegistrationStartedAt = now();
   let updatedBehind = false;
   while (now() <= deadline) {
     assertNotCancelled(runId);
@@ -632,8 +654,18 @@ async function waitForPr(runId, status, handoff, { exec, sleep, now }) {
         "Reject or abandon the release.",
       ]);
     }
-    const blockedDiag = diagnoseBlockedMerge(pr, exec, handoff.worktree);
-    if (blockedDiag) throw blockedDiag;
+    const insideCheckGrace = isWithinCheckRegistrationGrace(
+      pr,
+      now() - checkRegistrationStartedAt,
+      handoff.checkGraceSec ?? 90,
+    );
+    if (insideCheckGrace && pr.mergeStateStatus === "BLOCKED") {
+      status.ship.lastActivity = "waiting for GitHub to register required checks";
+      status = save(runId, status);
+    } else {
+      const blockedDiag = diagnoseBlockedMerge(pr, exec, handoff.worktree);
+      if (blockedDiag) throw blockedDiag;
+    }
     if (pr.mergeStateStatus === "BEHIND" && !updatedBehind) {
       must(
         exec,
@@ -652,6 +684,13 @@ async function waitForPr(runId, status, handoff, { exec, sleep, now }) {
     "Compare branch-protection required status checks to the PR check names (exact match).",
     "Inspect reviews and CI, then rerun ship.",
   ]);
+}
+
+export function isWithinCheckRegistrationGrace(pr, elapsedMs, graceSec = 90) {
+  const checks = Array.isArray(pr?.statusCheckRollup) ? pr.statusCheckRollup : [];
+  return pr?.mergeStateStatus === "BLOCKED"
+    && checks.length === 0
+    && elapsedMs < graceSec * 1000;
 }
 
 async function waitForCiIfConfigured(
@@ -857,13 +896,7 @@ function preflight(handoff, exec) {
   if (handoff.approve === "all") {
     must(exec, "npm", ["--version"], handoff.worktree, "find npm for version checks");
   }
-  must(
-    exec,
-    "git",
-    ["rev-parse", "--is-inside-work-tree"],
-    handoff.repoRoot,
-    "validate release repository",
-  );
+  must(exec, "git", ["rev-parse", "--is-inside-work-tree"], handoff.worktree, "validate ship worktree");
   must(
     exec,
     "git",

@@ -10,7 +10,7 @@ import { markWorkersComplete } from "./delivery.mjs";
 export function integrateRun(runId) {
   const status = readStatus(runId);
   if (!status) throw new Error("no status for " + runId);
-  if (["running", "shipping", "cancelled", "ship_gate_pending", "merged", "released"].includes(status.state)) {
+  if (["running", "shipping", "cancelled", "ship_gate_pending", "reviewed", "merged", "released"].includes(status.state)) {
     throw new Error("run must finish successfully before integration");
   }
   if (status.integrate?.state === "ready") return status;

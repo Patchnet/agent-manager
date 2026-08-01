@@ -101,7 +101,7 @@ export function formatMonitorBoard(status, { previousLaneStates = {} } = {}) {
   }
 
   lines.push("");
-  lines.push("Ctrl+C to stop · exits automatically on merged/released/rejected/failed/cancelled");
+  lines.push("Ctrl+C to stop · exits automatically on reviewed/merged/released/rejected/failed/cancelled");
   return lines.join("\n");
 }
 

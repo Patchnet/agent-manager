@@ -137,12 +137,14 @@ export function formatStatus(status) {
     `started=${status.startedAt || "-"}  ended=${status.endedAt || "-"}  initialDirty=${status.initialRepo?.dirty ? "yes" : "no"}`,
     `planning=${status.planning?.state || "legacy/unrecorded"}  plan=${status.planning?.planRef || "-"}`,
     `reviewedBase=${status.planning?.reviewedBaseSha || "-"}  contextSha256=${status.planning?.contextDigest || "-"}`,
+    `topology=${status.topology?.fullySerialized ? "serialized" : "parallel"}  effectiveParallelism=${status.topology?.effectiveParallelism || "-"}`,
     "",
   ];
   for (const lane of status.lanes || []) {
     const spin = lane.state === "running" ? "*" : " ";
     lines.push(`[${spin}] ${lane.id.padEnd(12)} ${lane.state.padEnd(8)} ${lane.harness}  ${lane.branch || "-"}`);
     lines.push(`      scope: ${lane.scope}`);
+    lines.push(`      kind: ${lane.kind || "-"}  completion=${lane.completion?.state || "-"}`);
     lines.push(`      last: ${lane.lastActivity || "-"}`);
     if (lane.elapsedSec != null) lines.push(`      elapsed: ${lane.elapsedSec}s  pid=${lane.pid ?? "-"}`);
     if (lane.exitCode != null) lines.push(`      exit: ${lane.exitCode}`);

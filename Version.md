@@ -1,11 +1,17 @@
 ---
 enabled: true
-current: 1.4.0
+current: 1.5.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.5.0 - 2026-08-01
+
+Hardened deterministic orchestration and release flow with completion contracts,
+private planning context, worktree validation, delivery preflight, and isolated
+release workspaces.
 
 ## 1.4.0 - 2026-08-01
 

@@ -21,7 +21,9 @@ mkdirSync(runsRoot, { recursive: true });
 const {
   diagnoseBlockedMerge,
   execCommand,
+  isWithinCheckRegistrationGrace,
   prepareShipHandoff,
+  prepareReleaseWorkspace,
   queueShip,
   resolveSpawnCommand,
   runShip,
@@ -239,6 +241,123 @@ test("release ancestry verification fails closed when any train merge is absent"
     ),
     /does not contain expected merge/,
   );
+});
+
+test("formal release preparation uses a private worktree and leaves a dirty shared checkout untouched", () => {
+  const runId = "run-private-release";
+  const repo = join(root, "private-release-repo");
+  const remote = join(root, "private-release-remote.git");
+  mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
+  execFileSync("git", ["init", "--bare", remote], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "config", "user.name", "Test"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "config", "user.email", "test@example.invalid"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", remote], { stdio: "ignore" });
+  writeFileSync(join(repo, "README.md"), "base\n");
+  execFileSync("git", ["-C", repo, "add", "README.md"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "commit", "-m", "chore: base"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "push", "-u", "origin", "main"], { stdio: "ignore" });
+  writeFileSync(join(repo, "operator-notes.txt"), "keep me\n");
+
+  const releaseRoot = prepareReleaseWorkspace(runId, {
+    runId,
+    worktree: repo,
+    remote: "origin",
+    base: "main",
+    version: "1.1.0",
+  });
+  assert.equal(releaseRoot, join(runsRoot, runId, "ship", "release", "wt"));
+  assert.equal(execFileSync("git", ["-C", repo, "branch", "--show-current"], { encoding: "utf8" }).trim(), "main");
+  assert.equal(existsSync(join(repo, "operator-notes.txt")), true);
+  assert.match(execFileSync("git", ["-C", repo, "status", "--short"], { encoding: "utf8" }), /operator-notes/);
+  assert.equal(
+    execFileSync("git", ["-C", releaseRoot, "branch", "--show-current"], { encoding: "utf8" }).trim(),
+    `am/${runId}/release-1.1.0`,
+  );
+});
+
+test("Formal all release completes while the shared checkout is dirty", async () => {
+  const runId = "run-formal-dirty-release";
+  const repo = join(root, "formal-dirty-repo");
+  const remote = join(root, "formal-dirty-remote.git");
+  const laneWorktree = join(runsRoot, runId, "lane", "wt");
+  mkdirSync(repo, { recursive: true });
+  mkdirSync(join(runsRoot, runId, "lane"), { recursive: true });
+  execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
+  execFileSync("git", ["init", "--bare", remote], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "config", "user.name", "Test"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "config", "user.email", "test@example.invalid"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", remote], { stdio: "ignore" });
+  writeFileSync(
+    join(repo, "Version.md"),
+    "---\nenabled: true\ncurrent: 1.0.0\ndev_flow: formal\n---\n\n# Version History\n\n## 1.0.0 - 2026-07-01\n\nInitial release.\n",
+  );
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "formal-fixture", version: "1.0.0" }, null, 2) + "\n");
+  execFileSync("git", ["-C", repo, "add", "-A"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "commit", "-m", "chore: base"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "push", "-u", "origin", "main"], { stdio: "ignore" });
+  const mergeSha = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const branch = `am/${runId}/lane`;
+  execFileSync("git", ["-C", repo, "worktree", "add", "-b", branch, laneWorktree, "main"], { stdio: "ignore" });
+  writeFileSync(join(repo, "operator-notes.txt"), "keep me\n");
+
+  writeRun(runId, {
+    repoRoot: repo,
+    target_dev_flow: "formal",
+    integrate: undefined,
+    delivery: {
+      schema: "agent-manager.delivery.v1",
+      mode: "single",
+      state: "release_pending",
+      releaseRequired: true,
+      review: { state: "accepted", latestPass: 1, verdict: "accept", reviewer: "test-manager", history: [] },
+      targets: [{
+        id: "lane",
+        laneId: "lane",
+        state: "merged",
+        branch,
+        base: "main",
+        worktree: laneWorktree,
+        changedFiles: ["feature.txt"],
+        prUrl: "https://example.invalid/pull/9",
+        mergeSha,
+      }],
+      release: { state: "pending", sha: null, tag: null, verifiedMergeShas: [] },
+    },
+  });
+  const handoff = prepareShipHandoff(runId, {
+    approve: "all",
+    target: "lane",
+    version: "1.1.0",
+    summary: "Release from an isolated workspace.",
+    pollSec: 1,
+    timeoutSec: 5,
+  });
+  queueShip(runId, handoff);
+  const exec = (command, args, options) => {
+    if (command === "gh" && args[0] === "--version") return ok("gh version test");
+    if (command === "gh" && args[0] === "auth") return ok("authenticated");
+    if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+      return ok(JSON.stringify({
+        state: "MERGED",
+        mergeStateStatus: "UNKNOWN",
+        mergeable: "UNKNOWN",
+        statusCheckRollup: [],
+        url: "https://example.invalid/pull/9",
+        number: 9,
+        headRefName: branch,
+        baseRefName: "main",
+        mergeCommit: { oid: mergeSha },
+      }));
+    }
+    return execCommand(command, args, options);
+  };
+  const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
+  assert.equal(result.state, "released");
+  assert.equal(result.ship.tag, "v1.1.0");
+  assert.match(result.ship.releaseWorktree, /ship[\\/]release[\\/]wt$/);
+  assert.equal(execFileSync("git", ["-C", repo, "branch", "--show-current"], { encoding: "utf8" }).trim(), "main");
+  assert.equal(existsSync(join(repo, "operator-notes.txt")), true);
 });
 
 test("Formal through-pr shipping records PR merge telemetry and events", async () => {
@@ -529,4 +648,11 @@ test("diagnoseBlockedMerge waits while checks are still running", () => {
     root,
   );
   assert.equal(error, null);
+});
+
+test("blocked pull requests receive a bounded check-registration grace period", () => {
+  const pr = { mergeStateStatus: "BLOCKED", statusCheckRollup: [] };
+  assert.equal(isWithinCheckRegistrationGrace(pr, 89_999, 90), true);
+  assert.equal(isWithinCheckRegistrationGrace(pr, 90_000, 90), false);
+  assert.equal(isWithinCheckRegistrationGrace({ ...pr, statusCheckRollup: [{}] }, 1, 90), false);
 });

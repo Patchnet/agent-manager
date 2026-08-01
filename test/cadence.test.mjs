@@ -49,5 +49,6 @@ test("operator cadence automatically advances corrections and accepted reviews",
 
 test("operator cadence stops only at overall terminal delivery", () => {
   assert.equal(deriveOperatorCadence(status("shipping")).transition, "AUTO_CONTINUE");
+  assert.equal(deriveOperatorCadence(status("reviewed")).transition, "TERMINAL");
   assert.equal(deriveOperatorCadence(status("released")).transition, "TERMINAL");
 });

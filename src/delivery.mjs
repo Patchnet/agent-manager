@@ -61,7 +61,12 @@ export function markWorkersComplete(status, at = new Date().toISOString()) {
   status.delivery ||= legacyDelivery(status);
   status.delivery.state = "review_pending";
   status.delivery.workersCompletedAt = at;
-  if (status.integrate?.state === "ready") {
+  const integratedChangedFiles = [...new Set(
+    (status.lanes || []).flatMap((lane) => lane.changedFiles || []),
+  )];
+  if (status.integrate?.state === "ready"
+    && status.delivery.mode !== "review-only"
+    && integratedChangedFiles.length) {
     status.delivery.mode = "single";
     status.delivery.targets = [{
       id: "integrate",
@@ -72,7 +77,7 @@ export function markWorkersComplete(status, at = new Date().toISOString()) {
       base: normalizeBase(status.baseRef, status.integrate.remote || "origin") || "main",
       pr: null,
       worktree: status.integrate.worktree,
-      changedFiles: [...new Set((status.lanes || []).flatMap((lane) => lane.changedFiles || []))],
+      changedFiles: integratedChangedFiles,
       prUrl: null,
       mergeSha: null,
       mergedAt: null,
@@ -147,9 +152,15 @@ export function recordReviewDecision(status, {
   review.decidedAt = at;
 
   if (ACCEPTED_VERDICTS.has(verdict)) {
-    status.delivery.state = "ship_gate_pending";
-    status.state = "ship_gate_pending";
-    status.endedAt = null;
+    if (status.delivery.mode === "review-only" || status.delivery.targets.length === 0) {
+      status.delivery.state = "reviewed";
+      status.state = "reviewed";
+      status.endedAt = at;
+    } else {
+      status.delivery.state = "ship_gate_pending";
+      status.state = "ship_gate_pending";
+      status.endedAt = null;
+    }
   } else if (verdict === "reject") {
     status.delivery.state = "rejected";
     status.state = "rejected";
@@ -273,7 +284,7 @@ export function expectedMergeShas(status, currentShip = null) {
 }
 
 export function isOverallTerminalState(state) {
-  return ["merged", "released", "rejected", "failed", "cancelled"].includes(state);
+  return ["reviewed", "merged", "released", "rejected", "failed", "cancelled"].includes(state);
 }
 
 export function deliveryReadiness(status, { require = "released" } = {}) {

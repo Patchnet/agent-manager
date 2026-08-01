@@ -20,6 +20,7 @@ import {
 } from "./claim.mjs";
 import {
   addWorktree,
+  assertWorktreeIdentity,
   inheritIgnoredAgentFiles,
   removeWorktree,
   resolveGitRef,
@@ -34,6 +35,7 @@ import { assertSafeSlug, runDir } from "./paths.mjs";
 import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
 import { assertPlanningReady } from "./planning.mjs";
+import { validateLaneCompletion } from "./completion.mjs";
 import {
   createPolicyEventInspector,
   currentHead,
@@ -89,7 +91,7 @@ function releaseLaneClaim(status, lane) {
   };
 }
 
-function applyGuardrails(lane, workflow) {
+function applyGuardrails(lane, laneConfig, workflow) {
   const check = validateLaneGuardrails({
     worktree: lane.worktree,
     scope: lane.scope,
@@ -113,7 +115,9 @@ function applyGuardrails(lane, workflow) {
     } else {
       lane.lastActivity = check.policyViolations.join("; ");
     }
+    return;
   }
+  validateLaneCompletion(lane, laneConfig);
 }
 
 function syncExternalLaneStates(laneStates, diskStatus) {
@@ -218,10 +222,13 @@ export async function runWorkflow(workflowPath, {
   const initialRepo = inspectInitialRepo(workflow.repoRoot);
   const laneStates = workflow.lanes.map((lane) => ({
     id: lane.id,
+    kind: lane.kind,
     harness: lane.harness || workflow.harness_default,
     repo: workflow.repo,
     branch: "am/" + runId + "/" + lane.id,
     scope: scopeList(lane.scope).join(", "),
+    expectedOutputs: [...lane.expected_outputs],
+    allowNoChanges: lane.allow_no_changes,
     readOnly: scopeList(lane.read_only).join(", "),
     dependsOn: [...lane.depends_on],
     dependenciesIntegrated: [],
@@ -264,6 +271,7 @@ export async function runWorkflow(workflowPath, {
     policy: workflow.policy,
     claimMode: workflow.claim_mode,
     maxConcurrency: workflow.max_concurrency,
+    topology: workflow.topology,
     baseRef: workflow.base_ref,
     baseCommit: immutableBaseCommit,
     planning: { ...planning, contextSnapshot: planningContextSnapshot },
@@ -435,6 +443,12 @@ export async function runWorkflow(workflowPath, {
           laneState.dependenciesIntegrated = merged.merged;
         }
 
+        assertWorktreeIdentity({
+          worktreePath: worktree,
+          expectedBranch: laneState.branch,
+          expectedHead: dependencies.length ? null : immutableBaseCommit,
+        });
+
         laneState.baseCommit = currentHead(worktree);
         laneState.state = "running";
         laneState.waitingFor = [];
@@ -560,7 +574,7 @@ export async function runWorkflow(workflowPath, {
           }
         } else if (laneState.state !== "failed" && result.exitCode === 0) {
           laneState.state = "done";
-          applyGuardrails(laneState, workflow);
+          applyGuardrails(laneState, lane, workflow);
         } else if (laneState.state !== "failed") {
           laneState.state = "failed";
         }

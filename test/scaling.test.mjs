@@ -76,6 +76,22 @@ test("workflow accepts five lanes, defaults concurrency to three, and rejects si
   );
 });
 
+test("dependency topology reports a fully serialized multi-lane plan", () => {
+  const loaded = loadWorkflow(workflow("serialized-topology", {
+    repo: "repo",
+    integrate: true,
+    max_concurrency: 5,
+    lanes: [
+      lane(1),
+      { ...lane(2), depends_on: ["lane-1"] },
+      { ...lane(3), depends_on: ["lane-2"] },
+    ],
+  }));
+  assert.equal(loaded.topology.fullySerialized, true);
+  assert.equal(loaded.topology.effectiveParallelism, 1);
+  assert.match(loaded.topology.recommendation, /one queued agent/);
+});
+
 test("overlapping write scopes fail closed unless one lane is explicitly read-only", () => {
   const overlapping = {
     repo: "repo",

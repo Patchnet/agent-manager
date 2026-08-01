@@ -301,6 +301,22 @@ test("scope violations fail the lane and publish run_failed", async () => {
   await runCli(["cleanup", runId]);
 });
 
+test("a zero-change implementation lane fails before delivery review", async () => {
+  const runId = "run-zero-change";
+  const workflow = writeWorkflow("zero-change", baseWorkflow([{
+    id: "empty",
+    kind: "implementation",
+    scope: "zero-change.txt",
+    prompt: "Exit successfully without writing code.",
+    fake: { delay_ms: 10, exit_code: 0 },
+  }]));
+  await runCli(["run", workflow, "--detach", "--run-id", runId, "--json"]);
+  const failed = await waitForStatus(runId, (status) => status.state === "failed");
+  assert.equal(failed.lanes[0].completion.state, "failed");
+  assert.match(failed.lanes[0].completion.reason, /zero changed files/);
+  assert.notEqual(failed.state, "delivery_review_pending");
+});
+
 test("manual integrate folds a successful lane and releases its integration claim", async () => {
   const runId = "run-test-integrate";
   const workflow = writeWorkflow("integrate", baseWorkflow([

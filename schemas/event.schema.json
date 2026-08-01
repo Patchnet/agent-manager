@@ -7,7 +7,7 @@
   "properties": {
     "schema": { "const": "agent-manager.event.v1" }, "type": { "const": "status" },
     "at": { "type": "string", "format": "date-time" }, "runId": { "type": "string" },
-    "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "merged", "released", "rejected", "failed", "cancelled"] },
+    "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "reviewed", "merged", "released", "rejected", "failed", "cancelled"] },
     "runtime": { "anyOf": [{ "$ref": "status.schema.json#/$defs/runtime" }, { "type": "null" }] },
     "lanes": { "type": "array" },
     "ship": { "type": ["object", "null"] },

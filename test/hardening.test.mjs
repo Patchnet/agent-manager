@@ -27,6 +27,7 @@ const { detectRuntimeProfile, runtimeEnv } = await import("../src/runtime.mjs?ha
 const { getHarnessAdapter } = await import("../src/harness/index.mjs?hardening");
 const { isTerminalState, readEvents, readStatus, writeStatus } = await import("../src/status.mjs?hardening");
 const { prepareReply, resumeLane } = await import("../src/reply.mjs?hardening");
+const { addWorktree, assertWorktreeIdentity } = await import("../src/worktree.mjs?hardening");
 
 function workflow(name, value) {
   const path = join(root, name + ".json");
@@ -51,6 +52,19 @@ test("workflow validation rejects traversal, duplicate ids, wrong booleans, cred
   assert.throws(() => runDir("../escape"), /safe slug/);
   assert.throws(() => runDir("run..escape"), /not safe for paths and Git refs/);
   assert.throws(() => loadWorkflow(workflow("invalid-ref-id", valid({ lanes: [{ id: "bad.lock", scope: "src/**", prompt: "work" }] }))), /not safe for paths and Git refs/);
+});
+
+test("worktree identity preflight rejects a detached or wrongly named worker branch", () => {
+  const worktree = join(root, "identity-wt");
+  const branch = "am/test/identity";
+  const head = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  addWorktree({ repoRoot: repo, worktreePath: worktree, branch, baseBranch: head });
+  assert.equal(assertWorktreeIdentity({ worktreePath: worktree, expectedBranch: branch, expectedHead: head }).head, head);
+  execFileSync("git", ["-C", worktree, "switch", "--detach"], { stdio: "ignore" });
+  assert.throws(
+    () => assertWorktreeIdentity({ worktreePath: worktree, expectedBranch: branch }),
+    /detached HEAD/,
+  );
 });
 
 test("dangerous permission policy needs a separate invocation approval", () => {

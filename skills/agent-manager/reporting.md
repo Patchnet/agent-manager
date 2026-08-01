@@ -32,7 +32,7 @@ authoritative for run facts.
 After detach, Master **must** arm `watch-signal` (see SKILL). On each wake:
 unchanged + running → Heartbeat; changed → Run board; needs-input → Escalation;
 `delivery_review_pending` → Run outcome then Delivery Review while the watcher
-stays active; overall terminal (`merged|released|rejected|failed|cancelled`) →
+stays active; overall terminal (`reviewed|merged|released|rejected|failed|cancelled`) →
 final outcome then **stop**. After an accepted
 Delivery Review and Ship Gate approval, switch to the canonical templates in
 [`../pr-manager/reporting.md`](../pr-manager/reporting.md).
@@ -115,7 +115,7 @@ Post once when a run starts, then again on meaningful updates
 |---|---|
 | **runId** | `<runId>` |
 | **repo** | `<repo>` |
-| **state** | `running \| delivery_review_pending \| correction_pending \| ship_gate_pending \| shipping \| blocked \| release_pending \| merged \| released \| rejected \| failed \| cancelled` |
+| **state** | `running \| delivery_review_pending \| correction_pending \| ship_gate_pending \| shipping \| blocked \| release_pending \| reviewed \| merged \| released \| rejected \| failed \| cancelled` |
 | **target_dev_flow** | `simple \| formal` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **workflow** | `<path>` |
@@ -369,7 +369,7 @@ Pass 2: operator `accept` | `accept-with-notes` | `reject` (or operator-ordered 
 
 ## Template — Final outcome
 
-Post for overall `merged`, `released`, `rejected`, `failed`, or `cancelled`.
+Post for overall `reviewed`, `merged`, `released`, `rejected`, `failed`, or `cancelled`.
 
 ```markdown
 ## Agent Manager · Final outcome
@@ -377,7 +377,7 @@ Post for overall `merged`, `released`, `rejected`, `failed`, or `cancelled`.
 | | |
 |---|---|
 | **runId** | `<runId>` |
-| **state** | `merged \| released \| rejected \| failed \| cancelled` |
+| **state** | `reviewed \| merged \| released \| rejected \| failed \| cancelled` |
 | **evidence** | `<PR / merge SHA / release SHA / tag / error>` |
 | **remaining risk** | `<none or exact item>` |
 | **source closeout** | `<updated \| pending with owner>` |
@@ -412,6 +412,7 @@ Post for overall `merged`, `released`, `rejected`, `failed`, or `cancelled`.
 Do **not** await a foreground `run` to “know when it’s done.” Do **not** spam
 identical boards. Do **not** skip Delivery Review because lanes exited 0.
 Do **not** run a second correction or a third review pass.
-Do **not** call a run delivered until its overall state is `merged` or
-`released` (as required by the workflow).
+Do **not** call a change-producing run delivered until its overall state is
+`merged` or `released`. Review-only or approved no-change work is terminal at
+`reviewed`.
 Do **not** claim Canvas/`/loop` is wired unless it actually is for that session.

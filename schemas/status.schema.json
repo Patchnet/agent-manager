@@ -5,9 +5,10 @@
   "type": "object",
   "required": ["runId", "state", "repo", "startedAt", "lanes"],
   "properties": {
-    "runId": { "type": "string" }, "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "merged", "released", "rejected", "failed", "cancelled"] },
+    "runId": { "type": "string" }, "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "reviewed", "merged", "released", "rejected", "failed", "cancelled"] },
     "repo": { "type": "string" }, "startedAt": { "type": "string", "format": "date-time" },
     "endedAt": { "type": ["string", "null"] }, "lanes": { "type": "array" },
+    "topology": { "type": "object" },
     "runtime": { "$ref": "#/$defs/runtime" },
     "planning": {
       "type": "object",
@@ -34,7 +35,7 @@
       "properties": {
         "schema": { "const": "agent-manager.delivery.v1" },
         "mode": { "enum": ["single", "train", "review-only"] },
-        "state": { "enum": ["workers_running", "review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "targets_pending", "release_pending", "merged", "released", "rejected", "failed", "cancelled"] },
+        "state": { "enum": ["workers_running", "review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "targets_pending", "release_pending", "reviewed", "merged", "released", "rejected", "failed", "cancelled"] },
         "releaseRequired": { "type": "boolean" },
         "workersCompletedAt": { "type": ["string", "null"] },
         "review": { "type": "object" },
@@ -60,6 +61,7 @@
         "releaseSha": { "type": ["string", "null"] },
         "plannedTag": { "type": ["string", "null"] },
         "tag": { "type": ["string", "null"] },
+        "releaseWorktree": { "type": ["string", "null"] },
         "needsInput": { "type": ["object", "null"] },
         "steps": { "type": "array" }
       }

@@ -56,6 +56,11 @@ Read [reporting.md](./reporting.md) before posting any ship status.
     detached progress and already-approved train targets. Wait only for a
     blocker or new Ship Gate authority. Never report a completed target and
     stop without naming and taking the next authorized action.
+14. Formal release work runs only in the private release worktree under the run
+    directory. Never switch, clean, stamp, or require a clean shared checkout.
+15. Allow the bounded check-registration grace period before diagnosing a
+    missing required check. Routine CI registration and execution are wait
+    states, not operator blockers.
 
 ## Launch
 

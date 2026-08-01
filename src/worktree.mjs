@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, lstatSync, mkdirSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const AGENT_INSTRUCTION_FILES = [
   "AGENTS.md",
@@ -100,5 +100,29 @@ export function branchOf(worktreePath) {
     encoding: "utf8",
     windowsHide: true,
   });
-  return r.status === 0 ? (r.stdout || "").trim() : null;
+  const branch = r.status === 0 ? (r.stdout || "").trim() : null;
+  return branch === "HEAD" ? null : branch;
+}
+
+export function assertWorktreeIdentity({ worktreePath, expectedBranch, expectedHead = null }) {
+  const branch = branchOf(worktreePath);
+  if (branch !== expectedBranch) {
+    throw new Error(
+      `worktree identity mismatch: expected branch ${expectedBranch}, found ${branch || "detached HEAD"}`,
+    );
+  }
+  const top = git(worktreePath, ["rev-parse", "--show-toplevel"]);
+  if (!top.ok) throw new Error(`unable to validate worktree root: ${top.stderr || top.stdout}`);
+  const actualRoot = realpathSync(top.stdout);
+  const expectedRoot = realpathSync(resolve(worktreePath));
+  const actualStat = statSync(actualRoot);
+  const expectedStat = statSync(expectedRoot);
+  if (actualStat.dev !== expectedStat.dev || actualStat.ino !== expectedStat.ino) {
+    throw new Error(`worktree identity mismatch: expected root ${expectedRoot}, found ${actualRoot}`);
+  }
+  const head = resolveGitRef(worktreePath, "HEAD");
+  if (expectedHead && head.toLowerCase() !== expectedHead.toLowerCase()) {
+    throw new Error(`worktree identity mismatch: expected HEAD ${expectedHead}, found ${head}`);
+  }
+  return { branch, head, root: actualRoot };
 }

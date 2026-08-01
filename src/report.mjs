@@ -19,6 +19,9 @@ export function writeReport(runId, status) {
     `- **workflow:** ${status.workflow || "-"}`,
     `- **immutable base:** ${status.baseCommit || status.initialRepo?.head || "-"}`,
     `- **max concurrency:** ${status.maxConcurrency || "-"}`,
+    `- **effective parallelism:** ${status.topology?.effectiveParallelism || "-"}`,
+    `- **fully serialized:** ${status.topology?.fullySerialized ? "yes" : "no"}`,
+    `- **topology recommendation:** ${status.topology?.recommendation || "-"}`,
     `- **initial repo dirty:** ${status.initialRepo?.dirty ? "yes" : "no"}`,
     `- **operator transition:** ${cadence.transition}`,
     "",
@@ -44,7 +47,10 @@ export function writeReport(runId, status) {
     lines.push(`### ${lane.id}`);
     lines.push("");
     lines.push(`- harness: ${lane.harness}`);
+    lines.push(`- kind: ${lane.kind || "-"}`);
     lines.push(`- state: ${lane.state}`);
+    lines.push(`- completion: ${lane.completion?.state || "-"}`);
+    lines.push(`- expected outputs: ${lane.expectedOutputs?.length ? lane.expectedOutputs.join(", ") : "-"}`);
     lines.push(`- branch: ${lane.branch || "-"}`);
     lines.push(`- worktree: ${lane.worktree || "-"}`);
     lines.push(`- scope: ${lane.scope}`);
@@ -113,12 +119,12 @@ export function writeReport(runId, status) {
     lines.push("- For a train, ship each target in order with `--target <id>`.");
   } else if (status.state === "release_pending") {
     lines.push("- **Release pending:** all delivery targets merged; verify ancestry and publish the approved release.");
-  } else if (status.state === "released" || status.state === "merged") {
+  } else if (["reviewed", "released", "merged"].includes(status.state)) {
     lines.push(`- **Delivery complete:** ${status.delivery?.release?.tag || status.ship?.prUrl || status.ship?.branch || status.state}`);
     lines.push("- Review the Ship outcome board and clean retained run artifacts when appropriate.");
   } else if (status.ship?.state === "done") {
     lines.push(`- **Ship complete:** ${status.ship.prUrl || status.ship.tag || status.ship.branch}`);
-    lines.push("- Continue the remaining delivery targets; this run is not complete until state is merged or released.");
+    lines.push("- Continue the remaining delivery targets; this run is not complete until state is reviewed, merged, or released.");
   } else if (status.ship?.state === "blocked") {
     lines.push(`- **Ship blocked:** ${status.ship.needsInput?.prompt || status.ship.error || "see ship telemetry"}`);
     lines.push("- Resolve the blocker or cancel the ship phase. Do not guess or bypass policy.");

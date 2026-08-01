@@ -6,6 +6,7 @@ import { normalizePlanning, planningPrompt } from "./planning.mjs";
 import { assertPathInside, assertSafeSlug, repoPath } from "./paths.mjs";
 import { detectRuntimeProfile, runtimePrompt } from "./runtime.mjs";
 import {
+  matchesScope,
   normalizeScopePath,
   scopeConflictWitness,
   scopesMayOverlap,
@@ -19,6 +20,7 @@ const TOP_LEVEL_KEYS = new Set([
 ]);
 const LANE_KEYS = new Set([
   "id", "harness", "model", "scope", "prompt", "prompt_file", "fake", "depends_on",
+  "kind", "expected_outputs", "allow_no_changes",
 ]);
 const SCOPE_OVERRIDE_KEYS = new Set(["path", "lanes", "owner", "reason", "access"]);
 const VERIFICATION_KEYS = new Set(["commands", "timeout_sec"]);
@@ -66,12 +68,13 @@ export function loadWorkflow(filePath, {
   }
 
   const harnessDefault = normalizeHarness(doc.harness_default || "claude", "workflow.harness_default");
+  const policy = normalizePolicy(doc.policy);
   const ids = new Set();
-  const lanes = doc.lanes.map((lane, index) => normalizeLane(lane, index, repoRoot, harnessDefault, ids));
+  const lanes = doc.lanes.map((lane, index) =>
+    normalizeLane(lane, index, repoRoot, harnessDefault, ids, policy));
   validateDependencies(lanes);
   const scopeOverrides = normalizeScopeOverrides(doc.scope_overrides, lanes);
   const sequentialOverlaps = applyScopeOwnership(lanes, scopeOverrides);
-  const policy = normalizePolicy(doc.policy);
   const feed = normalizeFeed(doc.feed, basename(repoRoot));
   const claimMode = doc.claim_mode || "auto";
   if (!CLAIM_MODES.has(claimMode)) {
@@ -110,6 +113,7 @@ export function loadWorkflow(filePath, {
     targetDevFlow,
   });
   const runtime = detectRuntimeProfile();
+  const topology = analyzeDependencyTopology(lanes, maxConcurrency);
   return {
     ...doc,
     lanes,
@@ -122,6 +126,7 @@ export function loadWorkflow(filePath, {
     integrate: doc.integrate === true,
     claim_mode: claimMode,
     max_concurrency: maxConcurrency,
+    topology,
     scope_overrides: scopeOverrides,
     sequential_overlaps: sequentialOverlaps,
     verification,
@@ -146,7 +151,9 @@ function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDev
   if (raw.targets !== undefined && !Array.isArray(raw.targets)) {
     throw new Error("workflow.delivery.targets must be an array");
   }
-  const laneIds = new Set(lanes.map((lane) => lane.id));
+  const deliverableLanes = lanes.filter((lane) =>
+    lane.kind === "implementation" && lane.allow_no_changes !== true);
+  const laneIds = new Set(deliverableLanes.map((lane) => lane.id));
   const targetIds = new Set();
   const mappedLanes = new Set();
   let targets = (raw.targets || []).map((target, index) => {
@@ -158,7 +165,9 @@ function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDev
     if (targetIds.has(id)) throw new Error(`duplicate delivery target id: ${id}`);
     targetIds.add(id);
     const lane = assertSafeSlug(target.lane, `workflow.delivery.targets[${index}].lane`);
-    if (!laneIds.has(lane)) throw new Error(`delivery target ${id} references unknown lane: ${lane}`);
+    if (!laneIds.has(lane)) {
+      throw new Error(`delivery target ${id} must reference a change-producing implementation lane: ${lane}`);
+    }
     if (mappedLanes.has(lane)) throw new Error(`lane ${lane} has more than one delivery target`);
     mappedLanes.add(lane);
     if (target.branch !== undefined) validateGitRef(target.branch, `delivery target ${id}.branch`);
@@ -175,29 +184,29 @@ function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDev
     };
   });
 
-  if (!readOnly && !integrate && lanes.length > 1 && targets.length === 0) {
+  if (!readOnly && !integrate && deliverableLanes.length > 1 && targets.length === 0) {
     throw new Error(
       "multi-lane writable workflows with integrate=false require workflow.delivery.targets for every lane",
     );
   }
-  if (!readOnly && targetDevFlow === "simple" && !integrate && lanes.length > 1) {
+  if (!readOnly && targetDevFlow === "simple" && !integrate && deliverableLanes.length > 1) {
     throw new Error("Simple Flow multi-lane writable workflows require integrate=true");
   }
-  if (!readOnly && !integrate && lanes.length === 1 && targets.length === 0) {
+  if (!readOnly && !integrate && deliverableLanes.length === 1 && targets.length === 0) {
     targets = [{
-      id: lanes[0].id,
-      lane: lanes[0].id,
+      id: deliverableLanes[0].id,
+      lane: deliverableLanes[0].id,
       branch: null,
       base: normalizeBaseRef(baseRef),
       pr: null,
     }];
-    mappedLanes.add(lanes[0].id);
+    mappedLanes.add(deliverableLanes[0].id);
   }
-  if (!readOnly && !integrate && targets.length && mappedLanes.size !== lanes.length) {
-    const missing = lanes.filter((lane) => !mappedLanes.has(lane.id)).map((lane) => lane.id);
+  if (!readOnly && !integrate && targets.length && mappedLanes.size !== deliverableLanes.length) {
+    const missing = deliverableLanes.filter((lane) => !mappedLanes.has(lane.id)).map((lane) => lane.id);
     throw new Error(`workflow.delivery.targets must map every lane; missing: ${missing.join(", ")}`);
   }
-  const inferredMode = readOnly
+  const inferredMode = readOnly || deliverableLanes.length === 0
     ? "review-only"
     : targets.length > 1 ? "train" : "single";
   const mode = raw.mode || inferredMode;
@@ -234,7 +243,7 @@ function normalizeBaseRef(value) {
   return text.startsWith("origin/") ? text.slice("origin/".length) : text;
 }
 
-function normalizeLane(input, index, repoRoot, harnessDefault, ids) {
+function normalizeLane(input, index, repoRoot, harnessDefault, ids, policy) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error(`workflow.lanes[${index}] must be a mapping`);
   }
@@ -258,6 +267,15 @@ function normalizeLane(input, index, repoRoot, harnessDefault, ids) {
     if (!existsSync(promptFile)) throw new Error(`lane ${id}.prompt_file not found: ${promptFile}`);
   }
   const scope = normalizeScope(input.scope, id);
+  const defaultKind = ["readOnly", "read-only", "read_only"].includes(policy.permission_mode)
+    ? "review"
+    : "implementation";
+  const kind = input.kind || defaultKind;
+  if (!["implementation", "review"].includes(kind)) {
+    throw new Error(`lane ${id}.kind must be implementation or review`);
+  }
+  assertBoolean(input.allow_no_changes, `lane ${id}.allow_no_changes`, { optional: true });
+  const expectedOutputs = normalizeExpectedOutputs(input.expected_outputs, id, scope);
   if (input.model !== undefined && !isNonEmptyString(input.model)) {
     throw new Error(`lane ${id}.model must be a non-empty string`);
   }
@@ -269,12 +287,34 @@ function normalizeLane(input, index, repoRoot, harnessDefault, ids) {
     ...input,
     id,
     harness,
+    kind,
     scope,
+    expected_outputs: expectedOutputs,
+    allow_no_changes: kind === "review" || input.allow_no_changes === true,
     depends_on: dependsOn,
     read_only: [],
     prompt_file: input.prompt_file || undefined,
     _promptFile: promptFile,
   };
+}
+
+function normalizeExpectedOutputs(input, laneId, scope) {
+  if (input === undefined) return [];
+  if (!Array.isArray(input) || input.length === 0) {
+    throw new Error(`lane ${laneId}.expected_outputs must be a non-empty array`);
+  }
+  const outputs = [...new Set(input.map((value) => normalizeScopePath(value)))];
+  for (const output of outputs) {
+    if (!output || isAbsolute(output) || output.split("/").includes("..") || /[?*[]/.test(output)) {
+      throw new Error(`lane ${laneId}.expected_outputs must contain concrete repository file paths: ${output}`);
+    }
+    if (!scope.some((pattern) => matchesScope(output, pattern))) {
+      throw new Error(
+        `lane ${laneId} expected output ${output} is not covered by its scope (${scope.join(", ")})`,
+      );
+    }
+  }
+  return outputs;
 }
 
 function normalizeScope(input, laneId) {
@@ -324,6 +364,38 @@ function validateDependencies(lanes) {
     visited.add(laneId);
   };
   for (const lane of lanes) visit(lane.id);
+}
+
+export function analyzeDependencyTopology(lanes, maxConcurrency = lanes.length) {
+  const byId = new Map(lanes.map((lane) => [lane.id, lane]));
+  const memo = new Map();
+  const depth = (lane) => {
+    if (memo.has(lane.id)) return memo.get(lane.id);
+    const dependencies = lane.depends_on || [];
+    const value = dependencies.length
+      ? 1 + Math.max(...dependencies.map((id) => depth(byId.get(id))))
+      : 0;
+    memo.set(lane.id, value);
+    return value;
+  };
+  const levels = {};
+  for (const lane of lanes) {
+    const value = depth(lane);
+    levels[value] = [...(levels[value] || []), lane.id];
+  }
+  const width = Math.max(0, ...Object.values(levels).map((ids) => ids.length));
+  const effectiveParallelism = Math.min(maxConcurrency, width || 1);
+  const fullySerialized = lanes.length > 1 && effectiveParallelism === 1;
+  return {
+    levels,
+    criticalPathLanes: Object.keys(levels).length,
+    theoreticalParallelism: width,
+    effectiveParallelism,
+    fullySerialized,
+    recommendation: fullySerialized
+      ? "This dependency graph is fully serialized; use one queued agent unless the scopes can be made independent."
+      : null,
+  };
 }
 
 export function laneDependsOn(lanes, laneId, dependencyId) {
@@ -569,7 +641,11 @@ export function lanePrompt(lane, workflow) {
   if (lane._promptFile) body = readFileSync(lane._promptFile, "utf8");
   const policyBlock = `
 ## agent-manager policy (mandatory)
+- Worker mode is active. Planning and source orientation are already complete; do not query the planning system or wait for another Go.
+- Lane kind: ${lane.kind}
 - Stay inside scope: ${lane.scope.join(", ")}
+- Required output paths: ${lane.expected_outputs.length ? lane.expected_outputs.join(", ") : "(none declared)"}
+- A successful process exit is not delivery. Implementation lanes must leave an in-scope change unless allow_no_changes was explicitly approved.
 - Treat these paths as read-only: ${lane.read_only.length ? lane.read_only.join(", ") : "(none)"}
 - Dependencies already integrated into this worktree: ${lane.depends_on.length ? lane.depends_on.join(", ") : "(none)"}
 - Work only in this worktree / branch. Do not switch repos.

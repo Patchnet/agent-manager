@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readStatus, writeStatus } from "./status.mjs";
-import { runDir } from "./paths.mjs";
+import { assertPathInside, runDir } from "./paths.mjs";
+import { branchOf } from "./worktree.mjs";
 import { writePrivateFile } from "./fs-safe.mjs";
 import { formatRuntime } from "./runtime.mjs";
 import { recordReviewDecision, recordReviewPresentation } from "./delivery.mjs";
@@ -18,6 +21,12 @@ export function buildDeliveryReview(runId, {
   if (!status) throw new Error(`no status for ${runId}`);
   if (!["delivery_review_pending", "correction_pending", "ship_gate_pending"].includes(status.state)) {
     throw new Error(`run ${runId} is not awaiting Delivery Review (state ${status.state})`);
+  }
+  const structuralPreflight = inspectDeliveryStructure(status);
+  if (verdict && ["accept", "accept-with-notes"].includes(verdict) && !structuralPreflight.ok) {
+    throw new Error(
+      `Delivery Review cannot be accepted; structural preflight failed: ${structuralPreflight.errors.join("; ")}`,
+    );
   }
   if (verdict) {
     recordReviewDecision(status, { pass, verdict, reviewer, notes });
@@ -49,6 +58,7 @@ export function buildDeliveryReview(runId, {
     `- Reviewer: ${decision?.reviewer || "-"}`,
     `- Decided: ${decision?.decidedAt || "-"}`,
     `- Notes: ${decision?.notes || "-"}`,
+    `- Structural preflight: **${structuralPreflight.ok ? "passed" : "failed"}**`,
     "",
     "## Lane evidence",
     "",
@@ -56,6 +66,9 @@ export function buildDeliveryReview(runId, {
   for (const lane of status.lanes || []) {
     lines.push(`### ${lane.id} (${lane.harness})`, "");
     lines.push(`- State: ${lane.state}`);
+    lines.push(`- Kind: ${lane.kind || "legacy/unspecified"}`);
+    lines.push(`- Completion contract: ${lane.completion?.state || "legacy/unrecorded"}`);
+    lines.push(`- Expected outputs: ${lane.expectedOutputs?.length ? lane.expectedOutputs.map((file) => `\`${file}\``).join(", ") : "none"}`);
     lines.push(`- Scope: ${lane.scope}`);
     lines.push(`- Read-only paths: ${lane.readOnly || "none"}`);
     lines.push(`- Depends on: ${lane.dependsOn?.length ? lane.dependsOn.join(", ") : "none"}`);
@@ -68,6 +81,9 @@ export function buildDeliveryReview(runId, {
     lines.push(`- Evidence log: \`${lane.logPath || "-"}\``, "");
   }
   lines.push("## Integration risk", "");
+  lines.push(`- Dependency topology: ${status.topology?.fullySerialized ? "fully serialized" : "parallelizable"}`);
+  if (status.topology?.recommendation) lines.push(`- Topology recommendation: ${status.topology.recommendation}`);
+  lines.push(`- Structural preflight errors: ${structuralPreflight.errors.length ? structuralPreflight.errors.join("; ") : "none"}`);
   lines.push(
     `- Changed-file overlaps: ${
       status.integrate?.changedFileOverlaps?.length
@@ -88,7 +104,7 @@ export function buildDeliveryReview(runId, {
   );
   lines.push(`- Integrated verification: ${status.integrate?.verification?.state || "not run"}`, "");
   lines.push("## Verification", "", "- [ ] Planning evidence, reviewed base, and frozen context digest checked", "- [ ] Original request checked against delivered files", "- [ ] Cross-lane contracts checked", "- [ ] Configured integrated verification passed or was explicitly reviewed", "- [ ] Tests rerun by the reviewing host", "- [ ] Public-repository hygiene scan passed", "", "## Decision", "", "Choose one: `accept` | `accept-with-notes` | `revise` | `relaunch` | `reject`", "");
-  const transition = reviewTransition(decision, pass);
+  const transition = reviewTransition(decision, pass, status);
   lines.push(
     "## Transition",
     "",
@@ -122,7 +138,60 @@ export function buildDeliveryReview(runId, {
   };
 }
 
-function reviewTransition(decision, pass) {
+export function inspectDeliveryStructure(status) {
+  const errors = [];
+  const root = runDir(status.runId);
+  if (status.planning?.state !== "verified") errors.push("planning evidence is not verified");
+  if (!status.planning?.contextSnapshot || !existsSync(status.planning.contextSnapshot)) {
+    errors.push("frozen planning context is missing");
+  } else {
+    const digest = createHash("sha256")
+      .update(readFileSync(status.planning.contextSnapshot, "utf8"), "utf8")
+      .digest("hex");
+    if (digest !== status.planning.contextDigest) errors.push("frozen planning context digest mismatch");
+  }
+  for (const lane of status.lanes || []) {
+    if (lane.state !== "done") errors.push(`lane ${lane.id} is ${lane.state}`);
+    if (lane.completion && lane.completion.state !== "verified") {
+      errors.push(`lane ${lane.id} completion is ${lane.completion.state}`);
+    }
+    if (!lane.worktree || !existsSync(lane.worktree)) {
+      errors.push(`lane ${lane.id} worktree is missing`);
+      continue;
+    }
+    try {
+      assertPathInside(root, lane.worktree, `lane ${lane.id} worktree`);
+    } catch (error) {
+      errors.push(error.message);
+    }
+    const branch = branchOf(lane.worktree);
+    if (branch !== lane.branch) {
+      errors.push(`lane ${lane.id} branch mismatch: expected ${lane.branch}, found ${branch || "detached HEAD"}`);
+    }
+  }
+  for (const target of status.delivery?.targets || []) {
+    if (!(target.changedFiles || []).length) errors.push(`delivery target ${target.id} has no changed files`);
+    if (!target.branch || !target.base) errors.push(`delivery target ${target.id} is missing branch/base metadata`);
+    if (!target.worktree || !existsSync(target.worktree)) {
+      errors.push(`delivery target ${target.id} worktree is missing`);
+      continue;
+    }
+    try {
+      assertPathInside(root, target.worktree, `delivery target ${target.id} worktree`);
+    } catch (error) {
+      errors.push(error.message);
+    }
+    const branch = branchOf(target.worktree);
+    if (branch !== target.branch) {
+      errors.push(
+        `delivery target ${target.id} branch mismatch: expected ${target.branch}, found ${branch || "detached HEAD"}`,
+      );
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+function reviewTransition(decision, pass, status) {
   if (!decision) {
     return {
       mode: "WAIT_OPERATOR",
@@ -133,6 +202,13 @@ function reviewTransition(decision, pass) {
     };
   }
   if (["accept", "accept-with-notes"].includes(decision.verdict)) {
+    if (status.state === "reviewed") {
+      return {
+        mode: "TERMINAL",
+        nextAction: "Post the accepted review-only outcome and complete source-system closeout.",
+        input: "`none`",
+      };
+    }
     return {
       mode: "AUTO_CONTINUE",
       nextAction: "Present the matching Ship Gate in this turn.",

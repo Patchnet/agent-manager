@@ -1,4 +1,4 @@
-const TERMINAL_STATES = new Set(["merged", "released", "rejected", "failed", "cancelled"]);
+const TERMINAL_STATES = new Set(["reviewed", "merged", "released", "rejected", "failed", "cancelled"]);
 
 export const OPERATOR_TRANSITIONS = Object.freeze({
   AUTO_CONTINUE: "AUTO_CONTINUE",

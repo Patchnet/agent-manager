@@ -24,7 +24,8 @@ test("version, init, validate, and project Cursor install work from a fresh dire
   assert.match(run(["--version"]), /^\d+\.\d+\.\d+/);
   const initialized = JSON.parse(run(["init", "--repo", repo, "--request", "Add a portable demo", "--json"]));
   assert.ok(existsSync(initialized.path));
-  assert.ok(existsSync(initialized.contextPath));
+  assert.equal(initialized.contextPath, null);
+  assert.match(initialized.workflow.planning.context, /Shared planning context/);
   assert.equal(initialized.planningReady, false);
   const workflow = YAML.parse(readFileSync(initialized.path, "utf8"));
   workflow.planning.source_refs = ["portable-test-source"];

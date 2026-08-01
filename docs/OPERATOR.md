@@ -72,9 +72,12 @@ in milliseconds.
 A foreground run is for a dedicated terminal, not a chat turn.
 
 Worker success enters `delivery_review_pending`. It is deliberately not a
-terminal delivery state. The run reaches `merged` or `released` only after its
+terminal delivery state. Change-producing work reaches `merged` or `released`
+only after its
 persisted Delivery Review, Ship Gate, and PR Manager evidence are complete.
 Never gate another wave on lane state, released claims, or worker completion.
+Review-only or approved no-change work terminates at `reviewed` after Delivery
+Review acceptance and does not enter Ship Gate.
 Use:
 
 ```bash
@@ -217,6 +220,11 @@ agent-manager ship <runId> \
   --commit-message "feat: approved change" \
   --detach --json
 ```
+
+Formal release stamping uses a private run-owned worktree. Local changes in the
+operator's shared checkout do not block or participate in the release. GitHub
+check registration has a 90-second grace period by default; override it with
+`--check-grace-sec <seconds>` when needed.
 
 Formal or Simple Flow through version and tag:
 

@@ -56,6 +56,21 @@ test("multi-lane writable workflows require an explicit delivery train when inte
   assert.equal(loaded.delivery.release_required, true);
 });
 
+test("review and approved no-change lanes are excluded from the delivery manifest", () => {
+  const loaded = loadWorkflow(workflowFile("mixed-delivery", {
+    repo: "repo",
+    target_dev_flow: "formal",
+    integrate: false,
+    lanes: [
+      { id: "review", kind: "review", scope: "README.md", prompt: "review" },
+      { id: "advisory", kind: "implementation", allow_no_changes: true, scope: "notes/**", prompt: "inspect" },
+      { id: "code", kind: "implementation", scope: "src/**", prompt: "implement" },
+    ],
+  }));
+  assert.equal(loaded.delivery.mode, "single");
+  assert.deepEqual(loaded.delivery.targets.map((target) => target.lane), ["code"]);
+});
+
 test("worker completion cannot become delivery completion without a persisted review and merge evidence", () => {
   const laneStates = [
     { id: "api", branch: "am/run/api", worktree: "api-wt", changedFiles: ["src/api/a.ts"] },
@@ -95,6 +110,7 @@ test("worker completion cannot become delivery completion without a persisted re
     at: "2026-08-01T00:01:00.000Z",
   });
   assert.equal(status.state, "ship_gate_pending");
+  assert.equal(status.delivery.state, "ship_gate_pending");
   assert.equal(status.delivery.review.state, "accepted");
 
   recordMergedTarget(status, {
@@ -154,5 +170,6 @@ test("Delivery Review permits one correction decision and one final pass", () =>
     verdict: "accept",
     reviewer: "master-dev",
   });
-  assert.equal(status.state, "ship_gate_pending");
+  assert.equal(status.state, "reviewed");
+  assert.equal(status.delivery.state, "reviewed");
 });

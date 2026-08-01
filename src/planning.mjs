@@ -7,6 +7,7 @@ import { resolveGitRef } from "./worktree.mjs";
 const PLANNING_KEYS = new Set([
   "source_refs",
   "plan_ref",
+  "context",
   "context_file",
   "reviewed_base_sha",
   "verified_by",
@@ -52,30 +53,49 @@ export function normalizePlanning(input, { repoRoot, contextOverridePath = null 
     throw new Error("workflow.planning.reviewed_base_sha must be a full Git commit SHA");
   }
 
-  const contextFile = nonEmptyString(
-    input.context_file,
-    "workflow.planning.context_file",
-  );
-  if (isAbsolute(contextFile) || /\0|[\r\n]/.test(contextFile)) {
-    throw new Error("workflow.planning.context_file must be a relative repository path");
+  if (input.context !== undefined && input.context_file !== undefined) {
+    throw new Error("workflow.planning must use context or context_file, not both");
   }
-  const declaredContextPath = assertPathInside(
-    repoRoot,
-    resolve(repoRoot, contextFile),
-    "workflow.planning.context_file",
-  );
-  let contextPath = contextOverridePath || declaredContextPath;
-  if (!existsSync(contextPath) || !statSync(contextPath).isFile()) {
-    throw new Error(`workflow planning context file not found: ${contextPath}`);
-  }
-  if (!contextOverridePath) {
-    contextPath = assertPathInside(
-      realpathSync(repoRoot),
-      realpathSync(contextPath),
+  let contextBody;
+  let contextFile = null;
+  let contextPath = null;
+  if (contextOverridePath) {
+    contextPath = contextOverridePath;
+    if (!existsSync(contextPath) || !statSync(contextPath).isFile()) {
+      throw new Error(`workflow planning context file not found: ${contextPath}`);
+    }
+    contextBody = readFileSync(contextPath, "utf8");
+    contextFile = "<private-override>";
+  } else if (input.context !== undefined) {
+    if (typeof input.context !== "string") {
+      throw new Error("workflow.planning.context must be a string");
+    }
+    contextBody = input.context;
+    contextFile = "<inline>";
+  } else {
+    contextFile = nonEmptyString(
+      input.context_file,
       "workflow.planning.context_file",
     );
+    if (isAbsolute(contextFile) || /\0|[\r\n]/.test(contextFile)) {
+      throw new Error("workflow.planning.context_file must be a relative repository path");
+    }
+    const declaredContextPath = assertPathInside(
+      repoRoot,
+      resolve(repoRoot, contextFile),
+      "workflow.planning.context_file",
+    );
+    if (!existsSync(declaredContextPath) || !statSync(declaredContextPath).isFile()) {
+      throw new Error(`workflow planning context file not found: ${declaredContextPath}`);
+    }
+    contextPath = assertPathInside(
+      realpathSync(repoRoot),
+      realpathSync(declaredContextPath),
+      "workflow.planning.context_file",
+    );
+    contextBody = readFileSync(contextPath, "utf8");
+    contextFile = relative(repoRoot, declaredContextPath).replace(/\\/g, "/");
   }
-  const contextBody = readFileSync(contextPath, "utf8");
   if (!contextBody.trim()) throw new Error("workflow planning context file must not be empty");
   if (Buffer.byteLength(contextBody, "utf8") > MAX_CONTEXT_BYTES) {
     throw new Error(`workflow planning context exceeds ${MAX_CONTEXT_BYTES} bytes`);
@@ -100,7 +120,7 @@ export function normalizePlanning(input, { repoRoot, contextOverridePath = null 
   return {
     source_refs: sourceRefs,
     plan_ref: planRef,
-    context_file: relative(repoRoot, declaredContextPath).replace(/\\/g, "/"),
+    context_file: contextFile,
     reviewed_base_sha: reviewedBaseSha,
     verified_by: verifiedBy,
     verified_at: new Date(verifiedAt).toISOString(),

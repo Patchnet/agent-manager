@@ -191,7 +191,7 @@ heartbeat.
    - `heartbeat` + still running → **Heartbeat**
    - `state_change` → **Run board** or PR Manager **Ship board**
    - `needs_input` → lane **Escalation** or PR Manager **Ship escalation**
-   - `terminal` → final merged/released/rejected/failed/cancelled outcome, then stop
+   - `terminal` → final reviewed/merged/released/rejected/failed/cancelled outcome, then stop
    Obey `cadence.transition` after posting. A status board alone is not a
    completed host turn when the transition is `AUTO_CONTINUE`.
 6. Operator may keep chatting (Multitask / parallel turns are fine). Stop the
@@ -203,7 +203,7 @@ heartbeat.
 agent-manager monitor <runId>
 ```
 
-Live lane board; exits on `merged` / `released` / `rejected` / `failed` /
+Live lane board; exits on `reviewed` / `merged` / `released` / `rejected` / `failed` /
 `cancelled`. Does **not** replace
 chat Heartbeat / Run outcome posts.
 

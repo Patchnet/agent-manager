@@ -11,6 +11,7 @@ import { writeReport } from "./report.mjs";
 import { deriveRunState, readStatus, writeStatus } from "./status.mjs";
 import { loadWorkflow } from "./workflow.mjs";
 import { markWorkersComplete } from "./delivery.mjs";
+import { validateLaneCompletion } from "./completion.mjs";
 
 export function prepareReply(runId, laneId, message) {
   assertSafeSlug(runId, "run id");
@@ -223,6 +224,7 @@ export async function resumeLane(runId, laneId, messagePath) {
       lane.readOnlyViolations = check.readOnlyViolations;
       lane.policyViolations = [...new Set([...(lane.policyViolations || []), ...check.policyViolations])];
       lane.state = check.ok ? "done" : "failed";
+      if (check.ok) validateLaneCompletion(lane, laneConfig);
       if (!check.ok) {
         lane.lastActivity = check.readOnlyViolations.length
           ? "read-only violation: " + check.readOnlyViolations.join(", ")

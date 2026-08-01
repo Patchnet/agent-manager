@@ -23,6 +23,10 @@ agent-manager is a detached CLI supervisor for Claude Code and Codex CLI. It
 runs parallel work in isolated Git worktrees while the host chat stays free for
 decisions, questions, and review.
 
+The current shipping path is a **managed compatibility mode** built around Git
+and GitHub CLI. The core orchestration contracts are provider-neutral; native
+GitHub execution and additional provider connectors are planned separately.
+
 ## Three components, three clear jobs
 
 | Component | What it is | Owns | Does not own |
@@ -66,6 +70,7 @@ is explicit:
 running → delivery_review_pending → ship_gate_pending → shipping
         → merged
         → release_pending → released
+        → reviewed (review-only or approved no-change work)
 ```
 
 `correction_pending`, `blocked`, `rejected`, `failed`, and `cancelled` retain
@@ -554,7 +559,8 @@ integrate: true
 planning:
   source_refs: [work-item-reference]
   plan_ref: approved-plan-reference
-  context_file: agent-manager.context.md
+  context: |
+    Private planning packet shared with every lane.
   reviewed_base_sha: 0123456789abcdef0123456789abcdef01234567
   verified_by: manager-agent
   verified_at: 2026-01-01T12:00:00Z
@@ -573,7 +579,9 @@ verification:
 
 lanes:
   - id: contracts
+    kind: implementation
     scope: src/contracts/**
+    expected_outputs: [src/contracts/index.ts]
     prompt: Implement the shared contracts.
 
   - id: api
@@ -595,10 +603,22 @@ worktrees are created. A `depends_on` chain can instead sequence writable
 ownership of the same path; any actual same-file edit is retained as Delivery
 Review risk evidence.
 
-At launch, the context file is copied into the private run directory and its
-SHA-256 digest is recorded in status and review evidence. Every lane receives
-that exact packet. Resume and integration use the frozen copy, so later edits
-to the original context file cannot change an active run.
+Inline `planning.context` is recommended because it creates no untracked file
+in the target checkout. `planning.context_file` remains available for existing
+workflows. At launch, either input is frozen in the private run directory and
+its SHA-256 digest is recorded in status and review evidence. Every lane
+receives that exact packet.
+
+Implementation lanes do not succeed on process exit alone. They must leave at
+least one in-scope changed file unless `allow_no_changes: true` was explicitly
+approved. Review lanes use `kind: review` and may finish without edits. A run
+with no change-producing lanes ends as `reviewed` after an accepted Delivery
+Review; it never opens an empty Ship Gate.
+`expected_outputs` lists concrete required file paths; validation rejects an
+output not covered by the lane scope, including extension mismatches such as a
+`.tsx` output under a `.ts`-only pattern. Status and Delivery Review also report
+when the dependency graph is fully serialized and a single queued agent would
+be more efficient.
 
 ## Install host skills (Cursor)
 
@@ -685,6 +705,12 @@ agent-manager ship <runId> \
   --summary "Add the approved capability." \
   --detach --json
 ```
+
+Formal releases are stamped, committed, pushed, checked, and tagged from a
+private worktree under the run directory. PR Manager never switches, cleans,
+or requires a clean shared checkout. GitHub receives a bounded registration
+grace period before missing required checks are diagnosed; use
+`--check-grace-sec <n>` to override the 90-second default.
 
 Formal Flow uses squash auto-merge. Release tags are created only after the
 version stamp passes and configured GitHub Actions workflows are green. Merge

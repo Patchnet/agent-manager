@@ -60,7 +60,7 @@ function usage() {
     "    options: --commit-message <text> --version <semver> --summary <text>",
     "             --repo <path> --worktree <path> --branch <ref> --base <ref>",
     "             --remote <name> --pr <url|number> --target <delivery-target-id>",
-    "             --poll-sec <n> --timeout-sec <n>",
+    "             --poll-sec <n> --timeout-sec <n> --check-grace-sec <n>",
     "  agent-manager cancel <runId> [--remove-worktrees]",
     "  agent-manager cleanup <runId> [--keep-logs] | --stale [--older-than-days 30]",
     "  agent-manager integrate <runId> [--json]",
@@ -90,6 +90,7 @@ function parseShipFlags(rest) {
     summary: null,
     pollSec: null,
     timeoutSec: null,
+    checkGraceSec: null,
     target: null,
   };
   const valued = new Map([
@@ -105,6 +106,7 @@ function parseShipFlags(rest) {
     ["--summary", "summary"],
     ["--poll-sec", "pollSec"],
     ["--timeout-sec", "timeoutSec"],
+    ["--check-grace-sec", "checkGraceSec"],
     ["--target", "target"],
   ]);
   for (let index = 0; index < rest.length; index += 1) {
