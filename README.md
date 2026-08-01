@@ -56,6 +56,75 @@ flowchart LR
 | Approved work should ship without blocking the host chat | All three |
 | A human will handle GitHub after review | 🎛️ Agent Manager only; stop after Delivery Review |
 
+### Worker completion is not delivery completion
+
+Agent Manager fails closed after the lanes finish. A successful coding run now
+enters `delivery_review_pending`; it does not become `done`. The full lifecycle
+is explicit:
+
+```text
+running → delivery_review_pending → ship_gate_pending → shipping
+        → merged
+        → release_pending → released
+```
+
+`correction_pending`, `blocked`, `rejected`, `failed`, and `cancelled` retain
+their own meanings. Downstream work must use the deterministic readiness gate,
+not a lane or worker state:
+
+```bash
+agent-manager delivery-ready <runId> --require merged
+agent-manager delivery-ready <runId> --require released
+```
+
+The command exits nonzero until the required boundary is proven. This prevents
+a later wave from starting merely because workers released their file claims.
+
+Every operator update also carries a deterministic cadence transition:
+
+| Transition | Meaning |
+|---|---|
+| `AUTO_CONTINUE` | The Master takes the named next action before ending its turn |
+| `WAIT_OPERATOR` | One exact operator decision is required |
+| `TERMINAL` | Delivery is complete or closed; report evidence and stop |
+
+```bash
+agent-manager next-action <runId> --json
+```
+
+This prevents “stage finished” dead ends. Worker completion automatically
+advances into Delivery Review; `revise` automatically launches the one
+correction; accepted review automatically presents Ship Gate. Only actual
+approval or blocker stages wait for the operator.
+
+When writable lanes are not folded into one integrate branch, declare every
+delivery destination. Multi-lane workflows with `integrate: false` are rejected
+without this manifest:
+
+```yaml
+integrate: false
+target_dev_flow: formal
+delivery:
+  mode: train
+  release_required: true
+  targets:
+    - id: api-pr
+      lane: api
+      base: main
+    - id: ui-pr
+      lane: ui
+      base: main
+```
+
+Each target must contain changed files. Shipping refuses no-code targets. A
+release also verifies that every recorded target merge SHA is an ancestor of
+the release commit before it creates the tag.
+
+When `branch` is omitted, a target uses its isolated generated lane branch and
+opens a new PR. Existing PR corrections may declare `branch` and `pr`, but the
+recorded PR head and checked-out worktree must already align. A mismatch blocks
+shipping instead of overwriting or falsely claiming the existing PR.
+
 ## What the operator sees
 
 The process is designed to make the next decision obvious. Agent Manager posts
@@ -107,6 +176,14 @@ flowchart LR
 - Cancel: `agent-manager cancel run-20260731-1432`
 - Logs: `$AGENT_MANAGER_RUNS_ROOT/run-20260731-1432/<lane>/stdout.log`
 
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `AUTO_CONTINUE` |
+| **Next action** | Keep monitoring the detached run. |
+| **Operator input required** | `none` |
+
 </details>
 
 <details>
@@ -138,6 +215,14 @@ Operator reply in this chat. Other independent lanes may keep running.
 ### Reply command
 
 - `agent-manager reply run-20260731-1432 api --message "Preserve the current value"`
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `WAIT_OPERATOR` |
+| **Next action** | Resume the `api` lane after the answer. |
+| **Operator input required** | `A | B` |
 
 </details>
 
@@ -194,6 +279,14 @@ Operator reply in this chat. Other independent lanes may keep running.
 
 Operator `accept` | `accept-with-notes` | `revise` | `relaunch` | `reject`
 
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `WAIT_OPERATOR` |
+| **Next action** | Persist the verdict, then advance without another confirmation. |
+| **Operator input required** | `accept | accept-with-notes | revise | relaunch | reject` |
+
 </details>
 
 <details>
@@ -248,6 +341,14 @@ Operator `accept` | `accept-with-notes` | `revise` | `relaunch` | `reject`
 After `through-pr` or `all`, PR Manager runs the approved steps in the
 background and reports any CI or policy blocker. It never expands the approval
 or invents a workaround.
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `WAIT_OPERATOR` |
+| **Next action** | Execute exactly the approved Formal Flow scope. |
+| **Operator input required** | `all | through-pr | commit+push | commit | reject` |
 
 </details>
 
@@ -336,6 +437,8 @@ agent-manager validate /path/to/repo/agent-manager.yaml
 agent-manager run /path/to/repo/agent-manager.yaml --detach --json
 agent-manager watch-signal <runId> --heartbeat-sec 180
 agent-manager review <runId>
+# After the operator decides:
+agent-manager review <runId> --pass 1 --verdict accept --reviewer <reviewer-id>
 ```
 
 Stop after Delivery Review. Agent Manager does not require PR Manager when a
@@ -347,6 +450,8 @@ outward shipping action is proposed.
 PR Manager is not a separate agent or binary. It is the deterministic shipping
 phase exposed by the core CLI. It requires an existing run, an accepted
 Delivery Review, and an explicit Ship Gate approval.
+The acceptance must be persisted by `agent-manager review --verdict ...`; a
+chat-only verdict cannot start PR Manager.
 
 ```bash
 agent-manager ship <runId> \
@@ -433,9 +538,10 @@ instructions and relevant code, then set the four attestations true. Validation
 fails if planning is incomplete or if the reviewed SHA no longer matches
 `base_ref`. Agent Manager does not query the source system itself.
 
-The initializer produces up to five
-independent lanes, defaults active concurrency to three, and never enables
-commits, pull requests, integration, or dangerous permission bypass.
+The initializer produces up to five independent lanes, defaults active
+concurrency to three, and enables a local integrate branch so lane changes are
+not stranded. It never enables worker commits, pull requests, or dangerous
+permission bypass.
 
 Lane count and active concurrency are separate:
 
@@ -536,6 +642,9 @@ agent-manager events <runId> --jsonl
 agent-manager watch-signal <runId>
 agent-manager reply <runId> <laneId> --message <text>
 agent-manager review <runId> [--pass 1|2]
+agent-manager review <runId> --pass 1 --verdict accept|accept-with-notes|revise|relaunch|reject --reviewer <id> [--notes <text>]
+agent-manager next-action <runId> [--json]
+agent-manager delivery-ready <runId> [--require merged|released]
 agent-manager integrate <runId>
 agent-manager cancel <runId>
 agent-manager cleanup <runId>
@@ -545,7 +654,7 @@ agent-manager cleanup --stale --older-than-days 30
 ### 📦 PR Manager function
 
 ```text
-agent-manager ship <runId> --approve through-pr|all --detach
+agent-manager ship <runId> --approve through-pr|all [--target <delivery-target-id>] --detach
 ```
 
 Dangerous permission bypass requires two independent inputs: `policy.dangerously_skip_permissions: true` in the workflow and `--allow-dangerous-permissions` on that invocation (or the matching environment confirmation).
@@ -553,11 +662,14 @@ Dangerous permission bypass requires two independent inputs: `policy.dangerously
 ## 📦 PR Manager: detached shipping
 
 After Delivery Review accepts the work and the operator approves Ship Gate,
-hand shipping to the same run instead of polling GitHub in the host chat:
+hand shipping to the same run instead of polling GitHub in the host chat. For
+a delivery train, supply the next manifest target; omit `--target` for a
+single integrate branch:
 
 ```bash
 agent-manager ship <runId> \
   --approve through-pr \
+  --target api-pr \
   --commit-message "feat: approved change" \
   --detach --json
 ```

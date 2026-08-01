@@ -25,6 +25,7 @@ import {
   resolveGitRef,
 } from "./worktree.mjs";
 import { deriveRunState, readStatus, writeStatus } from "./status.mjs";
+import { createDeliveryStatus, markWorkersComplete } from "./delivery.mjs";
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { writeReport } from "./report.mjs";
 import { integrateLanes } from "./integrate.mjs";
@@ -276,6 +277,8 @@ export async function runWorkflow(workflowPath, {
       failures: 0,
     },
     lanes: laneStates,
+    execution: { state: "running", endedAt: null },
+    delivery: createDeliveryStatus(workflow, laneStates),
   };
   writeStatus(runId, status);
   const persistStatus = () => {
@@ -685,12 +688,12 @@ export async function runWorkflow(workflowPath, {
     }
 
     status.state = deriveRunState(status);
-    if (status.state === "done" && workflow.integrate) {
+    if (status.state === "workers_done" && workflow.integrate) {
       status.integrate = { state: "running" };
       persistStatus();
       try {
         status.integrate = integrateLanes({ workflow, runId, laneStates });
-        status.state = status.integrate.state === "ready" ? "done" : "blocked";
+        status.state = status.integrate.state === "ready" ? "workers_done" : "blocked";
       } catch (error) {
         status.integrate = { state: "failed", error: String(error?.message || error) };
         status.state = "failed";
@@ -698,11 +701,20 @@ export async function runWorkflow(workflowPath, {
       }
     }
 
-    status.endedAt = status.state === "blocked" ? null : new Date().toISOString();
+    if (status.state === "workers_done") {
+      markWorkersComplete(status);
+    } else if (status.state !== "blocked") {
+      status.execution = {
+        ...(status.execution || {}),
+        state: status.state,
+        endedAt: new Date().toISOString(),
+      };
+      status.endedAt = new Date().toISOString();
+    }
     persistStatus();
     const reportPath = writeReport(runId, status);
-    if (status.state === "done") {
-      await emit("run_done", { endedAt: status.endedAt });
+    if (status.state === "delivery_review_pending") {
+      await emit("workers_done", { executionEndedAt: status.execution?.endedAt });
     } else if (status.state === "failed" || status.state === "cancelled") {
       await emit("run_failed", {
         endedAt: status.endedAt,

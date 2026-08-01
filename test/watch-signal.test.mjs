@@ -111,6 +111,31 @@ test("classifyWake distinguishes heartbeat, state_change, needs_input, terminal"
   assert.equal(shipWake.reason, "needs_input");
   assert.equal(shipWake.phase, "ship");
   assert.equal(shipWake.runtime.hostPlatform, "win32");
+
+  const reviewReady = sampleStatus({
+    state: "delivery_review_pending",
+    delivery: {
+      state: "review_pending",
+      review: { state: "not_started", latestPass: 0, history: [] },
+      targets: [],
+    },
+    lanes: [{ id: "core", state: "done", harness: "claude", exitCode: 0 }],
+  });
+  const reviewWake = classifyWake(running, reviewReady);
+  assert.equal(reviewWake.reason, "state_change");
+  assert.equal(reviewWake.cadence.transition, "AUTO_CONTINUE");
+
+  const reviewPresented = {
+    ...reviewReady,
+    delivery: {
+      ...reviewReady.delivery,
+      review: { state: "awaiting_operator", latestPass: 1, history: [] },
+    },
+  };
+  const decisionWake = classifyWake(reviewReady, reviewPresented);
+  assert.equal(decisionWake.reason, "needs_input");
+  assert.equal(decisionWake.cadence.transition, "WAIT_OPERATOR");
+  assert.equal(classifyWake(reviewPresented, reviewPresented, { heartbeatDue: true }), null);
 });
 
 test("formatWakeLine matches Cursor notify pattern", () => {
@@ -148,7 +173,7 @@ test("runWatchSignal emits state_change then terminal and exits", async () => {
       } else if (writes >= 2) {
         writeStatus(runId, sampleStatus({
           runId,
-          state: "done",
+          state: "merged",
           lanes: [{ id: "core", state: "done", harness: "claude", exitCode: 0 }],
         }));
       }
@@ -165,13 +190,42 @@ test("runWatchSignal emits state_change then terminal and exits", async () => {
   assert.ok(wakes.some((line) => line.includes('"reason":"terminal"')));
 });
 
-test("monitor board formats lanes and exits only on done/failed/cancelled", () => {
+test("runWatchSignal immediately surfaces an actionable stage present at attach time", async () => {
+  const runId = "run-signal-actionable-baseline";
+  mkdirSync(join(root, ".runs", runId), { recursive: true });
+  writeStatus(runId, sampleStatus({
+    runId,
+    state: "delivery_review_pending",
+    delivery: {
+      state: "review_pending",
+      review: { state: "not_started", latestPass: 0, history: [] },
+      targets: [],
+    },
+    lanes: [{ id: "core", state: "done", harness: "claude", exitCode: 0 }],
+  }));
+  const lines = [];
+  await runWatchSignal(runId, {
+    pollMs: 1,
+    write: (line) => lines.push(line),
+    sleep: async () => {},
+    maxTicks: 1,
+  });
+  const wake = lines.find((line) => line.startsWith("AGENT_MANAGER_WAKE_"));
+  assert.ok(wake);
+  const payload = JSON.parse(wake.split(" ").slice(1).join(" "));
+  assert.equal(payload.reason, "state_change");
+  assert.equal(payload.cadence.transition, "AUTO_CONTINUE");
+  assert.equal(payload.cadence.stage, "workers_complete");
+});
+
+test("monitor board exits only on delivery-terminal states", () => {
   const board = formatMonitorBoard(sampleStatus({ feed: { enabled: false } }));
   assert.match(board, /agent-manager · monitor/);
   assert.match(board, /core/);
   assert.match(board, /tool: Read/);
   assert.match(board, /windows\/x64 \(win32\)/);
   assert.equal(shouldMonitorExit(sampleStatus({ state: "blocked" })), false);
-  assert.equal(shouldMonitorExit(sampleStatus({ state: "done" })), true);
+  assert.equal(shouldMonitorExit(sampleStatus({ state: "delivery_review_pending" })), false);
+  assert.equal(shouldMonitorExit(sampleStatus({ state: "merged" })), true);
   assert.equal(shouldMonitorExit(sampleStatus({ state: "failed" })), true);
 });

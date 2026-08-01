@@ -2,8 +2,6 @@ import { RUNS_ROOT } from "./paths.mjs";
 import { isTerminalState, latestRunId, readStatus } from "./status.mjs";
 import { formatRuntime } from "./runtime.mjs";
 
-const DONE_EXIT_STATES = new Set(["done", "failed", "cancelled"]);
-
 function pad(value, width) {
   const text = String(value ?? "-");
   return text.length >= width ? text.slice(0, width) : text.padEnd(width);
@@ -81,6 +79,13 @@ export function formatMonitorBoard(status, { previousLaneStates = {} } = {}) {
       lines.push(`  verification: ${status.integrate.verification.state}`);
     }
   }
+  if (status.delivery) {
+    lines.push("");
+    lines.push(`delivery: ${status.delivery.state}  mode=${status.delivery.mode || "-"}  review=${status.delivery.review?.state || "-"}`);
+    for (const target of status.delivery.targets || []) {
+      lines.push(`  ${target.order}. ${target.id}: ${target.state}  PR=${target.prUrl || target.pr || "-"}  merge=${target.mergeSha || "-"}`);
+    }
+  }
   if (status.ship) {
     lines.push("");
     lines.push(
@@ -96,12 +101,12 @@ export function formatMonitorBoard(status, { previousLaneStates = {} } = {}) {
   }
 
   lines.push("");
-  lines.push("Ctrl+C to stop · exits automatically on done/failed/cancelled");
+  lines.push("Ctrl+C to stop · exits automatically on merged/released/rejected/failed/cancelled");
   return lines.join("\n");
 }
 
 export function shouldMonitorExit(status) {
-  return Boolean(status && DONE_EXIT_STATES.has(status.state));
+  return Boolean(status && isTerminalState(status.state));
 }
 
 /**

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { assertPathInside, repoPath, runDir } from "./paths.mjs";
-import { readStatus, writeStatus } from "./status.mjs";
+import { isTerminalState, readStatus, writeStatus } from "./status.mjs";
 import { releaseLane } from "./claim.mjs";
 import { removeWorktree } from "./worktree.mjs";
 import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
@@ -12,7 +12,7 @@ export async function cancelRun(runId, { removeWorktrees = false } = {}) {
   const status = readStatus(runId);
   if (!status) throw new Error(`no status for ${runId}`);
   if (status.state === "cancelled") return status;
-  if (status.state === "done" || status.state === "failed") {
+  if (isTerminalState(status.state)) {
     throw new Error(`cannot cancel terminal run ${runId} (${status.state})`);
   }
 
@@ -41,6 +41,7 @@ export async function cancelRun(runId, { removeWorktrees = false } = {}) {
     status.ship.lastActivity = "cancel requested";
   }
   status.state = "cancelled";
+  if (status.delivery) status.delivery.state = "cancelled";
   status.endedAt = cancelledAt;
   writeStatus(runId, status);
 

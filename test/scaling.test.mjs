@@ -54,6 +54,7 @@ function lane(index) {
 test("workflow accepts five lanes, defaults concurrency to three, and rejects six", () => {
   const five = loadWorkflow(workflow("five", {
     repo: "repo",
+    integrate: true,
     lanes: [1, 2, 3, 4, 5].map(lane),
   }));
   assert.equal(five.lanes.length, 5);
@@ -78,6 +79,7 @@ test("workflow accepts five lanes, defaults concurrency to three, and rejects si
 test("overlapping write scopes fail closed unless one lane is explicitly read-only", () => {
   const overlapping = {
     repo: "repo",
+    integrate: true,
     lanes: [
       { id: "platform", scope: "src/**", prompt: "platform" },
       { id: "ui", scope: "src/ui/**", prompt: "ui" },
@@ -124,6 +126,7 @@ test("dependency validation rejects unknown lanes and cycles", () => {
 test("dependencies permit sequential ownership of the same path", () => {
   const loaded = loadWorkflow(workflow("sequential-overlap", {
     repo: "repo",
+    integrate: true,
     lanes: [
       { id: "generator", scope: "src/generated/**", prompt: "generate" },
       {

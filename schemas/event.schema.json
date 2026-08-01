@@ -3,13 +3,15 @@
   "$id": "https://github.com/Patchnet/agent-manager/schemas/event.schema.json",
   "title": "agent-manager event",
   "type": "object",
-  "required": ["schema", "type", "at", "runId", "state", "lanes"],
+  "required": ["schema", "type", "at", "runId", "state", "lanes", "cadence"],
   "properties": {
     "schema": { "const": "agent-manager.event.v1" }, "type": { "const": "status" },
     "at": { "type": "string", "format": "date-time" }, "runId": { "type": "string" },
-    "state": { "enum": ["running", "shipping", "blocked", "done", "failed", "cancelled"] },
+    "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "merged", "released", "rejected", "failed", "cancelled"] },
     "runtime": { "anyOf": [{ "$ref": "status.schema.json#/$defs/runtime" }, { "type": "null" }] },
     "lanes": { "type": "array" },
-    "ship": { "type": ["object", "null"] }
+    "ship": { "type": ["object", "null"] },
+    "delivery": { "type": ["object", "null"] },
+    "cadence": { "$ref": "operator-cadence.schema.json" }
   }
 }

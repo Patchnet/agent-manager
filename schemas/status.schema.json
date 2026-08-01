@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["runId", "state", "repo", "startedAt", "lanes"],
   "properties": {
-    "runId": { "type": "string" }, "state": { "enum": ["running", "shipping", "blocked", "done", "failed", "cancelled"] },
+    "runId": { "type": "string" }, "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "merged", "released", "rejected", "failed", "cancelled"] },
     "repo": { "type": "string" }, "startedAt": { "type": "string", "format": "date-time" },
     "endedAt": { "type": ["string", "null"] }, "lanes": { "type": "array" },
     "runtime": { "$ref": "#/$defs/runtime" },
@@ -28,6 +28,20 @@
         "attestations": { "type": "object" }
       }
     },
+    "delivery": {
+      "type": "object",
+      "required": ["schema", "mode", "state", "review", "targets", "release"],
+      "properties": {
+        "schema": { "const": "agent-manager.delivery.v1" },
+        "mode": { "enum": ["single", "train", "review-only"] },
+        "state": { "enum": ["workers_running", "review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "targets_pending", "release_pending", "merged", "released", "rejected", "failed", "cancelled"] },
+        "releaseRequired": { "type": "boolean" },
+        "workersCompletedAt": { "type": ["string", "null"] },
+        "review": { "type": "object" },
+        "targets": { "type": "array" },
+        "release": { "type": "object" }
+      }
+    },
     "ship": {
       "type": "object",
       "required": ["schema", "state", "phase", "approve", "branch", "base", "remote"],
@@ -41,6 +55,7 @@
         "base": { "type": "string" },
         "remote": { "type": "string" },
         "prUrl": { "type": ["string", "null"] },
+        "targetId": { "type": ["string", "null"] },
         "mergeSha": { "type": ["string", "null"] },
         "releaseSha": { "type": ["string", "null"] },
         "plannedTag": { "type": ["string", "null"] },

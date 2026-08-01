@@ -71,6 +71,36 @@ a `runId`, runtime profile, telemetry path, supervisor log, and status command
 in milliseconds.
 A foreground run is for a dedicated terminal, not a chat turn.
 
+Worker success enters `delivery_review_pending`. It is deliberately not a
+terminal delivery state. The run reaches `merged` or `released` only after its
+persisted Delivery Review, Ship Gate, and PR Manager evidence are complete.
+Never gate another wave on lane state, released claims, or worker completion.
+Use:
+
+```bash
+agent-manager delivery-ready <runId> --require merged
+agent-manager delivery-ready <runId> --require released
+```
+
+The readiness command exits with code 2 until the selected boundary is proven.
+
+## Operator cadence
+
+Every operator board ends with a deterministic transition:
+
+| Transition | Host behavior |
+|---|---|
+| `AUTO_CONTINUE` | Take the stated next action before ending the turn |
+| `WAIT_OPERATOR` | Present the exact reply vocabulary and stop |
+| `TERMINAL` | Post final evidence, close the source record, and stop watching |
+
+Use `agent-manager next-action <runId> --json` to resolve the current stage.
+Never report only that a stage completed. In particular, worker completion is
+`AUTO_CONTINUE`: post Run Outcome, perform Delivery Review, and only then wait
+for the operator's verdict. A persisted `revise` or `relaunch` automatically
+starts the one correction. An accepted review automatically advances to Ship
+Gate presentation.
+
 ## Observe without blocking
 
 ```bash
@@ -82,7 +112,18 @@ agent-manager watch-signal <runId> --heartbeat-sec 180
 
 `status.json` is authoritative. `events.jsonl` and `watch-signal` are notification sources, not alternate state stores. A `blocked` run is resumable and is not terminal.
 
+Every wake payload includes `cadence.stage`, `cadence.transition`,
+`cadence.nextAction`, `cadence.operatorInputRequired`, and the canonical
+template name. Waiting stages do not emit repetitive heartbeats.
+
 Cursor support for waking an idle chat from arbitrary process output is host-version dependent. Keep the run detached. Use the side-terminal monitor, event consumer, or operating-system notifications when the host cannot re-enter the chat automatically.
+
+For a Codex thread heartbeat, preserve Codex's required heartbeat response
+envelope. The scheduled prompt may request the canonical Agent Manager board,
+but it must also require the response to end with the host-provided
+`<heartbeat>` block and a `NOTIFY` or `DONT_NOTIFY` decision. Do not say “only
+the canonical template,” because that conflicts with the Codex heartbeat
+protocol. Telemetry wakes the host; delivery state remains enforced on disk.
 
 ## Answer a lane
 
@@ -96,11 +137,20 @@ Reply resumes the recorded Claude or Codex session. It does not create a new ind
 
 ```bash
 agent-manager review <runId>
+agent-manager review <runId> --pass 1 --verdict accept-with-notes \
+  --reviewer master-dev --notes "CI required on every target"
 ```
+
+Calling `review` without a verdict records that the review was presented and
+transitions cadence to `WAIT_OPERATOR`. This distinguishes “review must be
+performed” from “the operator is now deciding.”
 
 The generated Pass 1 document collects lane states, scopes, changed files, violations, exits, and evidence logs. The host must still compare those facts with the original request and rerun relevant tests. At most one correction is allowed, followed by Pass 2. There is no automatic Pass 3.
 
-Only an accepted Delivery Review can proceed to Ship Gate. Workers do not own commits, pushes, pull requests, merges, tags, or releases unless the workflow explicitly permits a narrower action.
+Only a persisted accepted Delivery Review can proceed to Ship Gate. The ship
+command rejects conversational approval that was not recorded in `status.json`.
+Workers do not own commits, pushes, pull requests, merges, tags, or releases
+unless the workflow explicitly permits a narrower action.
 
 ## Integration
 
@@ -117,6 +167,12 @@ risk. Configured `verification.commands` then run without a shell in the
 integration worktree. A merge conflict or failed verification becomes a
 resumable escalation. Integration does not push or merge to the target
 repository default branch.
+
+If `integrate: false` is used for more than one writable lane, the workflow
+must declare a `delivery.targets` train that maps every lane to an explicit
+destination. Branch and existing PR coordinates are optional; omitted branches
+use the generated lane branch. Validation fails when any writable lane is
+unmapped. Simple Flow requires `integrate: true` for multi-lane writable work.
 
 ## Dependencies and ownership
 
@@ -146,14 +202,18 @@ multi-writer exception is not supported.
 
 ## PR Manager after Ship Gate
 
-PR Manager starts only after an accepted Delivery Review and an explicit Ship
-Gate approval. It uses the same run ID and `status.json`.
+PR Manager starts only after a persisted accepted Delivery Review and an
+explicit Ship Gate approval. It uses the same run ID and `status.json`.
 
 Formal Flow through the pull request:
+
+For a delivery train, pass the next target ID. Omit `--target` for a single
+integrate branch.
 
 ```bash
 agent-manager ship <runId> \
   --approve through-pr \
+  --target <delivery-target-id> \
   --commit-message "feat: approved change" \
   --detach --json
 ```
@@ -168,6 +228,11 @@ agent-manager ship <runId> \
   --summary "Add the approved capability." \
   --detach --json
 ```
+
+For a Formal delivery train, use `through-pr` on earlier targets and `all` only
+on the final target. Release stamping proves that every recorded target merge
+SHA is an ancestor of the release base. Simple Flow pushes the reviewed
+single/integrated worktree commit directly to its base branch and then tags it.
 
 The detached supervisor commits only when the approved worktree is dirty,
 pushes the recorded branch, finds or creates the pull request, enables
@@ -203,8 +268,8 @@ agent-manager cleanup --stale --older-than-days 30
 Cancellation writes an authoritative marker. The live supervisor then
 terminates lane process trees it owns. The detached ship supervisor stops
 between bounded Git or GitHub commands and polling cycles. The cancel command
-does not kill an unverified stale PID. Stale cleanup skips running, shipping,
-and blocked runs.
+does not kill an unverified stale PID. Cleanup refuses every incomplete
+delivery state. Stale cleanup removes only overall-terminal runs.
 
 ## Claims
 

@@ -6,11 +6,68 @@ status walls, emoji dashboards, or invented schemas.
 Fill from `status.json` / `report.md`. Use `n/a` when unknown. Refresh when
 state changes, on a **Heartbeat** wake, or when the operator asks.
 
+## Mandatory transition footer
+
+End every board with this block. Never end a turn with only “stage complete.”
+
+```markdown
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `AUTO_CONTINUE \| WAIT_OPERATOR \| TERMINAL` |
+| **Next action** | `<exact action>` |
+| **Operator input required** | `none \| <exact reply vocabulary>` |
+```
+
+- `AUTO_CONTINUE`: perform the next action before ending the turn. If that
+  action presents an approval board, end that board with `WAIT_OPERATOR`.
+- `WAIT_OPERATOR`: ask one exact question or present exact replies, then stop.
+- `TERMINAL`: post final evidence, complete source-system closeout, and stop.
+
+Use `agent-manager next-action <runId> --json` when the correct transition is
+unclear. Its result is authoritative for cadence; `status.json` remains
+authoritative for run facts.
+
 After detach, Master **must** arm `watch-signal` (see SKILL). On each wake:
 unchanged + running → Heartbeat; changed → Run board; needs-input → Escalation;
-terminal → Run outcome then **stop** the watch loop. After an accepted
+`delivery_review_pending` → Run outcome then Delivery Review while the watcher
+stays active; overall terminal (`merged|released|rejected|failed|cancelled`) →
+final outcome then **stop**. After an accepted
 Delivery Review and Ship Gate approval, switch to the canonical templates in
 [`../pr-manager/reporting.md`](../pr-manager/reporting.md).
+
+---
+
+## Template — Build plan / launch proposal
+
+Post before launch. Do not ask twice: if the operator already authorized this
+exact plan, use `AUTO_CONTINUE` and launch it.
+
+```markdown
+## Agent Manager · Build plan
+
+| | |
+|---|---|
+| **repo / base** | `<repo>` · `<reviewed SHA>` |
+| **plan** | `<planning.planRef>` |
+| **lanes / concurrency** | `<count>` / `<maxConcurrency>` |
+| **integration** | `<single integrate branch \| ordered delivery train \| review-only>` |
+| **verification** | `<commands or evidence>` |
+| **main risk** | `<risk or none>` |
+
+| Lane | Owns | Depends on | Deliverable |
+|---|---|---|---|
+| `<id>` | `<scope>` | `<lane ids or none>` | `<result>` |
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `<AUTO_CONTINUE if already authorized; otherwise WAIT_OPERATOR>` |
+| **Next action** | `<launch detached \| wait for launch approval>` |
+| **Operator input required** | `<none \| launch \| revise \| reject>` |
+```
 
 ---
 
@@ -34,6 +91,14 @@ Runtime: `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell
 | `<id>` | `running\|…` | `<Ns>` | `<lastActivity>` |
 
 _Side terminal:_ `agent-manager monitor <runId>`
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `AUTO_CONTINUE` |
+| **Next action** | Keep monitoring the detached run. |
+| **Operator input required** | `none` |
 ```
 
 ---
@@ -50,7 +115,7 @@ Post once when a run starts, then again on meaningful updates
 |---|---|
 | **runId** | `<runId>` |
 | **repo** | `<repo>` |
-| **state** | `running \| shipping \| blocked \| done \| failed \| cancelled` |
+| **state** | `running \| delivery_review_pending \| correction_pending \| ship_gate_pending \| shipping \| blocked \| release_pending \| merged \| released \| rejected \| failed \| cancelled` |
 | **target_dev_flow** | `simple \| formal` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **workflow** | `<path>` |
@@ -71,6 +136,14 @@ Post once when a run starts, then again on meaningful updates
 - Watch-signal (Master loop): `agent-manager watch-signal <runId>`
 - Cancel: `agent-manager cancel <runId>`
 - Logs: `$AGENT_MANAGER_RUNS_ROOT/<runId>/<lane>/stdout.log`
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `AUTO_CONTINUE` |
+| **Next action** | Keep monitoring; advance on the next state change. |
+| **Operator input required** | `none` |
 ```
 
 ---
@@ -102,13 +175,23 @@ Operator reply in this chat. Other independent lanes may keep running.
 
 ### Reply command
 - `agent-manager reply <runId> <lane> --message "<answer>"`
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `WAIT_OPERATOR` |
+| **Next action** | Resume the exact blocked lane after the answer. |
+| **Operator input required** | `<exact answer or listed option>` |
 ```
 
 ---
 
-## Template — Run outcome (terminal)
+## Template — Run outcome (workers complete)
 
-Post when run `state` is `done`, `failed`, or `cancelled`. A `blocked` run uses the Escalation template and remains resumable.
+Post when run `state` becomes `delivery_review_pending`. It means the workers
+completed; it is not a terminal delivery state. A `blocked` run uses the
+Escalation template. Failed, cancelled, or rejected runs use Final outcome.
 
 ```markdown
 ## Agent Manager · Run outcome
@@ -117,7 +200,8 @@ Post when run `state` is `done`, `failed`, or `cancelled`. A `blocked` run uses 
 |---|---|
 | **runId** | `<runId>` |
 | **repo** | `<repo>` |
-| **final state** | `done \| failed \| cancelled` |
+| **run state** | `delivery_review_pending` |
+| **delivery state** | `<delivery.state>` |
 | **report** | `$AGENT_MANAGER_RUNS_ROOT/<runId>/report.md` |
 | **target_dev_flow** | `simple \| formal` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
@@ -131,14 +215,53 @@ Post when run `state` is `done`, `failed`, or `cancelled`. A `blocked` run uses 
 
 ### Recommended next
 - [ ] **Delivery Review** (mandatory before Ship Gate — template below)
+- [ ] Persist the decision: `agent-manager review <runId> --pass <n> --verdict <decision> --reviewer <id>`
 - [ ] Review integrate worktree when `status.integrate.state=ready`
 - [ ] Answer open escalations (if any)
 - [ ] Ship Gate only after Delivery Review verdict `accept` or `accept-with-notes`
 - [ ] After Ship Gate approval: detach `agent-manager ship <runId> ... --detach`
 - [ ] Post PR Manager Handoff and stop babysitting CI/merge in this chat
-- [ ] Release claims / remove worktrees when abandoned
+- [ ] Do not remove worktrees while delivery remains incomplete
 - [ ] Manual fold if needed: `agent-manager integrate <runId>`
-- [ ] Cleanup abandoned artifacts: `agent-manager cleanup <runId>`
+- [ ] Cleanup only after overall terminal closeout; incomplete delivery is retained
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `AUTO_CONTINUE` |
+| **Next action** | Verify the work and present Delivery Review Pass 1 now. |
+| **Operator input required** | `none` |
+```
+
+---
+
+## Template — Correction kickoff
+
+Post immediately after persisting `revise` or `relaunch`. The verdict itself
+authorizes one correction; do not ask whether to begin it.
+
+```markdown
+## Agent Manager · Correction kickoff
+
+| | |
+|---|---|
+| **runId** | `<parent runId>` |
+| **method** | `revise \| relaunch` |
+| **correction attempt** | `1 of 1` |
+| **monitoring** | `armed` |
+
+| Lane | Exact gap | Required proof |
+|---|---|---|
+| `<id>` | `<file/behavior to correct>` | `<test/evidence>` |
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `AUTO_CONTINUE` |
+| **Next action** | Run the correction and present Delivery Review Pass 2 when it finishes. |
+| **Operator input required** | `none` |
 ```
 
 ---
@@ -146,8 +269,8 @@ Post when run `state` is `done`, `failed`, or `cancelled`. A `blocked` run uses 
 ## Template — Delivery Review (one-shot eval loop)
 
 **Mandatory before Ship Gate** whenever a multi-lane (or multi-artifact) run
-reaches a terminal `done` / partial-success state that Master intends to ship
-or close.
+enters `delivery_review_pending`. Worker completion is not a terminal delivery
+state and does not authorize shipping or cleanup.
 
 Workers exiting 0 is **not** acceptance. Master Dev must:
 
@@ -172,6 +295,17 @@ Per parent runId (the original multi-lane run under review):
 | **Further eval** | Master | **Forbidden.** Master must **not** open Pass 3, issue another `revise`/`relaunch`, or start another eval loop. Operator decides: Ship Gate, abandon, or a **new operator-ordered** run (new runId — not Master self-looping). |
 
 `accept` / `accept-with-notes` / `reject` on Pass 1 skip correction — go straight to Ship Gate or close-out.
+
+After the operator chooses a verdict, persist it before any Ship Gate:
+
+```bash
+agent-manager review <runId> --pass <1|2> \
+  --verdict <accept|accept-with-notes|revise|relaunch|reject> \
+  --reviewer <reviewer-id> [--notes "<evidence or constraints>"]
+```
+
+Chat acceptance alone is not machine-readable approval. `agent-manager ship`
+fails closed until `status.json` contains an accepted review decision.
 
 Lane exit codes and CI green may still leave **contract drift** (e.g. docs
 sample ≠ live Zod). Call that out explicitly under Gaps.
@@ -221,6 +355,40 @@ sample ≠ live Zod). Call that out explicitly under Gaps.
 ### Waiting on
 Pass 1: operator `accept` | `accept-with-notes` | `revise` | `relaunch` | `reject`  
 Pass 2: operator `accept` | `accept-with-notes` | `reject` (or operator-ordered new run)
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `WAIT_OPERATOR` |
+| **Next action** | Persist the selected verdict, then advance without another confirmation. |
+| **Operator input required** | `<the pass-specific reply vocabulary above>` |
+```
+
+---
+
+## Template — Final outcome
+
+Post for overall `merged`, `released`, `rejected`, `failed`, or `cancelled`.
+
+```markdown
+## Agent Manager · Final outcome
+
+| | |
+|---|---|
+| **runId** | `<runId>` |
+| **state** | `merged \| released \| rejected \| failed \| cancelled` |
+| **evidence** | `<PR / merge SHA / release SHA / tag / error>` |
+| **remaining risk** | `<none or exact item>` |
+| **source closeout** | `<updated \| pending with owner>` |
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `TERMINAL` |
+| **Next action** | Complete source-system closeout and stop watching. |
+| **Operator input required** | `none` |
 ```
 
 ---
@@ -229,15 +397,21 @@ Pass 2: operator `accept` | `accept-with-notes` | `reject` (or operator-ordered 
 
 | Moment | Action |
 |---|---|
-| Run kicked off (`--detach`) | Capture `runId` from detach stdout; post **Run board** (chat stays free) |
+| Build plan ready | Post **Build plan**; launch immediately when already authorized |
+| Run kicked off (`--detach`) | Capture `runId`; post **Run board**, arm watch, and keep going |
 | ~15–30s while running (or on operator ask) | Re-read `status.json`; post updated **Run board** only if something changed |
 | Lane blocked | Post **Escalation** immediately |
-| Run finished | Post **Run outcome**, then **Delivery Review · Pass 1** before Ship Gate |
+| Workers finished (`delivery_review_pending`) | Post **Run outcome**, then **Delivery Review · Pass 1**; keep the watcher active |
+| Operator says `revise` / `relaunch` | Persist it, post **Correction kickoff**, and launch the one correction without another prompt |
 | After one correction completes | Post **Delivery Review · Pass 2** to the operator — **no further Master eval** |
+| Delivery Review accepted | Persist it and present **Ship Gate** in the same turn |
+| Overall terminal | Post **Final outcome**, close the source record, and stop watching |
 | Operator says “status?” | Re-read JSON; post **Run board** (current) |
 | Operator says “review” / after outcome | Post Pass 1 if not yet posted; if Pass 2 already posted, do **not** open Pass 3 |
 
 Do **not** await a foreground `run` to “know when it’s done.” Do **not** spam
 identical boards. Do **not** skip Delivery Review because lanes exited 0.
 Do **not** run a second correction or a third review pass.
+Do **not** call a run delivered until its overall state is `merged` or
+`released` (as required by the workflow).
 Do **not** claim Canvas/`/loop` is wired unless it actually is for that session.

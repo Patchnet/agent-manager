@@ -11,6 +11,7 @@
 repo: ..
 harness_default: fake
 claim_mode: off
+integrate: true
 policy:
   allow_commit: false
   allow_pr: false

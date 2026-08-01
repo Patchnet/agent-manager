@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/delivery-readiness.schema.json",
+  "title": "agent-manager delivery readiness",
+  "type": "object",
+  "required": ["schema", "runId", "ready", "requiredState", "state", "targets"],
+  "properties": {
+    "schema": { "const": "agent-manager.delivery-readiness.v1" },
+    "runId": { "type": "string" },
+    "ready": { "type": "boolean" },
+    "requiredState": { "enum": ["merged", "released"] },
+    "state": { "type": "string" },
+    "deliveryState": { "type": ["string", "null"] },
+    "reviewState": { "type": ["string", "null"] },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "state", "prUrl", "mergeSha"],
+        "properties": {
+          "id": { "type": "string" },
+          "state": { "type": "string" },
+          "prUrl": { "type": ["string", "null"] },
+          "mergeSha": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "release": { "type": ["object", "null"] }
+  }
+}

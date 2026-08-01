@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/wake.schema.json",
+  "title": "agent-manager watch signal payload",
+  "type": "object",
+  "required": ["reason", "runId", "state", "lanes", "cadence"],
+  "properties": {
+    "reason": { "enum": ["heartbeat", "state_change", "needs_input", "terminal"] },
+    "runId": { "type": "string" },
+    "state": { "type": "string" },
+    "repo": { "type": ["string", "null"] },
+    "runtime": { "type": ["object", "null"] },
+    "lanes": { "type": "array" },
+    "ship": { "type": ["object", "null"] },
+    "delivery": { "type": ["object", "null"] },
+    "cadence": { "$ref": "operator-cadence.schema.json" }
+  }
+}

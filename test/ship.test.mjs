@@ -26,6 +26,7 @@ const {
   resolveSpawnCommand,
   runShip,
   ShipBlockedError,
+  verifyDeliveryAncestry,
 } = await import("../src/ship-run.mjs?ship-test");
 const { readEvents, readStatus, writeStatus } = await import("../src/status.mjs?ship-test");
 const { classifyWake } = await import("../src/watch-signal.mjs?ship-test");
@@ -65,19 +66,35 @@ function writeRun(runId, overrides = {}) {
   mkdirSync(worktree, { recursive: true });
   return writeStatus(runId, {
     runId,
-    state: "done",
+    state: "ship_gate_pending",
     repo: "fixture",
     repoRoot,
     target_dev_flow: "formal",
     baseRef: "main",
     startedAt: "2026-07-30T00:00:00.000Z",
-    endedAt: "2026-07-30T00:01:00.000Z",
+    endedAt: null,
     lanes: [],
     integrate: {
       state: "ready",
       branch: `am/${runId}/integrate`,
       worktree,
       remote: "origin",
+      diffStat: "feature.txt | 1 +",
+    },
+    delivery: {
+      schema: "agent-manager.delivery.v1",
+      mode: "single",
+      state: "ship_gate_pending",
+      releaseRequired: false,
+      review: {
+        state: "accepted",
+        latestPass: 1,
+        verdict: "accept",
+        reviewer: "test-manager",
+        history: [{ pass: 1, verdict: "accept", reviewer: "test-manager" }],
+      },
+      targets: [],
+      release: { state: "pending", sha: null, tag: null, verifiedMergeShas: [] },
     },
     ...overrides,
   });
@@ -153,6 +170,77 @@ test("ship handoff requires the exact approval and release inputs", () => {
   assert.equal(handoff.branch, `am/${runId}/integrate`);
 });
 
+test("shipping refuses a delivery target with no changed files", () => {
+  const runId = "run-ship-no-code";
+  const status = writeRun(runId);
+  status.delivery.targets = [{
+    id: "empty",
+    laneId: "empty",
+    state: "no_changes",
+    branch: status.integrate.branch,
+    base: "main",
+    worktree: status.integrate.worktree,
+    changedFiles: [],
+  }];
+  writeStatus(runId, status);
+  assert.throws(
+    () => prepareShipHandoff(runId, { approve: "through-pr", target: "empty" }),
+    /refusing a no-code shipment/,
+  );
+});
+
+test("shipping refuses an integrate target whose final diff is empty", () => {
+  const runId = "run-ship-empty-integrate";
+  writeRun(runId, {
+    integrate: {
+      state: "ready",
+      branch: `am/${runId}/integrate`,
+      worktree: join(runsRoot, runId, "integrate", "wt"),
+      remote: "origin",
+      diffStat: "",
+    },
+    delivery: {
+      schema: "agent-manager.delivery.v1",
+      mode: "single",
+      state: "ship_gate_pending",
+      releaseRequired: false,
+      review: { state: "accepted", verdict: "accept", latestPass: 1, history: [] },
+      targets: [{
+        id: "integrate",
+        laneId: "integrate",
+        state: "changes_ready",
+        branch: `am/${runId}/integrate`,
+        base: "main",
+        worktree: join(runsRoot, runId, "integrate", "wt"),
+        changedFiles: ["feature.txt"],
+      }],
+      release: { state: "pending", verifiedMergeShas: [] },
+    },
+  });
+  assert.throws(() => prepareShipHandoff(runId, {
+    approve: "through-pr",
+    commitMessage: "feat: should not ship",
+  }), /integrate branch has no changed files/);
+});
+
+test("release ancestry verification fails closed when any train merge is absent", () => {
+  const runId = "run-ship-ancestry";
+  const status = writeRun(runId);
+  status.delivery.targets = [
+    { id: "one", state: "merged", mergeSha: "a".repeat(40) },
+    { id: "two", state: "merged", mergeSha: "b".repeat(40) },
+  ];
+  status.ship = { targetId: "two", mergeSha: "b".repeat(40) };
+  writeStatus(runId, status);
+  const handoff = { flow: "formal", repoRoot: status.repoRoot };
+  assert.throws(
+    () => verifyDeliveryAncestry(runId, status, handoff, "c".repeat(40), (_command, args) =>
+      args.includes("b".repeat(40)) ? fail("not ancestor") : ok()
+    ),
+    /does not contain expected merge/,
+  );
+});
+
 test("Formal through-pr shipping records PR merge telemetry and events", async () => {
   const runId = "run-ship-through-pr";
   const initial = writeRun(runId);
@@ -168,7 +256,7 @@ test("Formal through-pr shipping records PR merge telemetry and events", async (
     exec: formalExec(handoff.branch),
     sleep: async () => {},
   });
-  assert.equal(result.state, "done");
+  assert.equal(result.state, "merged");
   assert.equal(result.ship.state, "done");
   assert.equal(result.ship.prUrl, "https://example.invalid/pull/7");
   assert.equal(result.ship.mergeSha, "abc123");
@@ -209,7 +297,7 @@ test("Formal merge conflicts block and wake the operator", async () => {
     exec: formalExec(retry.branch),
     sleep: async () => {},
   });
-  assert.equal(recovered.state, "done");
+  assert.equal(recovered.state, "merged");
   assert.equal(recovered.ship.attempt, 2);
 });
 
@@ -238,15 +326,43 @@ test("Simple all shipping stamps, pushes, waits for CI, and tags", async () => {
   execFileSync("git", ["-C", repo, "commit", "-m", "chore: initial"], { stdio: "ignore" });
   execFileSync("git", ["-C", repo, "push", "-u", "origin", "main"], { stdio: "ignore" });
 
+  const deliveryBranch = "am/run-ship-simple/lane";
+  execFileSync("git", ["-C", repo, "switch", "-c", deliveryBranch], { stdio: "ignore" });
+  writeFileSync(join(repo, "feature.txt"), "approved feature\n");
+
   writeRun(runId, {
     repo: ".",
     repoRoot: repo,
     target_dev_flow: "simple",
     integrate: undefined,
+    delivery: {
+      schema: "agent-manager.delivery.v1",
+      mode: "single",
+      state: "ship_gate_pending",
+      releaseRequired: true,
+      review: {
+        state: "accepted",
+        latestPass: 1,
+        verdict: "accept",
+        reviewer: "test-manager",
+        history: [{ pass: 1, verdict: "accept", reviewer: "test-manager" }],
+      },
+      targets: [{
+        id: "lane",
+        laneId: "lane",
+        state: "changes_ready",
+        branch: deliveryBranch,
+        base: "main",
+        worktree: repo,
+        changedFiles: ["feature.txt"],
+        prUrl: null,
+        mergeSha: null,
+      }],
+      release: { state: "pending", sha: null, tag: null, verifiedMergeShas: [] },
+    },
   });
   const handoff = prepareShipHandoff(runId, {
     approve: "all",
-    branch: "main",
     base: "main",
     remote: "origin",
     commitMessage: "feat: ship approved release",
@@ -272,8 +388,10 @@ test("Simple all shipping stamps, pushes, waits for CI, and tags", async () => {
     return execCommand(command, args, options);
   };
   const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
-  assert.equal(result.state, "done");
+  assert.equal(result.state, "released");
   assert.equal(result.ship.tag, "v1.1.0");
+  assert.equal(result.delivery.targets[0].state, "merged");
+  assert.equal(result.delivery.targets[0].mergeSha, result.ship.releaseSha);
   assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "1.1.0");
   assert.equal(
     execFileSync("git", ["ls-remote", "--tags", remote, "refs/tags/v1.1.0"], { encoding: "utf8" }).trim().length > 0,
@@ -361,10 +479,10 @@ test("CLI ship detaches and completes in the background", async () => {
   let status;
   while (Date.now() < deadline) {
     status = readStatus(runId);
-    if (["done", "blocked", "failed", "cancelled"].includes(status?.state)) break;
+    if (["released", "blocked", "failed", "cancelled"].includes(status?.state)) break;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
   }
-  assert.equal(status?.state, "done", readFileSync(launch.supervisorLog, "utf8"));
+  assert.equal(status?.state, "released", readFileSync(launch.supervisorLog, "utf8"));
   assert.equal(status.ship.tag, "v1.1.0");
 });
 

@@ -10,6 +10,7 @@ import { writePrivateFile } from "./fs-safe.mjs";
 import { writeReport } from "./report.mjs";
 import { deriveRunState, readStatus, writeStatus } from "./status.mjs";
 import { loadWorkflow } from "./workflow.mjs";
+import { markWorkersComplete } from "./delivery.mjs";
 
 export function prepareReply(runId, laneId, message) {
   assertSafeSlug(runId, "run id");
@@ -258,24 +259,33 @@ export async function resumeLane(runId, laneId, messagePath) {
   }
 
   status.state = deriveRunState(status);
-  if (status.state === "done" && workflow.integrate) {
+  if (status.state === "workers_done" && workflow.integrate) {
     status.integrate = { state: "running" };
     persistReplyStatus();
     try {
       status.integrate = integrateLanes({ workflow, runId, laneStates: status.lanes });
-      status.state = status.integrate.state === "ready" ? "done" : "blocked";
+      status.state = status.integrate.state === "ready" ? "workers_done" : "blocked";
     } catch (error) {
       status.integrate = { state: "failed", error: String(error?.message || error) };
       status.state = "failed";
     }
   }
 
-  status.endedAt = status.state === "blocked" || status.state === "running" ? null : new Date().toISOString();
+  if (status.state === "workers_done") {
+    markWorkersComplete(status);
+  } else if (status.state !== "blocked" && status.state !== "running") {
+    status.execution = {
+      ...(status.execution || {}),
+      state: status.state,
+      endedAt: new Date().toISOString(),
+    };
+    status.endedAt = new Date().toISOString();
+  }
   persistReplyStatus();
   writeReport(runId, status);
-  if (status.state === "done") {
-    await publishFeedEvent(publisher, status, "run_done", {
-      endedAt: status.endedAt,
+  if (status.state === "delivery_review_pending") {
+    await publishFeedEvent(publisher, status, "workers_done", {
+      executionEndedAt: status.execution?.endedAt,
       attempt: lane.attempt,
     });
   } else if (status.state === "failed") {

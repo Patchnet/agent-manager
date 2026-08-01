@@ -3,6 +3,11 @@
 Use these boards only. Fill every value from `status.json`; use `n/a` when it
 is not available.
 
+End every board with the Transition block. `AUTO_CONTINUE` means keep the
+detached ship process and watcher moving before ending the host turn;
+`WAIT_OPERATOR` means ask only for the listed decision; `TERMINAL` means close
+out and stop.
+
 ## PR Manager · Handoff
 
 | | |
@@ -10,6 +15,7 @@ is not available.
 | **runId** | `<runId>` |
 | **repo** | `<repo>` |
 | **approval** | `through-pr \| all` |
+| **target** | `<ship.targetId or single>` |
 | **branch** | `<branch>` |
 | **base** | `<base>` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
@@ -20,6 +26,14 @@ The approved shipping phase is detached. The host chat is free. PR Manager
 will wake on a blocker, meaningful state change, heartbeat, or terminal
 outcome.
 
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `AUTO_CONTINUE` |
+| **Next action** | Arm monitoring and let the detached ship phase continue. |
+| **Operator input required** | `none` |
+
 ## PR Manager · Ship board
 
 | | |
@@ -28,6 +42,7 @@ outcome.
 | **state** | `queued \| running` |
 | **phase** | `<ship.phase>` |
 | **approval** | `through-pr \| all` |
+| **target** | `<ship.targetId or single>` |
 | **branch** | `<branch>` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **PR** | `<URL or n/a>` |
@@ -37,12 +52,21 @@ outcome.
 |---|---|---|
 | `<name>` | `running \| done \| skipped` | `<detail>` |
 
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `AUTO_CONTINUE` |
+| **Next action** | Continue detached monitoring until progress, blocker, or outcome. |
+| **Operator input required** | `none` |
+
 ## PR Manager · Ship escalation
 
 | | |
 |---|---|
 | **runId** | `<runId>` |
 | **phase** | `<ship.phase>` |
+| **target** | `<ship.targetId or single>` |
 | **PR** | `<URL or n/a>` |
 | **state** | `blocked` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
@@ -59,12 +83,22 @@ outcome.
 
 Operator direction. PR Manager does not bypass or guess.
 
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `WAIT_OPERATOR` |
+| **Next action** | Apply only the selected resolution, then resume the same ship phase. |
+| **Operator input required** | `<exact option above>` |
+
 ## PR Manager · Ship outcome
 
 | | |
 |---|---|
 | **runId** | `<runId>` |
 | **final state** | `done \| failed \| cancelled` |
+| **target** | `<ship.targetId or single>` |
+| **overall delivery** | `<status.state>` |
 | **approval** | `through-pr \| all` |
 | **PR** | `<URL or n/a>` |
 | **merge SHA** | `<SHA or n/a>` |
@@ -76,4 +110,13 @@ Operator direction. PR Manager does not bypass or guess.
 ### Result
 
 - `<short evidence-backed result from ship steps>`
+- `<remaining targets or release requirement; n/a only when overall delivery is terminal>`
 - GitHub Release: **not created**
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `<AUTO_CONTINUE when an already-approved train target remains; WAIT_OPERATOR when new Ship Gate authority is required; TERMINAL when overall delivery is terminal>` |
+| **Next action** | `<ship next approved target \| present next Ship Gate \| close out and stop>` |
+| **Operator input required** | `<none \| exact Ship Gate reply>` |

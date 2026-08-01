@@ -35,7 +35,7 @@ export function initWorkflow({ repo = process.cwd(), output = "agent-manager.yam
     base_ref: "HEAD",
     claim_mode: "auto",
     max_concurrency: Math.min(DEFAULT_MAX_CONCURRENCY, lanes.length),
-    integrate: false,
+    integrate: true,
     policy: { allow_commit: false, allow_pr: false, permission_mode: "acceptEdits" },
     planning: {
       source_refs: ["replace-with-source-reference"],

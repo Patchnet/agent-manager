@@ -17,7 +17,8 @@ Read [reporting.md](./reporting.md) before posting any ship status.
 
 ## Hard rules
 
-1. Require an accepted Delivery Review and an explicit Ship Gate approval.
+1. Require an accepted Delivery Review persisted in `status.json` and an
+   explicit Ship Gate approval. A chat-only verdict is not sufficient.
 2. Map the approval exactly:
    - `through-pr`: commit if needed, push, create or find the pull request,
      enable squash auto-merge, and stop after merge.
@@ -45,6 +46,16 @@ Read [reporting.md](./reporting.md) before posting any ship status.
    protection.
 10. Do not create a GitHub Release. Release-note publication remains a separate
     reviewed action.
+11. A delivery train ships one declared target at a time with `--target <id>`.
+    A target with no changed files must fail closed. A completed target does not
+    mean the overall run is complete while other targets remain.
+12. Use `all` only on the final delivery target. Before a release stamp or tag,
+    require every target merge SHA and prove each is an ancestor of the release
+    commit.
+13. End every board with the reporting transition. Continue automatically for
+    detached progress and already-approved train targets. Wait only for a
+    blocker or new Ship Gate authority. Never report a completed target and
+    stop without naming and taking the next authorized action.
 
 ## Launch
 
@@ -52,6 +63,7 @@ Formal Flow, stop after merge:
 
 ```bash
 agent-manager ship <runId> \
+  --target <delivery-target-id> \
   --approve through-pr \
   --commit-message "feat: approved change" \
   --detach --json
@@ -61,6 +73,7 @@ Formal Flow, merge and release:
 
 ```bash
 agent-manager ship <runId> \
+  --target <final-delivery-target-id> \
   --approve all \
   --commit-message "feat: approved change" \
   --version 1.2.0 \
@@ -68,8 +81,9 @@ agent-manager ship <runId> \
   --detach --json
 ```
 
-Simple Flow uses `--approve all`, an explicit `--commit-message`, version, and
-summary. Use `--branch`, `--base`, `--remote`, `--repo`, or `--pr` only when
+Omit `--target` for a single integrate-branch delivery. Simple Flow uses
+`--approve all`, an explicit `--commit-message`, version, and summary. Use
+`--branch`, `--base`, `--remote`, `--repo`, or `--pr` only when
 the recorded run metadata is insufficient or the operator supplied an
 override.
 
@@ -88,7 +102,10 @@ override.
 6. On wake, read `status.json`:
    - ship progress: **Ship board**
    - ship blocker: **Ship escalation**
-   - terminal: **Ship outcome**, then stop watching
+   - target done but more targets/release pending: **Ship outcome**, then return
+     to the next approved target or release decision
+   - overall terminal (`merged|released|rejected|failed|cancelled`): **Ship
+     outcome**, then stop watching
 7. If the operator resolves a blocker, rerun the same `ship` command. The
    phase reuses existing commits, pull requests, merges, and matching tags
    when safe.
@@ -100,7 +117,7 @@ override.
 - the authoritative host `runtime` profile used for command selection;
 - `state`: `queued | running | blocked | done | failed | cancelled`
 - `phase`: `preflight | commit | push | pr | merge | release | release-push | ci | tag | done`
-- approval, branch, base, remote, pull-request URL, merge SHA, release SHA,
+- delivery target id, approval, branch, base, remote, pull-request URL, merge SHA, release SHA,
   tag, steps, last activity, and optional `needsInput`
 
 Private ship artifacts are stored under

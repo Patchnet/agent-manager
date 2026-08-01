@@ -16,6 +16,13 @@ import { writeReport } from "./report.mjs";
 import { readStatus, writeStatus } from "./status.mjs";
 import { resolveSpawnCommand, spawnCommandSync } from "./command.mjs";
 import { detectRuntimeProfile } from "./runtime.mjs";
+import {
+  assertAcceptedReview,
+  expectedMergeShas,
+  recordMergedTarget,
+  recordRelease,
+  selectDeliveryTarget,
+} from "./delivery.mjs";
 
 export { resolveSpawnCommand } from "./command.mjs";
 
@@ -65,6 +72,7 @@ export function prepareShipHandoff(runId, options = {}) {
   if (!APPROVALS.has(approval)) {
     throw new Error("ship requires --approve all|through-pr from an accepted Ship Gate");
   }
+  assertAcceptedReview(status);
 
   const flow = status.target_dev_flow || "simple";
   if (flow !== "simple" && flow !== "formal") {
@@ -73,14 +81,32 @@ export function prepareShipHandoff(runId, options = {}) {
   if (flow === "simple" && approval === "through-pr") {
     throw new Error("through-pr applies only to Formal Flow");
   }
+  if (status.delivery?.mode === "review-only") {
+    throw new Error("review-only runs cannot be shipped");
+  }
+  const target = selectDeliveryTarget(status, options.target || null, { allowMerged: approval === "all" });
+  if (target && !(target.changedFiles || []).length) {
+    throw new Error(`delivery target ${target.id} has no changed files; refusing a no-code shipment`);
+  }
+  if (status.integrate?.state === "ready"
+    && (!target || target.id === "integrate")
+    && !String(status.integrate.diffStat || "").trim()) {
+    throw new Error("integrate branch has no changed files; refusing a no-code shipment");
+  }
+  if (approval === "all" && target && (status.delivery.targets || []).some(
+    (candidate) => candidate.id !== target.id && candidate.state !== "merged",
+  )) {
+    throw new Error("--approve all is allowed only for the final unmerged delivery target; ship earlier targets through-pr");
+  }
 
   const remote = safeArgument(options.remote || status.integrate?.remote || "origin", "remote");
   const base = safeArgument(
-    options.base || normalizeBase(status.baseRef, remote) || "main",
+    options.base || target?.base || normalizeBase(status.baseRef, remote) || "main",
     "base branch",
   );
   const branch = safeArgument(
     options.branch ||
+      target?.branch ||
       (flow === "formal" ? status.integrate?.branch : base) ||
       "",
     "ship branch",
@@ -99,6 +125,7 @@ export function prepareShipHandoff(runId, options = {}) {
   }
   const worktree = resolve(
     options.worktree ||
+      target?.worktree ||
       (flow === "formal" ? status.integrate?.worktree : null) ||
       repoRoot,
   );
@@ -127,7 +154,7 @@ export function prepareShipHandoff(runId, options = {}) {
 
   const pollSec = boundedNumber(options.pollSec ?? 10, "poll seconds", 1, 300);
   const timeoutSec = boundedNumber(options.timeoutSec ?? 1800, "timeout seconds", 1, 86400);
-  const prValue = options.pr || status.ship?.prUrl || null;
+  const prValue = options.pr || target?.pr || target?.prUrl || (!target ? status.ship?.prUrl : null) || null;
   const pr = prValue ? safeArgument(prValue, "pull request") : null;
 
   return {
@@ -141,6 +168,7 @@ export function prepareShipHandoff(runId, options = {}) {
     base,
     remote,
     pr,
+    targetId: target?.id || null,
     commitMessage,
     version,
     summary,
@@ -179,7 +207,8 @@ export function queueShip(runId, handoff) {
     base: handoff.base,
     remote: handoff.remote,
     prUrl: handoff.pr,
-    mergeSha: status.ship?.mergeSha || null,
+    targetId: handoff.targetId || null,
+    mergeSha: handoff.targetId ? null : status.ship?.mergeSha || null,
     version: handoff.version,
     plannedTag: handoff.version ? `v${handoff.version}` : null,
     tag: null,
@@ -192,6 +221,11 @@ export function queueShip(runId, handoff) {
     error: null,
     steps: [],
   };
+  if (status.delivery) {
+    status.delivery.state = "shipping";
+    const target = (status.delivery.targets || []).find((candidate) => candidate.id === handoff.targetId);
+    if (target) target.state = "shipping";
+  }
   const saved = writeStatus(runId, status);
   writeReport(runId, saved);
   return { status: saved, handoffPath };
@@ -217,6 +251,11 @@ export function blockQueuedShip(runId, error) {
   status.ship.lastActivity = prompt;
   status.ship.needsInput = { type: "blocked", prompt, options: ["Fix the launch error and rerun ship."] };
   status.ship.error = prompt;
+  if (status.delivery) {
+    status.delivery.state = "blocked";
+    const target = (status.delivery.targets || []).find((candidate) => candidate.id === status.ship.targetId);
+    if (target) target.state = "blocked";
+  }
   const saved = writeStatus(runId, status);
   writeReport(runId, saved);
   return saved;
@@ -257,16 +296,36 @@ export async function runShip(runId, handoff, dependencies = {}) {
     } else {
       status = await runSimple(id, status, handoff, { exec, sleep, now });
     }
-    status.state = "done";
-    status.endedAt = new Date(now()).toISOString();
+    const completedAt = new Date(now()).toISOString();
     status.ship.state = "done";
     status.ship.phase = "done";
     status.ship.pid = null;
-    status.ship.endedAt = status.endedAt;
+    status.ship.endedAt = completedAt;
     status.ship.lastActivity =
       handoff.approve === "through-pr"
         ? "pull request merged"
         : `release ${status.ship.tag} shipped`;
+    if (handoff.targetId) {
+      recordMergedTarget(status, {
+        targetId: handoff.targetId,
+        prUrl: status.ship.prUrl,
+        mergeSha: status.ship.mergeSha || status.ship.releaseSha,
+        at: completedAt,
+      });
+    } else if (handoff.approve === "through-pr") {
+      status.delivery.state = "merged";
+      status.state = "merged";
+      status.endedAt = completedAt;
+    }
+    if (handoff.approve === "all") {
+      const verifiedMergeShas = status.ship.verifiedMergeShas || expectedMergeShas(status, status.ship);
+      recordRelease(status, {
+        sha: status.ship.releaseSha,
+        tag: status.ship.tag,
+        verifiedMergeShas,
+        at: completedAt,
+      });
+    }
     status = save(id, status);
     writeShipSummary(id, status);
     return status;
@@ -291,6 +350,11 @@ export async function runShip(runId, handoff, dependencies = {}) {
         options: error.options,
       };
       status.ship.error = error.message;
+      if (status.delivery) {
+        status.delivery.state = "blocked";
+        const target = (status.delivery.targets || []).find((candidate) => candidate.id === status.ship.targetId);
+        if (target) target.state = "blocked";
+      }
     } else {
       status.state = "failed";
       status.endedAt = new Date(now()).toISOString();
@@ -299,6 +363,11 @@ export async function runShip(runId, handoff, dependencies = {}) {
       status.ship.endedAt = status.endedAt;
       status.ship.lastActivity = String(error?.message || error);
       status.ship.error = String(error?.message || error);
+      if (status.delivery) {
+        status.delivery.state = "failed";
+        const target = (status.delivery.targets || []).find((candidate) => candidate.id === status.ship.targetId);
+        if (target) target.state = "failed";
+      }
     }
     status = save(id, status);
     writeShipSummary(id, status);
@@ -412,33 +481,35 @@ async function runFormal(runId, status, handoff, dependencies) {
 
 async function runSimple(runId, status, handoff, dependencies) {
   const { exec, sleep, now } = dependencies;
-  ensureCurrentBranch(exec, handoff.repoRoot, handoff.branch);
+  const simpleRoot = handoff.worktree || handoff.repoRoot;
+  const simpleHandoff = { ...handoff, repoRoot: simpleRoot };
+  ensureCurrentBranch(exec, simpleRoot, handoff.branch);
   status = phase(runId, status, "release", `stamping ${handoff.version}`);
-  const stamp = applyVersionStamp(handoff.repoRoot, handoff.version, handoff.summary, now());
-  verifyVersionStamp(handoff.repoRoot, handoff.version, exec);
+  const stamp = applyVersionStamp(simpleRoot, handoff.version, handoff.summary, now());
+  verifyVersionStamp(simpleRoot, handoff.version, exec);
   status = step(runId, status, "release", "done", stamp.files.join(", "));
 
   assertNotCancelled(runId);
   status = phase(runId, status, "commit", "committing the approved release");
-  must(exec, "git", ["add", "-A"], handoff.repoRoot, "stage approved release");
-  const dirty = must(exec, "git", ["status", "--porcelain=v1"], handoff.repoRoot, "inspect release").stdout;
+  must(exec, "git", ["add", "-A"], simpleRoot, "stage approved release");
+  const dirty = must(exec, "git", ["status", "--porcelain=v1"], simpleRoot, "inspect release").stdout;
   if (dirty) {
-    must(exec, "git", ["commit", "-m", handoff.commitMessage], handoff.repoRoot, "commit approved release");
+    must(exec, "git", ["commit", "-m", handoff.commitMessage], simpleRoot, "commit approved release");
   }
-  const sha = must(exec, "git", ["rev-parse", "HEAD"], handoff.repoRoot, "read release commit").stdout;
+  const sha = must(exec, "git", ["rev-parse", "HEAD"], simpleRoot, "read release commit").stdout;
   status.ship.releaseSha = sha;
   status = step(runId, status, "commit", "done", sha);
 
-  status = phase(runId, status, "push", `pushing ${handoff.branch}`);
-  must(exec, "git", ["push", handoff.remote, handoff.branch], handoff.repoRoot, "push release");
-  status = step(runId, status, "push", "done", `${handoff.remote}/${handoff.branch}`);
+  status = phase(runId, status, "push", `pushing ${handoff.branch} to ${handoff.base}`);
+  must(exec, "git", ["push", handoff.remote, `HEAD:${handoff.base}`], simpleRoot, "push release");
+  status = step(runId, status, "push", "done", `${handoff.remote}/${handoff.base}`);
 
-  status = await waitForCiIfConfigured(runId, status, handoff.repoRoot, sha, handoff, {
+  status = await waitForCiIfConfigured(runId, status, simpleRoot, sha, handoff, {
     exec,
     sleep,
     now,
   });
-  return tagRelease(runId, status, handoff, sha, exec);
+  return tagRelease(runId, status, simpleHandoff, sha, exec);
 }
 
 async function releaseFormal(runId, status, handoff, dependencies) {
@@ -465,6 +536,8 @@ async function releaseFormal(runId, status, handoff, dependencies) {
     handoff.repoRoot,
     "fast-forward base branch",
   );
+  const baseSha = must(exec, "git", ["rev-parse", "HEAD"], handoff.repoRoot, "read release base").stdout;
+  status = verifyDeliveryAncestry(runId, status, handoff, baseSha, exec);
   const stamp = applyVersionStamp(handoff.repoRoot, handoff.version, handoff.summary, now());
   verifyVersionStamp(handoff.repoRoot, handoff.version, exec);
   must(exec, "git", ["add", ...stamp.files], handoff.repoRoot, "stage release stamp");
@@ -498,6 +571,34 @@ async function releaseFormal(runId, status, handoff, dependencies) {
     now,
   });
   return tagRelease(runId, status, handoff, sha, exec);
+}
+
+export function verifyDeliveryAncestry(runId, status, handoff, releaseBaseSha, exec = execCommand) {
+  const targets = status.delivery?.targets || [];
+  if (!targets.length || handoff.flow !== "formal") return status;
+  const expected = expectedMergeShas(status, status.ship);
+  if (expected.length !== targets.length) {
+    const missing = targets
+      .filter((target) => !target.mergeSha && !(status.ship?.targetId === target.id && status.ship?.mergeSha))
+      .map((target) => target.id);
+    throw new ShipBlockedError(
+      `release is missing merge evidence for delivery target(s): ${missing.join(", ")}`,
+      ["Merge every delivery target before creating the release stamp."],
+    );
+  }
+  for (const mergeSha of expected) {
+    const result = exec("git", ["merge-base", "--is-ancestor", mergeSha, releaseBaseSha], {
+      cwd: handoff.repoRoot,
+    });
+    if (!result.ok) {
+      throw new ShipBlockedError(
+        `release base ${releaseBaseSha} does not contain expected merge ${mergeSha}`,
+        ["Update the release base to contain every delivery target merge, then rerun shipping."],
+      );
+    }
+  }
+  status.ship.verifiedMergeShas = expected;
+  return save(runId, status);
 }
 
 async function waitForPr(runId, status, handoff, { exec, sleep, now }) {

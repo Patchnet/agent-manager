@@ -15,7 +15,7 @@ const TOP_LEVEL_KEYS = new Set([
   "repo", "lanes", "feed", "target_dev_flow", "harness_default", "model_default",
   "integrate", "policy", "claim_mode", "remote", "base_ref", "env_allowlist",
   "max_concurrency", "scope_overrides", "verification",
-  "planning",
+  "planning", "delivery",
 ]);
 const LANE_KEYS = new Set([
   "id", "harness", "model", "scope", "prompt", "prompt_file", "fake", "depends_on",
@@ -23,6 +23,8 @@ const LANE_KEYS = new Set([
 const SCOPE_OVERRIDE_KEYS = new Set(["path", "lanes", "owner", "reason", "access"]);
 const VERIFICATION_KEYS = new Set(["commands", "timeout_sec"]);
 const VERIFICATION_COMMAND_KEYS = new Set(["command", "args"]);
+const DELIVERY_KEYS = new Set(["mode", "targets", "release_required"]);
+const DELIVERY_TARGET_KEYS = new Set(["id", "lane", "branch", "base", "pr"]);
 const POLICY_KEYS = new Set([
   "allow_commit", "allow_pr", "dangerously_skip_permissions", "permission_mode",
   "stall_timeout_sec", "poll_interval_ms",
@@ -100,6 +102,13 @@ export function loadWorkflow(filePath, {
   }
 
   const targetDevFlow = doc.target_dev_flow || readTargetDevFlow(repoRoot) || "simple";
+  const delivery = normalizeDelivery(doc.delivery, {
+    lanes,
+    policy,
+    integrate: doc.integrate === true,
+    baseRef,
+    targetDevFlow,
+  });
   const runtime = detectRuntimeProfile();
   return {
     ...doc,
@@ -117,12 +126,112 @@ export function loadWorkflow(filePath, {
     sequential_overlaps: sequentialOverlaps,
     verification,
     planning,
+    delivery,
     remote,
     base_ref: baseRef,
     env_allowlist: envAllowlist,
     feed,
     policy,
   };
+}
+
+function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDevFlow }) {
+  if (input !== undefined && !isMapping(input)) {
+    throw new Error("workflow.delivery must be a mapping");
+  }
+  const raw = input || {};
+  assertKnownKeys(raw, DELIVERY_KEYS, "workflow.delivery");
+  assertBoolean(raw.release_required, "workflow.delivery.release_required", { optional: true });
+  const readOnly = ["readOnly", "read-only", "read_only"].includes(policy.permission_mode);
+  if (raw.targets !== undefined && !Array.isArray(raw.targets)) {
+    throw new Error("workflow.delivery.targets must be an array");
+  }
+  const laneIds = new Set(lanes.map((lane) => lane.id));
+  const targetIds = new Set();
+  const mappedLanes = new Set();
+  let targets = (raw.targets || []).map((target, index) => {
+    if (!isMapping(target)) {
+      throw new Error(`workflow.delivery.targets[${index}] must be a mapping`);
+    }
+    assertKnownKeys(target, DELIVERY_TARGET_KEYS, `workflow.delivery.targets[${index}]`);
+    const id = assertSafeSlug(target.id, `workflow.delivery.targets[${index}].id`);
+    if (targetIds.has(id)) throw new Error(`duplicate delivery target id: ${id}`);
+    targetIds.add(id);
+    const lane = assertSafeSlug(target.lane, `workflow.delivery.targets[${index}].lane`);
+    if (!laneIds.has(lane)) throw new Error(`delivery target ${id} references unknown lane: ${lane}`);
+    if (mappedLanes.has(lane)) throw new Error(`lane ${lane} has more than one delivery target`);
+    mappedLanes.add(lane);
+    if (target.branch !== undefined) validateGitRef(target.branch, `delivery target ${id}.branch`);
+    if (target.base !== undefined) validateGitRef(target.base, `delivery target ${id}.base`);
+    if (target.pr !== undefined && !isNonEmptyString(String(target.pr))) {
+      throw new Error(`delivery target ${id}.pr must be a pull request number or URL`);
+    }
+    return {
+      id,
+      lane,
+      branch: target.branch || null,
+      base: target.base || normalizeBaseRef(baseRef),
+      pr: target.pr == null ? null : String(target.pr),
+    };
+  });
+
+  if (!readOnly && !integrate && lanes.length > 1 && targets.length === 0) {
+    throw new Error(
+      "multi-lane writable workflows with integrate=false require workflow.delivery.targets for every lane",
+    );
+  }
+  if (!readOnly && targetDevFlow === "simple" && !integrate && lanes.length > 1) {
+    throw new Error("Simple Flow multi-lane writable workflows require integrate=true");
+  }
+  if (!readOnly && !integrate && lanes.length === 1 && targets.length === 0) {
+    targets = [{
+      id: lanes[0].id,
+      lane: lanes[0].id,
+      branch: null,
+      base: normalizeBaseRef(baseRef),
+      pr: null,
+    }];
+    mappedLanes.add(lanes[0].id);
+  }
+  if (!readOnly && !integrate && targets.length && mappedLanes.size !== lanes.length) {
+    const missing = lanes.filter((lane) => !mappedLanes.has(lane.id)).map((lane) => lane.id);
+    throw new Error(`workflow.delivery.targets must map every lane; missing: ${missing.join(", ")}`);
+  }
+  const inferredMode = readOnly
+    ? "review-only"
+    : targets.length > 1 ? "train" : "single";
+  const mode = raw.mode || inferredMode;
+  if (!["single", "train", "review-only"].includes(mode)) {
+    throw new Error("workflow.delivery.mode must be single, train, or review-only");
+  }
+  if (mode === "single" && targets.length > 1) {
+    throw new Error("workflow.delivery.mode=single supports at most one target");
+  }
+  if (mode === "train" && targets.length < 2) {
+    throw new Error("workflow.delivery.mode=train requires at least two targets");
+  }
+  if (readOnly && mode !== "review-only") {
+    throw new Error("read-only workflows must use workflow.delivery.mode=review-only");
+  }
+  if (readOnly && targets.length) {
+    throw new Error("read-only workflows cannot declare delivery targets");
+  }
+  if (readOnly && raw.release_required === true) {
+    throw new Error("read-only workflows cannot require a release");
+  }
+  if (integrate && targets.length) {
+    throw new Error("integrated workflows cannot declare lane delivery targets");
+  }
+  return {
+    mode,
+    targets,
+    release_required: raw.release_required === true,
+  };
+}
+
+function normalizeBaseRef(value) {
+  const text = String(value || "HEAD");
+  return text.startsWith("origin/") ? text.slice("origin/".length) : text;
 }
 
 function normalizeLane(input, index, repoRoot, harnessDefault, ids) {

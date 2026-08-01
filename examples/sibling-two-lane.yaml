@@ -5,6 +5,7 @@
 
 repo: my-sibling-repo
 harness_default: claude
+integrate: true
 
 feed:
   enabled: false

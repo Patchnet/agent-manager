@@ -1,4 +1,4 @@
 interface:
   display_name: "PR Manager"
-  short_description: "Detach approved PR shipping and CI monitoring"
-  default_prompt: "Use $pr-manager to detach an approved Ship Gate workflow and report only blockers or the final shipping outcome."
+  short_description: "Detach approved shipping with explicit cadence"
+  default_prompt: "Use $pr-manager to run approved shipping in the background and follow each operator transition through completion."

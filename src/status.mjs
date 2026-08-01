@@ -12,6 +12,8 @@ import { join } from "node:path";
 import { RUNS_ROOT, assertSafeSlug, runDir } from "./paths.mjs";
 import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 import { formatRuntime } from "./runtime.mjs";
+import { deriveOperatorCadence } from "./cadence.mjs";
+import { isOverallTerminalState } from "./delivery.mjs";
 
 export function writeStatus(runId, status) {
   assertSafeSlug(runId, "run id");
@@ -54,6 +56,19 @@ export function writeStatus(runId, status) {
               needsInput: payload.ship.needsInput || null,
             }
           : null,
+        delivery: payload.delivery
+          ? {
+              state: payload.delivery.state,
+              reviewState: payload.delivery.review?.state || null,
+              verdict: payload.delivery.review?.verdict || null,
+              targets: (payload.delivery.targets || []).map((target) => ({
+                id: target.id,
+                state: target.state,
+                mergeSha: target.mergeSha || null,
+              })),
+            }
+          : null,
+        cadence: deriveOperatorCadence(payload),
       });
     }
     return payload;
@@ -87,11 +102,11 @@ export function deriveRunState(status) {
     return "running";
   }
   if (states.some((state) => state === "failed")) return "failed";
-  return "done";
+  return "workers_done";
 }
 
 export function isTerminalState(state) {
-  return state === "done" || state === "failed" || state === "cancelled";
+  return isOverallTerminalState(state);
 }
 
 export function readStatus(runId) {
@@ -111,11 +126,14 @@ export function latestRunId() {
 }
 
 export function formatStatus(status) {
+  const cadence = deriveOperatorCadence(status);
   if (!status) return "no status";
   const lines = [
     `run ${status.runId}  state=${status.state}  repo=${status.repo}  updated=${status.updatedAt || "-"}`,
     `target_dev_flow=${status.target_dev_flow || "-"}  workflow=${status.workflow || "-"}`,
     `runtime=${formatRuntime(status.runtime)}`,
+    `transition=${cadence.transition}  stage=${cadence.stage}`,
+    `next=${cadence.nextAction}`,
     `started=${status.startedAt || "-"}  ended=${status.endedAt || "-"}  initialDirty=${status.initialRepo?.dirty ? "yes" : "no"}`,
     `planning=${status.planning?.state || "legacy/unrecorded"}  plan=${status.planning?.planRef || "-"}`,
     `reviewedBase=${status.planning?.reviewedBaseSha || "-"}  contextSha256=${status.planning?.contextDigest || "-"}`,
@@ -140,6 +158,15 @@ export function formatStatus(status) {
   if (status.integrate) {
     lines.push(`integrate: ${status.integrate.state}  branch=${status.integrate.branch || "-"}`);
     if (status.integrate.error) lines.push(`      error: ${status.integrate.error}`);
+    lines.push("");
+  }
+  if (status.delivery) {
+    lines.push(`delivery: ${status.delivery.state}  mode=${status.delivery.mode || "-"}  releaseRequired=${status.delivery.releaseRequired ? "yes" : "no"}`);
+    lines.push(`      review: ${status.delivery.review?.state || "-"}  verdict=${status.delivery.review?.verdict || "-"}  pass=${status.delivery.review?.latestPass || 0}`);
+    for (const target of status.delivery.targets || []) {
+      lines.push(`      target ${target.id}: ${target.state}  lane=${target.laneId}  pr=${target.prUrl || target.pr || "-"}  merge=${target.mergeSha || "-"}`);
+    }
+    if (status.delivery.release?.tag) lines.push(`      release: ${status.delivery.release.tag}  sha=${status.delivery.release.sha || "-"}`);
     lines.push("");
   }
   if (status.ship) {
@@ -235,6 +262,18 @@ function eventFingerprint(status) {
           mergeSha: status.ship.mergeSha || null,
           tag: status.ship.tag || null,
           needsInput: status.ship.needsInput || null,
+        }
+      : null,
+    delivery: status.delivery
+      ? {
+          state: status.delivery.state,
+          reviewState: status.delivery.review?.state || null,
+          verdict: status.delivery.review?.verdict || null,
+          targets: (status.delivery.targets || []).map((target) => ({
+            id: target.id,
+            state: target.state,
+            mergeSha: target.mergeSha || null,
+          })),
         }
       : null,
   });

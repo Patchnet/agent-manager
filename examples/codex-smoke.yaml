@@ -9,7 +9,9 @@ policy:
   allow_commit: false
   allow_pr: false
   stall_timeout_sec: 600
-  permission_mode: acceptEdits
+  permission_mode: readOnly
+delivery:
+  mode: review-only
 planning:
   source_refs: [replace-with-source-reference]
   plan_ref: replace-with-approved-plan-reference

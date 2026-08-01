@@ -56,7 +56,7 @@ node bin/agent-manager.mjs watch-signal <runId> --heartbeat-sec 180
 # prints: AGENT_MANAGER_WAKE_<runId> {"reason":"heartbeat|state_change|needs_input|terminal",...}
 
 node bin/agent-manager.mjs monitor <runId> [--interval 2]
-# live lane board; exits on done/failed/cancelled
+# live lane/delivery board; exits on merged/released/rejected/failed/cancelled
 ```
 
 `watch-signal` baselines `status.json`, then emits wakes for Cursor
@@ -64,6 +64,19 @@ node bin/agent-manager.mjs monitor <runId> [--interval 2]
 pass `--heartbeat-sec <n>` to adjust (operator preference). State-change /
 needs-input / terminal wakes do not wait for that interval. `monitor` is the
 side-terminal cooking view (`status --watch` aliases it).
+
+Every wake contains an `agent-manager.operator-cadence.v1` object. Query the
+same deterministic mapping directly with:
+
+```bash
+agent-manager next-action <runId> --json
+```
+
+`delivery_review_pending` initially emits `state_change` with
+`AUTO_CONTINUE`. After `agent-manager review <runId>` presents and records the
+review, the review state becomes `awaiting_operator` and emits `needs_input`
+with the exact verdict vocabulary. Heartbeats are suppressed while waiting on
+an operator decision.
 
 ## Workflow YAML (minimal)
 
@@ -74,6 +87,10 @@ claim_mode: required
 max_concurrency: 3        # 1..5; extra lanes remain queued
 target_dev_flow: simple   # optional override; else Version.md; else simple
 integrate: true           # optional — fold lanes into am/<runId>/integrate when done
+delivery:                 # required for multi-lane writable runs without integration
+  mode: single            # single | train | review-only
+  release_required: false
+  targets: []             # train: one explicit target for every writable lane
 feed:
   enabled: false          # optional; normal operation never requires Agent Feed
   baseUrl: http://localhost:8787
@@ -135,6 +152,21 @@ as Delivery Review risk evidence. After merging, configured
 `verification.commands` run without a shell in the integration worktree; a
 failed command blocks delivery and is included in Delivery Review evidence.
 
+With `integrate: false`, every writable lane must have an explicit delivery
+target. Omit a target `branch` to use the generated lane branch. A target may
+record `branch`, `base`, and an existing PR number, but shipping fails closed if
+the checked-out worktree or pull-request head does not match those coordinates.
+This prevents a correction run from silently claiming it updated an unrelated
+existing PR.
+Simple Flow requires `integrate: true` for multi-lane writable work, because it
+ships one direct release branch rather than a PR train.
+
+Worker completion transitions the run to `delivery_review_pending`. Record the
+operator's decision with `agent-manager review ... --verdict ... --reviewer ...`.
+Only an accepted persisted decision allows shipping. For a delivery train,
+ship one target at a time with `--target <id>`. Use `delivery-ready --require
+merged|released` as the machine-readable downstream gate.
+
 ## CLI notes (Windows)
 
 - The detected runtime profile reports `win32`, `windows`, `powershell`,
@@ -151,7 +183,7 @@ failed command blocks delivery and is included in Delivery Review evidence.
 ```json
 {
   "runId": "run-YYYYMMDD-HHMMSS-random",
-  "state": "running|shipping|blocked|done|failed|cancelled",
+  "state": "running|delivery_review_pending|correction_pending|ship_gate_pending|shipping|blocked|release_pending|merged|released|rejected|failed|cancelled",
   "repo": "my-repo",
   "workflow": "/abs/path/workflow.yaml",
   "target_dev_flow": "simple",
@@ -204,6 +236,27 @@ failed command blocks delivery and is included in Delivery Review evidence.
     "verification": { "state": "passed|failed|not-configured", "commands": [] },
     "shipGateHint": "…"
   },
+  "delivery": {
+    "schema": "agent-manager.delivery.v1",
+    "mode": "single|train|review-only",
+    "state": "workers_running|review_pending|correction_pending|ship_gate_pending|shipping|targets_pending|release_pending|merged|released|rejected|blocked|failed|cancelled",
+    "review": {
+      "state": "not_started|awaiting_operator|accepted|correction_required|rejected",
+      "latestPass": 1,
+      "verdict": "accept|accept-with-notes|revise|relaunch|reject"
+    },
+    "targets": [
+      {
+        "id": "api-pr",
+        "laneId": "api",
+        "state": "pending|changes_ready|no_changes|shipping|merged|blocked|failed",
+        "branch": "am/<runId>/api",
+        "prUrl": "https://example.invalid/pull/1",
+        "mergeSha": "…"
+      }
+    ],
+    "release": { "state": "pending|released", "verifiedMergeShas": [] }
+  },
   "ship": {
     "state": "queued|running|blocked|done|failed|cancelled",
     "phase": "preflight|commit|push|pr|merge|release|release-push|ci|tag|done",
@@ -218,6 +271,9 @@ failed command blocks delivery and is included in Delivery Review evidence.
 
 `integrate` is omitted when the workflow did not set `integrate: true`.
 `ship` is omitted until an approved detached shipping phase starts.
+`delivery` remains authoritative after workers stop. A completed `ship` target
+does not make the overall run terminal while another target or the release is
+pending.
 
 ## Coordination lifecycle
 
@@ -228,10 +284,11 @@ failed command blocks delivery and is included in Delivery Review evidence.
   `parseSessionId`, and `parseNeedsInput`.
 - `reply` clears the prior escalation, resumes the stored session, and runs
   guardrails again before the lane becomes `done`.
-- Terminal lanes release advisory claims. Blocked lanes record retained claims.
+- Completed lanes release advisory claims, but their worktrees remain until
+  overall delivery is terminal or the run is explicitly cancelled/rejected.
 - Claim leases renew while the supervisor runs. Expired local claims are
   recoverable only after the recorded supervisor process is confirmed inactive.
-- `cleanup` preserves top-level telemetry while removing abandoned worktrees/logs.
+- `cleanup` preserves top-level telemetry and refuses incomplete delivery runs.
 - `integrate <runId>` invokes the same integration path used by `integrate: true`.
 
 ## Inheritance

@@ -2,8 +2,10 @@ import { writePrivateFile } from "./fs-safe.mjs";
 import { join } from "node:path";
 import { runDir } from "./paths.mjs";
 import { formatRuntime } from "./runtime.mjs";
+import { deriveOperatorCadence } from "./cadence.mjs";
 
 export function writeReport(runId, status) {
+  const cadence = deriveOperatorCadence(status);
   const lines = [
     `# agent-manager run report`,
     "",
@@ -18,6 +20,7 @@ export function writeReport(runId, status) {
     `- **immutable base:** ${status.baseCommit || status.initialRepo?.head || "-"}`,
     `- **max concurrency:** ${status.maxConcurrency || "-"}`,
     `- **initial repo dirty:** ${status.initialRepo?.dirty ? "yes" : "no"}`,
+    `- **operator transition:** ${cadence.transition}`,
     "",
     "## Planning preflight",
     "",
@@ -74,11 +77,48 @@ export function writeReport(runId, status) {
     lines.push(`- log: ${lane.logPath || "-"}`);
     lines.push("");
   }
+  if (status.delivery) {
+    lines.push("## Delivery");
+    lines.push("");
+    lines.push(`- state: ${status.delivery.state}`);
+    lines.push(`- mode: ${status.delivery.mode || "-"}`);
+    lines.push(`- workers completed: ${status.delivery.workersCompletedAt || "-"}`);
+    lines.push(`- release required: ${status.delivery.releaseRequired ? "yes" : "no"}`);
+    lines.push(`- review: ${status.delivery.review?.state || "-"}`);
+    lines.push(`- verdict: ${status.delivery.review?.verdict || "-"}`);
+    lines.push(`- review pass: ${status.delivery.review?.latestPass || 0}`);
+    for (const target of status.delivery.targets || []) {
+      lines.push(`- target ${target.order}. ${target.id}: ${target.state} · lane ${target.laneId} · branch ${target.branch || "-"} · PR ${target.prUrl || target.pr || "-"} · merge ${target.mergeSha || "-"}`);
+    }
+    if (status.delivery.release?.tag || status.delivery.release?.sha) {
+      lines.push(`- release: ${status.delivery.release.tag || "-"} at ${status.delivery.release.sha || "-"}`);
+    }
+    lines.push("");
+  }
   lines.push("## Next");
   lines.push("");
-  if (status.ship?.state === "done") {
-    lines.push(`- **Ship complete:** ${status.ship.prUrl || status.ship.tag || status.ship.branch}`);
+  lines.push(`- **Stage:** ${cadence.stage}`);
+  lines.push(`- **Transition:** ${cadence.transition}`);
+  lines.push(`- **Next action:** ${cadence.nextAction}`);
+  lines.push(`- **Operator input required:** ${cadence.operatorInputRequired.length ? cadence.operatorInputRequired.join(" | ") : "none"}`);
+  if (status.state === "delivery_review_pending") {
+    lines.push("- **Delivery Review required:** worker completion is not delivery completion.");
+    lines.push(`- Record the decision with \`agent-manager review ${runId} --pass 1 --verdict <decision> --reviewer <id>\`.`);
+    lines.push("- Ship Gate remains blocked until an accepted review is persisted.");
+  } else if (status.state === "correction_pending") {
+    lines.push("- **Correction required:** follow the recorded Delivery Review verdict.");
+    lines.push("- After the single correction cycle, record Delivery Review Pass 2.");
+  } else if (status.state === "ship_gate_pending") {
+    lines.push("- **Ship Gate pending:** Delivery Review is accepted; obtain explicit shipping approval.");
+    lines.push("- For a train, ship each target in order with `--target <id>`.");
+  } else if (status.state === "release_pending") {
+    lines.push("- **Release pending:** all delivery targets merged; verify ancestry and publish the approved release.");
+  } else if (status.state === "released" || status.state === "merged") {
+    lines.push(`- **Delivery complete:** ${status.delivery?.release?.tag || status.ship?.prUrl || status.ship?.branch || status.state}`);
     lines.push("- Review the Ship outcome board and clean retained run artifacts when appropriate.");
+  } else if (status.ship?.state === "done") {
+    lines.push(`- **Ship complete:** ${status.ship.prUrl || status.ship.tag || status.ship.branch}`);
+    lines.push("- Continue the remaining delivery targets; this run is not complete until state is merged or released.");
   } else if (status.ship?.state === "blocked") {
     lines.push(`- **Ship blocked:** ${status.ship.needsInput?.prompt || status.ship.error || "see ship telemetry"}`);
     lines.push("- Resolve the blocker or cancel the ship phase. Do not guess or bypass policy.");

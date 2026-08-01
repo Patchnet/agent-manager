@@ -58,6 +58,10 @@ Also run when work is complete and you would otherwise ask “want me to commit?
    must not use `through-pr` or `all` for their own PR.
 9. After Formal merge or abandon, release any advisory claim for that branch
    (`agent-manager` / bundled `tools/claim.mjs` when that lane used claims).
+10. End every approval board with the Transition block. Ship Gate presentation
+    is always `WAIT_OPERATOR`. After approval, execute the authorized scope
+    without asking for another confirmation; that execution is
+    `AUTO_CONTINUE` until blocked or complete.
 
 ## Approve vocabulary (operator replies with one)
 
@@ -107,6 +111,14 @@ Also run when work is complete and you would otherwise ask “want me to commit?
 | `commit+tag` | stamp → check:version → commit + tag, no push |
 | `commit` | commit only |
 | `reject` | stop — add why |
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `WAIT_OPERATOR` |
+| **Next action** | Execute exactly the approved Simple Flow scope. |
+| **Operator input required** | `all \| commit+tag \| commit \| reject` |
 ```
 
 ## Formal role selection
@@ -165,11 +177,21 @@ Also run when work is complete and you would otherwise ask “want me to commit?
 | `commit+push` | stop before PR |
 | `commit` | commit only |
 | `reject` | stop — add why |
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `WAIT_OPERATOR` |
+| **Next action** | Execute exactly the approved Formal Flow scope. |
+| **Operator input required** | `<role-valid reply from the table above>` |
 ```
 
 ## After approval
 
 Execute **only** the steps covered by the reply. Then report what ran (and stop).
+Do not ask “shall I proceed?” after a valid approval; the approval is the
+authority to continue through its stated boundary.
 
 - Simple `all` / `commit+tag`: full stamp set + `check:version`; tag only when allowed.
 - Formal branch commits: conventional prefix only — **no** stamp-set edits on the branch.

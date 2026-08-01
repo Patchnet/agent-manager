@@ -25,6 +25,7 @@
     "base": { "type": "string" },
     "remote": { "type": "string" },
     "pr": { "type": ["string", "null"] },
+    "targetId": { "type": ["string", "null"] },
     "commitMessage": { "type": ["string", "null"] },
     "version": { "type": ["string", "null"] },
     "summary": { "type": ["string", "null"] },

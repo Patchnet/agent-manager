@@ -117,7 +117,9 @@ test("blocked is resumable, and status transitions produce JSONL events", () => 
   writeStatus(runId, { runId, state: "running", repo: "repo", startedAt: new Date().toISOString(), lanes: [{ id: "lane", harness: "claude", state: "running" }] });
   writeStatus(runId, { runId, state: "blocked", repo: "repo", startedAt: new Date().toISOString(), lanes: [{ id: "lane", harness: "claude", state: "blocked", needsInput: { prompt: "choose" } }] });
   assert.equal(isTerminalState("blocked"), false);
-  assert.equal(isTerminalState("done"), true);
+  assert.equal(isTerminalState("done"), false);
+  assert.equal(isTerminalState("merged"), true);
+  assert.equal(isTerminalState("released"), true);
   const events = readEvents(runId);
   assert.equal(events.length, 2);
   assert.equal(events[1].state, "blocked");

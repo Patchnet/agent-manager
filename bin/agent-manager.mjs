@@ -30,6 +30,8 @@ import { formatStatus, latestRunId, readEvents, readStatus, writeStatus } from "
 import { runWatchSignal } from "../src/watch-signal.mjs";
 import { assertDangerousPermissionApproval, loadWorkflow } from "../src/workflow.mjs";
 import { formatRuntime } from "../src/runtime.mjs";
+import { deliveryReadiness } from "../src/delivery.mjs";
+import { deriveOperatorCadence } from "../src/cadence.mjs";
 
 const selfPath = fileURLToPath(import.meta.url);
 const packageRoot = resolve(dirname(selfPath), "..");
@@ -51,11 +53,14 @@ function usage() {
     "  agent-manager monitor [runId] [--interval <sec>]",
     "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000]",
     "  agent-manager reply <runId> <laneId> --message <text> [--json]",
-    "  agent-manager review <runId> [--pass 1|2] [--json]",
+    "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--notes <text>]] [--json]",
+    "  agent-manager next-action <runId> [--json]",
+    "  agent-manager delivery-ready <runId> [--require merged|released] [--json]",
     "  agent-manager ship <runId> --approve all|through-pr --detach [options] [--json]",
     "    options: --commit-message <text> --version <semver> --summary <text>",
     "             --repo <path> --worktree <path> --branch <ref> --base <ref>",
-    "             --remote <name> --pr <url|number> --poll-sec <n> --timeout-sec <n>",
+    "             --remote <name> --pr <url|number> --target <delivery-target-id>",
+    "             --poll-sec <n> --timeout-sec <n>",
     "  agent-manager cancel <runId> [--remove-worktrees]",
     "  agent-manager cleanup <runId> [--keep-logs] | --stale [--older-than-days 30]",
     "  agent-manager integrate <runId> [--json]",
@@ -85,6 +90,7 @@ function parseShipFlags(rest) {
     summary: null,
     pollSec: null,
     timeoutSec: null,
+    target: null,
   };
   const valued = new Map([
     ["--approve", "approve"],
@@ -99,6 +105,7 @@ function parseShipFlags(rest) {
     ["--summary", "summary"],
     ["--poll-sec", "pollSec"],
     ["--timeout-sec", "timeoutSec"],
+    ["--target", "target"],
   ]);
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -311,6 +318,7 @@ async function main() {
       scopeOverrides: workflow.scope_overrides,
       verificationCommands: workflow.verification.commands.length,
       planning,
+      delivery: workflow.delivery,
       runtime: workflow.runtime,
     };
     console.log(args.includes("--json")
@@ -370,8 +378,47 @@ async function main() {
   if (cmd === "review") {
     const runId = args[1] || latestRunId();
     if (!runId) throw new Error("review requires <runId>");
-    const result = buildDeliveryReview(runId, { pass: Number(flagValue("--pass") || 1) });
+    const result = buildDeliveryReview(runId, {
+      pass: Number(flagValue("--pass") || 1),
+      verdict: flagValue("--verdict"),
+      reviewer: flagValue("--reviewer"),
+      notes: flagValue("--notes"),
+    });
     console.log(args.includes("--json") ? JSON.stringify(result) : result.markdown);
+    return;
+  }
+
+  if (cmd === "delivery-ready") {
+    const runId = args[1] || latestRunId();
+    if (!runId) throw new Error("delivery-ready requires <runId>");
+    const status = readStatus(runId);
+    if (!status) throw new Error(`no status for ${runId}`);
+    const result = deliveryReadiness(status, { require: flagValue("--require") || "released" });
+    console.log(args.includes("--json") ? JSON.stringify(result) : [
+      `runId: ${result.runId}`,
+      `ready: ${result.ready ? "yes" : "no"}`,
+      `required: ${result.requiredState}`,
+      `state: ${result.state}`,
+    ].join("\n"));
+    if (!result.ready) process.exitCode = 2;
+    return;
+  }
+
+  if (cmd === "next-action") {
+    const runId = args[1] || latestRunId();
+    if (!runId) throw new Error("next-action requires <runId>");
+    const status = readStatus(runId);
+    if (!status) throw new Error(`no status for ${runId}`);
+    const result = { runId, state: status.state, ...deriveOperatorCadence(status) };
+    console.log(args.includes("--json") ? JSON.stringify(result) : [
+      `runId: ${runId}`,
+      `state: ${status.state}`,
+      `stage: ${result.stage}`,
+      `transition: ${result.transition}`,
+      `next: ${result.nextAction}`,
+      `operator input: ${result.operatorInputRequired.length ? result.operatorInputRequired.join(" | ") : "none"}`,
+      `template: ${result.template}`,
+    ].join("\n"));
     return;
   }
 

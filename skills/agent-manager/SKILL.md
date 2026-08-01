@@ -57,7 +57,8 @@ themselves in one chat — that stays a normal focused session.
 7. **Delivery Review before Ship Gate.** Lane exit 0 / CI green is not
    acceptance. Master re-reads the original proposal, verifies worktree
    deliverables (including cross-lane contracts), and posts **Delivery Review
-   · Pass 1**.
+   · Pass 1**. Worker completion is `delivery_review_pending`, not a terminal
+   delivery state. Persist the operator decision with `agent-manager review`.
 8. **One eval loop only (anti-perpetual).** Per parent `runId`: Pass 1 → at
    most **one** worker correction (`revise` or `relaunch`) → **Pass 2**
    correction report to the operator. Master **must not** open Pass 3, issue
@@ -71,10 +72,19 @@ themselves in one chat — that stays a normal focused session.
     Master owns Delivery Review and Ship Gate. After approval, hand shipping to
     the **pr-manager** skill with `ship --detach`; do not babysit push, PR, CI,
     merge, or tag in the host chat. Never ask the operator to click Merge.
+    When `integrate: false` has multiple writable lanes, `delivery.targets`
+    must map every lane to its delivery branch/PR. Downstream work must use
+    `agent-manager delivery-ready <runId> --require merged|released`, never
+    worker `done` or released claims.
 11. **Dangerous permissions need two approvals.** The workflow policy and the launch flag
     `--allow-dangerous-permissions` (or matching environment confirmation) must both be present.
 12. On `needs-input` / blocked lanes: surface the question in chat, wait for the
     operator, then resume/reply (or cancel) — do not guess product decisions.
+13. **Every operator board declares its transition.** End with
+    `AUTO_CONTINUE`, `WAIT_OPERATOR`, or `TERMINAL`, plus the exact next action
+    and reply vocabulary. On `AUTO_CONTINUE`, take that action before ending
+    the turn. Never report only that a stage finished. Use
+    `agent-manager next-action <runId> --json` to resolve ambiguity.
 
 ## Quick commands
 
@@ -90,6 +100,9 @@ agent-manager cancel <runId>
 agent-manager integrate <runId>
 agent-manager cleanup <runId>
 agent-manager review <runId>
+agent-manager review <runId> --pass 1 --verdict accept --reviewer master-dev
+agent-manager next-action <runId> --json
+agent-manager delivery-ready <runId> --require released
 agent-manager ship <runId> --approve through-pr|all --detach
 ```
 
@@ -109,10 +122,12 @@ parent that contains the `agent-manager` folder).
    the operator they can open `monitor <runId>` in a side terminal.
 5. On each wake: Heartbeat / Run board / Escalation / Run outcome per templates.
 6. **Escalate** any `blocked` / `needsInput` with the **Escalation** template.
-7. **On terminal state** (`done` | `failed` | `cancelled`): post
-   **Run outcome**, then **stop** watch-signal. A `blocked` run is resumable: post **Escalation** and keep the watcher active.
+7. **On `delivery_review_pending`:** post **Run outcome**, then immediately
+   perform Delivery Review. Keep watch-signal active; worker completion is not
+   terminal delivery. A `blocked` run is resumable: post **Escalation**.
 8. **Delivery Review · Pass 1** — compare proposal vs worktrees; post the board;
-   wait for `accept` | `accept-with-notes` | `revise` | `relaunch` | `reject`.
+   wait for `accept` | `accept-with-notes` | `revise` | `relaunch` | `reject`,
+   then persist that decision before Ship Gate.
 9. **At most one correction** — on `revise` / `relaunch` only: feed gaps to
    workers once (same worktrees or one new workflow slice). When that finishes,
    post **Delivery Review · Pass 2** to the operator. **Stop.** Master does not
@@ -121,6 +136,20 @@ parent that contains the `agent-manager` folder).
     `through-pr` or `all`, load `skills/pr-manager/SKILL.md`, launch
     `agent-manager ship ... --detach`, post the PR Manager Handoff board, and
     exit the turn.
+
+### Cadence state machine
+
+| Stage | Transition | Required behavior |
+|---|---|---|
+| Plan ready | `WAIT_OPERATOR` unless already authorized | Present Build plan; launch without asking twice when already approved |
+| Run/ship active | `AUTO_CONTINUE` | Monitor detached telemetry and report cadence updates |
+| Lane/ship blocked | `WAIT_OPERATOR` | Ask one exact question; continue independent work |
+| Workers complete | `AUTO_CONTINUE` | Post Run outcome and perform Delivery Review Pass 1 in the same turn |
+| Delivery Review presented | `WAIT_OPERATOR` | Wait for the pass-specific verdict |
+| `revise` / `relaunch` persisted | `AUTO_CONTINUE` | Launch the single correction; do not ask again |
+| Review accepted | `AUTO_CONTINUE` | Persist it and present Ship Gate in the same turn |
+| Ship Gate presented | `WAIT_OPERATOR` | Wait for exact shipping authority |
+| Overall delivery terminal | `TERMINAL` | Post final evidence, close the source record, stop watching |
 
 ## Watch loop (mandatory after detach)
 
@@ -139,6 +168,9 @@ agent-manager watch-signal <runId> --heartbeat-sec 180
 asks for a different cadence (`--heartbeat-sec 300` for 5m, etc.). State-change /
 needs-input / terminal wakes are immediate either way — the interval only controls
 the “still running, nothing changed” pulse.
+If the watcher attaches after the run already reached an actionable delivery
+stage, it emits that stage immediately instead of waiting for the first
+heartbeat.
 
 2. Attach `notify_on_output` (or host equivalent) with pattern:
 
@@ -147,14 +179,21 @@ the “still running, nothing changed” pulse.
 ```
 
 3. On each matching line, parse the JSON after the sentinel. `reason` is one of:
-   `heartbeat` | `state_change` | `needs_input` | `terminal`. Treat external-output wake support as host-dependent; fall back to a side terminal or JSONL event consumer.
+   `heartbeat` | `state_change` | `needs_input` | `terminal`. Delivery states
+   now include `cadence.transition`, `cadence.nextAction`, and exact operator
+   replies. `delivery_review_pending` is `state_change` + `AUTO_CONTINUE`, not
+   `needs_input`: perform the review before asking the operator. Treat
+   external-output wake support as host-dependent; fall back to a side terminal
+   or JSONL event consumer.
 4. **Always** re-read `$AGENT_MANAGER_RUNS_ROOT/<runId>/status.json` before posting
    (never invent state from the wake payload alone).
 5. Post the matching template:
    - `heartbeat` + still running → **Heartbeat**
    - `state_change` → **Run board** or PR Manager **Ship board**
    - `needs_input` → lane **Escalation** or PR Manager **Ship escalation**
-   - `terminal` → **Run outcome** or PR Manager **Ship outcome**, then stop
+   - `terminal` → final merged/released/rejected/failed/cancelled outcome, then stop
+   Obey `cadence.transition` after posting. A status board alone is not a
+   completed host turn when the transition is `AUTO_CONTINUE`.
 6. Operator may keep chatting (Multitask / parallel turns are fine). Stop the
    loop when the operator says stop watching, or on `terminal`.
 
@@ -164,7 +203,8 @@ the “still running, nothing changed” pulse.
 agent-manager monitor <runId>
 ```
 
-Live lane board; exits on `done` / `failed` / `cancelled`. Does **not** replace
+Live lane board; exits on `merged` / `released` / `rejected` / `failed` /
+`cancelled`. Does **not** replace
 chat Heartbeat / Run outcome posts.
 
 ### If the host has `/loop`
@@ -173,6 +213,15 @@ Same contract: prefer `watch-signal` as the wake source (event + 3m fallback)
 over a blind “sleep 3m and guess.” Follow the host `loop` skill for arming
 sentinels; the prompt on each wake is “read status.json and post the agent-manager
 template for this wake reason.”
+
+### Codex thread heartbeat
+
+Codex scheduled heartbeats require their host-provided final XML decision
+envelope. A heartbeat prompt may request the canonical board, but it must also
+say to end with the exact `<heartbeat>` block and `NOTIFY` or `DONT_NOTIFY`.
+Never instruct Codex to output “only” the Agent Manager Markdown template; that
+conflicts with the heartbeat protocol and can suppress delivery to the chat.
+The heartbeat is telemetry only. Delivery enforcement remains in `status.json`.
 
 ## Telemetry contract (do not reinvent)
 
@@ -196,7 +245,9 @@ Runs root defaults to `~/.agent-manager/runs` (`AGENT_MANAGER_RUNS_ROOT`).
 `harness`, `state`, `branch`, `scope`, `readOnly`, `dependsOn`, `waitingFor`,
 `elapsedSec`, `lastActivity`, `exitCode`, `needsInput`, `worktree`, `logPath`).
 Lanes also record `sessionId`, `endedAt`, changed files, guardrail
-violations, and claim state. Runs record terminal `endedAt` and optional feed health.
+violations, and claim state. Runs also record `execution`, `delivery.review`,
+ordered `delivery.targets`, merge SHAs, and release ancestry evidence. `endedAt`
+is reserved for an overall delivery-terminal state.
 
 ## Deploying this skill elsewhere
 

@@ -1,5 +1,6 @@
 import { RUNS_ROOT } from "./paths.mjs";
 import { isTerminalState, latestRunId, readStatus } from "./status.mjs";
+import { deriveOperatorCadence, OPERATOR_TRANSITIONS } from "./cadence.mjs";
 
 const DEFAULT_POLL_MS = 2_000;
 const DEFAULT_HEARTBEAT_SEC = 180;
@@ -27,6 +28,18 @@ export function statusFingerprint(status) {
           needsInput: Boolean(status.ship.needsInput),
         }
       : null,
+    delivery: status.delivery
+      ? {
+          state: status.delivery.state,
+          reviewState: status.delivery.review?.state || null,
+          verdict: status.delivery.review?.verdict || null,
+          targets: (status.delivery.targets || []).map((target) => ({
+            id: target.id,
+            state: target.state,
+            mergeSha: target.mergeSha || null,
+          })),
+        }
+      : null,
   });
 }
 
@@ -52,6 +65,9 @@ export function classifyWake(previous, next, { heartbeatDue = false } = {}) {
   const changed = prevFp !== nextFp;
 
   if (changed) {
+    if (isTerminalState(next.state)) {
+      return buildPayload(next, "terminal");
+    }
     if (
       next.ship?.needsInput &&
       !previous?.ship?.needsInput
@@ -72,13 +88,19 @@ export function classifyWake(previous, next, { heartbeatDue = false } = {}) {
     if (needsLane && !prevNeeds.has(needsLane.id)) {
       return buildPayload(next, "needs_input", { laneId: needsLane.id });
     }
-    if (isTerminalState(next.state)) {
-      return buildPayload(next, "terminal");
+    const cadence = deriveOperatorCadence(next, { wakeReason: "state_change" });
+    if (cadence.transition === OPERATOR_TRANSITIONS.WAIT_OPERATOR) {
+      return buildPayload(next, "needs_input", {
+        phase: next.ship ? "ship" : "delivery",
+        deliveryState: next.delivery?.state || next.state,
+      });
     }
     return buildPayload(next, "state_change");
   }
 
   if (heartbeatDue && !isTerminalState(next.state)) {
+    const cadence = deriveOperatorCadence(next, { wakeReason: "heartbeat" });
+    if (cadence.transition !== OPERATOR_TRANSITIONS.AUTO_CONTINUE) return null;
     return buildPayload(next, "heartbeat");
   }
 
@@ -105,6 +127,16 @@ function buildPayload(status, reason, extra = {}) {
           needsInput: status.ship.needsInput || null,
         }
       : null,
+    delivery: status.delivery
+      ? {
+          state: status.delivery.state,
+          mode: status.delivery.mode,
+          review: status.delivery.review || null,
+          targets: status.delivery.targets || [],
+          release: status.delivery.release || null,
+        }
+      : null,
+    cadence: deriveOperatorCadence(status, { wakeReason: reason }),
     ...extra,
   };
 }
@@ -142,7 +174,8 @@ export async function runWatchSignal(runId, {
         ? false // first loop: wait a full heartbeat interval (skill: no double-run at start)
         : now() - lastHeartbeatAt >= heartbeatSec * 1000;
 
-    // Seed previous without emitting until we have a baseline, unless already terminal.
+    // Seed active runs quietly, but do not miss an actionable stage that was
+    // reached before the watcher attached.
     if (!previous) {
       previous = next;
       lastHeartbeatAt = now();
@@ -150,6 +183,26 @@ export async function runWatchSignal(runId, {
         const payload = buildPayload(next, "terminal");
         write(formatWakeLine(id, payload));
         return payload;
+      }
+      if (next) {
+        const cadence = deriveOperatorCadence(next, { wakeReason: "state_change" });
+        const actionableStage = [
+          "delivery_review_pending",
+          "correction_pending",
+          "ship_gate_pending",
+          "release_pending",
+          "blocked",
+        ].includes(next.state);
+        if (actionableStage || cadence.transition === OPERATOR_TRANSITIONS.WAIT_OPERATOR) {
+          const reason = cadence.transition === OPERATOR_TRANSITIONS.WAIT_OPERATOR
+            ? "needs_input"
+            : "state_change";
+          const blockedLane = (next.lanes || []).find((lane) => lane.state === "blocked" || lane.needsInput);
+          write(formatWakeLine(id, buildPayload(next, reason, {
+            phase: next.ship?.needsInput ? "ship" : "delivery",
+            ...(blockedLane ? { laneId: blockedLane.id } : {}),
+          })));
+        }
       }
       await sleep(pollMs);
       continue;

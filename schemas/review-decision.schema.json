@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/review-decision.schema.json",
+  "title": "agent-manager persisted Delivery Review decision",
+  "type": "object",
+  "required": ["schema", "runId", "pass", "verdict", "reviewer", "decidedAt"],
+  "properties": {
+    "schema": { "const": "agent-manager.review-decision.v1" },
+    "runId": { "type": "string" },
+    "pass": { "enum": [1, 2] },
+    "verdict": { "enum": ["accept", "accept-with-notes", "revise", "relaunch", "reject"] },
+    "reviewer": { "type": "string", "minLength": 1 },
+    "notes": { "type": ["string", "null"] },
+    "decidedAt": { "type": "string", "format": "date-time" }
+  }
+}

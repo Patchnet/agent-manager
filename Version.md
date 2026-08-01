@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.3.2
+current: 1.4.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.4.0 - 2026-08-01
+
+Added explicit delivery lifecycle enforcement and deterministic operator cadence across orchestration, review, shipping, telemetry, and reporting.
 
 ## 1.3.2 - 2026-07-31
 

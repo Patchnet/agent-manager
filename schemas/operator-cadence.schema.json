@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/operator-cadence.schema.json",
+  "title": "agent-manager operator cadence",
+  "type": "object",
+  "required": ["schema", "stage", "transition", "nextAction", "operatorInputRequired", "template"],
+  "properties": {
+    "schema": { "const": "agent-manager.operator-cadence.v1" },
+    "stage": { "type": "string", "minLength": 1 },
+    "transition": { "enum": ["AUTO_CONTINUE", "WAIT_OPERATOR", "TERMINAL"] },
+    "nextAction": { "type": "string", "minLength": 1 },
+    "operatorInputRequired": { "type": "array", "items": { "type": "string" } },
+    "template": { "type": "string", "minLength": 1 }
+  }
+}

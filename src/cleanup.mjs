@@ -2,14 +2,14 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { releaseLane } from "./claim.mjs";
 import { assertPathInside, assertSafeSlug, repoPath, RUNS_ROOT, runDir } from "./paths.mjs";
-import { readStatus, writeStatus } from "./status.mjs";
+import { isTerminalState, readStatus, writeStatus } from "./status.mjs";
 import { removeWorktree } from "./worktree.mjs";
 
 export function cleanupRun(runId, { keepLogs = false } = {}) {
   const status = readStatus(runId);
   if (!status) throw new Error("no status for " + runId);
-  if (status.state === "running" || status.state === "shipping") {
-    throw new Error("refusing to clean a running run; cancel it first");
+  if (!isTerminalState(status.state)) {
+    throw new Error(`refusing to clean incomplete delivery in state ${status.state}; cancel or complete it first`);
   }
 
   const root = resolve(RUNS_ROOT);
@@ -77,7 +77,7 @@ export function cleanupStaleRuns({ olderThanDays = 30, keepLogs = false, now = D
   for (const entry of readdirSync(RUNS_ROOT, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(entry.name)) continue;
     const status = readStatus(entry.name);
-    if (!status || status.state === "running" || status.state === "shipping" || status.state === "blocked") continue;
+    if (!status || !isTerminalState(status.state)) continue;
     const timestamp = Date.parse(status.updatedAt || status.endedAt || status.startedAt || "");
     if (!Number.isFinite(timestamp) || timestamp > cutoff) continue;
     cleanupRun(entry.name, { keepLogs });

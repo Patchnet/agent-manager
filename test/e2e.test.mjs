@@ -122,6 +122,7 @@ function baseWorkflow(lanes) {
   return {
     repo: "fixture-repo",
     harness_default: "fake",
+    target_dev_flow: "formal",
     feed: {
       enabled: true,
       baseUrl: "http://127.0.0.1:" + feedPort,
@@ -132,6 +133,10 @@ function baseWorkflow(lanes) {
       allow_pr: false,
       poll_interval_ms: 100,
       stall_timeout_sec: 5,
+    },
+    delivery: {
+      mode: lanes.length > 1 ? "train" : "single",
+      targets: lanes.map((lane) => ({ id: lane.id, lane: lane.id, base: "main" })),
     },
     planning: {
       source_refs: ["test-source"],
@@ -221,7 +226,7 @@ test("detached run publishes feed events, resumes the exact session, and release
   assert.equal(replyPayload.sessionId, question.sessionId);
   assert.equal(replyPayload.state, "running");
 
-  const done = await waitForStatus(runId, (status) => status.state === "done" && status.endedAt);
+  const done = await waitForStatus(runId, (status) => status.state === "delivery_review_pending");
   const resumed = done.lanes.find((lane) => lane.id === "question");
   assert.equal(resumed.sessionId, question.sessionId);
   assert.equal(resumed.state, "done");
@@ -231,7 +236,7 @@ test("detached run publishes feed events, resumes the exact session, and release
     readFileSync(join(runsRoot, runId, "planning-context.md"), "utf8"),
     frozenContext,
   );
-  await waitForFeed("run_done", runId);
+  await waitForFeed("workers_done", runId);
 
   const reviewOutput = await runCli(["review", runId, "--json"]);
   const review = JSON.parse(reviewOutput.stdout.trim());
@@ -239,20 +244,41 @@ test("detached run publishes feed events, resumes the exact session, and release
   assert.ok(existsSync(review.path));
   assert.match(review.markdown, /Planning preflight: \*\*verified\*\*/);
   assert.match(review.markdown, new RegExp(done.planning.contextDigest));
+  assert.match(review.markdown, /WAIT_OPERATOR/);
+  assert.equal(JSON.parse(readFileSync(join(runsRoot, runId, "status.json"), "utf8")).delivery.review.state, "awaiting_operator");
+  const waitingCadence = JSON.parse((await runCli(["next-action", runId, "--json"])).stdout.trim());
+  assert.equal(waitingCadence.transition, "WAIT_OPERATOR");
+  assert.deepEqual(waitingCadence.operatorInputRequired, [
+    "accept", "accept-with-notes", "revise", "relaunch", "reject",
+  ]);
+
+  const acceptedOutput = await runCli([
+    "review", runId, "--pass", "1", "--verdict", "accept-with-notes",
+    "--reviewer", "test-manager", "--notes", "fixture accepted", "--json",
+  ]);
+  const accepted = JSON.parse(acceptedOutput.stdout.trim());
+  assert.equal(accepted.verdict, "accept-with-notes");
+  assert.equal(accepted.state, "ship_gate_pending");
+  assert.ok(existsSync(accepted.decisionPath));
+  assert.match(accepted.markdown, /AUTO_CONTINUE/);
+  const acceptedCadence = JSON.parse((await runCli(["next-action", runId, "--json"])).stdout.trim());
+  assert.equal(acceptedCadence.transition, "AUTO_CONTINUE");
+  assert.equal(acceptedCadence.stage, "ship_gate_ready");
 
   const eventNames = feedEvents.filter((item) => item.runId === runId).map((item) => item.event);
   assert.ok(eventNames.includes("run_started"));
   assert.ok(eventNames.filter((name) => name === "lane_started").length >= 3);
   assert.ok(eventNames.includes("lane_done"));
   assert.ok(eventNames.includes("needs_input"));
-  assert.ok(eventNames.includes("run_done"));
+  assert.ok(eventNames.includes("workers_done"));
   const report = readFileSync(join(runsRoot, runId, "report.md"), "utf8");
-  assert.doesNotMatch(report, /\*\*ended:\*\* -/);
+  assert.match(report, /\*\*ended:\*\* -/);
   assert.match(report, /## Planning preflight/);
   assert.match(report, new RegExp(done.planning.contextDigest));
   const claims = readFileSync(claimLog, "utf8");
   assert.match(claims, /release --repo fixture-repo --branch am\/run-test-reply\/writer/);
   assert.match(claims, /release --repo fixture-repo --branch am\/run-test-reply\/question/);
+  await runCli(["cancel", runId]);
   await runCli(["cleanup", runId]);
 });
 
@@ -286,13 +312,14 @@ test("manual integrate folds a successful lane and releases its integration clai
     },
   ]));
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
-  await waitForStatus(runId, (status) => status.state === "done" && !status.integrate);
+  await waitForStatus(runId, (status) => status.state === "delivery_review_pending" && !status.integrate);
   const integratedOutput = await runCli(["integrate", runId, "--json"]);
   const integrated = JSON.parse(integratedOutput.stdout.trim());
-  assert.equal(integrated.state, "done");
+  assert.equal(integrated.state, "delivery_review_pending");
   assert.equal(integrated.integrate.state, "ready");
   assert.equal(integrated.integrate.claim.state, "released");
   assert.ok(existsSync(join(integrated.integrate.worktree, "integrated.txt")));
+  await runCli(["cancel", runId]);
   await runCli(["cleanup", runId]);
 });
 
@@ -313,7 +340,7 @@ test("failed integrated verification blocks delivery with command evidence", asy
     },
   });
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
-  await waitForStatus(runId, (status) => status.state === "done" && !status.integrate);
+  await waitForStatus(runId, (status) => status.state === "delivery_review_pending" && !status.integrate);
   const output = await runCli(["integrate", runId, "--json"]);
   const blocked = JSON.parse(output.stdout.trim());
   assert.equal(blocked.state, "blocked");
@@ -321,6 +348,7 @@ test("failed integrated verification blocks delivery with command evidence", asy
   assert.equal(blocked.integrate.verification.state, "failed");
   assert.equal(blocked.integrate.verification.commands[0].exitCode, 9);
   assert.match(blocked.integrate.needsInput.prompt, /verification failed/);
+  await runCli(["cancel", runId]);
   await runCli(["cleanup", runId]);
 });
 
@@ -346,13 +374,15 @@ test("five lanes honor bounded concurrency and complete from one immutable base"
       maxRunning,
       status.lanes.filter((lane) => lane.state === "running").length,
     );
-    return ["done", "failed", "cancelled"].includes(status.state) && status.endedAt;
+    return status.state === "delivery_review_pending";
   });
-  assert.equal(done.state, "done", JSON.stringify(done, null, 2));
+  assert.equal(done.state, "delivery_review_pending", JSON.stringify(done, null, 2));
+  assert.ok(done.execution.endedAt);
   assert.equal(done.lanes.length, 5);
   assert.ok(done.lanes.every((lane) => lane.state === "done"));
   assert.ok(maxRunning <= 2, `observed ${maxRunning} concurrent lanes`);
   assert.equal(new Set(done.lanes.map((lane) => lane.runBaseCommit)).size, 1);
+  await runCli(["cancel", runId]);
   await runCli(["cleanup", runId]);
 });
 
@@ -374,7 +404,7 @@ test("dependent lanes can sequentially update prerequisite-owned files", async (
     },
   ]));
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
-  const done = await waitForStatus(runId, (status) => status.state === "done" && status.endedAt);
+  const done = await waitForStatus(runId, (status) => status.state === "delivery_review_pending");
   const consumer = done.lanes.find((lane) => lane.id === "consumer");
   assert.deepEqual(consumer.dependenciesIntegrated, ["contracts"]);
   assert.ok(existsSync(join(consumer.worktree, "contract.txt")));
@@ -396,6 +426,7 @@ test("dependent lanes can sequentially update prerequisite-owned files", async (
   assert.deepEqual(integrated.integrate.approvedChangedFileOverlaps, [
     { file: "contract.txt", lanes: ["contracts", "consumer"] },
   ]);
+  await runCli(["cancel", runId]);
   await runCli(["cleanup", runId]);
 });
 
@@ -436,13 +467,14 @@ test("blocked prerequisites resume before dependent lanes launch", async () => {
   ]);
   const done = await waitForStatus(
     runId,
-    (status) => status.state === "done" && status.endedAt,
+    (status) => status.state === "delivery_review_pending",
     40_000,
   );
   const consumer = done.lanes.find((lane) => lane.id === "consumer");
   assert.equal(consumer.state, "done");
   assert.deepEqual(consumer.dependenciesIntegrated, ["approval"]);
   assert.ok(existsSync(join(consumer.worktree, "approved.txt")));
+  await runCli(["cancel", runId]);
   await runCli(["cleanup", runId]);
 });
 
