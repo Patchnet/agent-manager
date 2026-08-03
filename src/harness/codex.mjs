@@ -59,6 +59,7 @@ function spawnCodexProcess({
   onEvent,
   logName = "stdout.log",
   envAllowlist = [],
+  env = null,
 }) {
   ensurePrivateDir(laneDir);
   const promptPath = join(
@@ -93,7 +94,7 @@ function spawnCodexProcess({
   const cmd = resolveCodexBin();
   const child = spawn(cmd, args, {
     cwd,
-    env: buildHarnessEnv(envAllowlist),
+    env: env || buildHarnessEnv(envAllowlist),
     detached: process.platform !== "win32",
     windowsHide: true,
     shell: false,

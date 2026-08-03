@@ -367,6 +367,7 @@ These filled examples follow the canonical
 - One isolated Git worktree per lane
 - Claude and Codex harnesses behind one workflow format
 - Detached launch with authoritative `status.json`
+- Actionable Master handoff for Codex, Claude Code, and Cursor
 - Automatic host runtime profile in doctor, prompts, telemetry, and shipping
 - Fail-closed manager planning attestation with one frozen shared context packet
 - Resumable `needs_input` and same-session `reply`
@@ -647,6 +648,20 @@ agent-manager events <runId> --jsonl
 
 Cursor does not currently document a stable API that wakes an idle chat from arbitrary external process output. Automatic chat re-entry is therefore experimental. A side-terminal watcher or operating-system notification can consume the same event stream without changing orchestration state.
 
+Master return is independent of worker harness choice. Codex and Claude Code
+launches auto-detect `CODEX_THREAD_ID` and `CLAUDE_CODE_SESSION_ID`; Agent
+Manager privately resumes the originating Master Dev thread for actionable
+transitions, including `delivery_review_pending`. Cursor Agent CLI supports the
+same direct route when launched with an explicit chat ID:
+`--return-host cursor --return-session <chat-id>`. Cursor IDE does not expose a
+documented chat ID to terminal subprocesses, so `CURSOR_AGENT` selects signal
+mode: the structured handoff and `AGENT_MANAGER_WAKE_` sentinel drive the host's
+background watcher without claiming direct thread resume. Routine progress
+does not open extra turns. Use `--no-master-return` to opt out. If delivery
+fails, run `agent-manager next-action <runId> --json`; private diagnostics live
+in `master-return.json`, `master-handoff.json`, and
+`master-return-supervisor.log` under the run directory.
+
 ## Command map
 
 ### 🎛️ Core orchestration
@@ -656,6 +671,7 @@ agent-manager doctor [--repo <path>]
 agent-manager validate <workflow.yaml> [--repo <path>]
 agent-manager init --repo <path> [--request <text>] [--harnesses claude,codex]
 agent-manager run <workflow.yaml> --detach [--repo <path>] [--json]
+  [--return-host codex|claude|cursor --return-session <thread-id> | --no-master-return]
 agent-manager status [runId] [--json]
 agent-manager monitor [runId]
 agent-manager events <runId> --jsonl

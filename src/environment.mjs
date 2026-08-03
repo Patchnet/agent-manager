@@ -17,6 +17,12 @@ const VERIFICATION_ENV = [
   "NODE_EXTRA_CA_CERTS", "CI",
 ];
 
+const MASTER_RETURN_ENV = [
+  ...BASE_ENV,
+  "ANTHROPIC_AUTH_TOKEN",
+  "CURSOR_API_KEY",
+];
+
 export function buildHarnessEnv(
   extraNames = [],
   source = process.env,
@@ -52,5 +58,16 @@ export function buildVerificationEnv(
   }
   env.AGENT_MANAGER_VERIFICATION = "1";
   Object.assign(env, runtimeEnv(runtime));
+  return env;
+}
+
+export function buildMasterReturnEnv(extraNames = [], source = process.env) {
+  const names = new Set([...MASTER_RETURN_ENV, ...extraNames]);
+  const env = {};
+  for (const name of names) {
+    if (typeof source[name] === "string") env[name] = source[name];
+  }
+  env.AGENT_MANAGER_MASTER_RETURN = "1";
+  Object.assign(env, runtimeEnv(detectRuntimeProfile({ env: source })));
   return env;
 }

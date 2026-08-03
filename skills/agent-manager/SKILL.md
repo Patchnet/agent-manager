@@ -117,6 +117,11 @@ parent that contains the `agent-manager` folder).
    missing, incomplete, or stale.
 2. **Run detached** — `agent-manager run <workflow> --detach`. Read `runId` /
    `telemetry` from stdout (exits immediately). **Do not** await a non-detach run.
+   Codex and Claude Code launches automatically capture the originating thread
+   and arm a private Master return watcher unless `--no-master-return` is
+   supplied. Cursor Agent CLI requires an explicit chat ID for direct return;
+   Cursor IDE uses the portable signal watcher. Worker harness choice does not
+   change this host return route. Do not print private IDs into boards.
 3. **Report** immediately with **Run board** template ([reporting.md](./reporting.md)).
 4. **Arm watch-signal** (mandatory) — see **Watch loop** below. Optionally tell
    the operator they can open `monitor <runId>` in a side terminal.
@@ -214,7 +219,17 @@ over a blind “sleep 3m and guess.” Follow the host `loop` skill for arming
 sentinels; the prompt on each wake is “read status.json and post the agent-manager
 template for this wake reason.”
 
-### Codex thread heartbeat
+### Master return and host heartbeat
+
+Codex and Claude Code runs automatically return actionable state changes to the
+originating Master Dev thread. Cursor Agent CLI does the same when an explicit
+chat ID is configured. Cursor IDE uses signal mode and requires the host's
+`AGENT_MANAGER_WAKE_` notification to stay attached. Worker completion therefore
+resumes at Run Outcome and Delivery Review instead of ending with the worker's
+stop message. The return watcher does not open turns for routine lane progress.
+Inspect its sanitized state with `agent-manager status <runId>`. On delivery
+failure, use `agent-manager next-action <runId> --json` and inspect the private
+`master-return-supervisor.log`; keep the portable watcher armed as fallback.
 
 Codex scheduled heartbeats require their host-provided final XML decision
 envelope. A heartbeat prompt may request the canonical board, but it must also
@@ -234,6 +249,9 @@ Runs root defaults to `~/.agent-manager/runs` (`AGENT_MANAGER_RUNS_ROOT`).
 | `<runs>/<runId>/report.md` | End-of-run synthesis for Master |
 | `<runs>/<runId>/planning-context.md` | Private frozen context packet shared by every lane |
 | `<runs>/<runId>/supervisor.log` | Detached supervisor stdout/stderr |
+| `<runs>/<runId>/master-return.json` | Private originating-host route and delivery state |
+| `<runs>/<runId>/master-handoff.json` | Latest structured handoff back to Master Dev |
+| `<runs>/<runId>/master-return-supervisor.log` | Detached return-watcher diagnostics |
 | `<runs>/<runId>/ship/` | Private ship handoff, supervisor log, and summary |
 | `<runs>/<runId>/<lane>/stdout.log` | Harness stream (debug) |
 | `<runs>/<runId>/<lane>/needs-input.json` | Blocking question from worker |

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/master-return.schema.json",
+  "title": "agent-manager private Master return channel",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "host", "mode", "source", "configuredAt", "state", "attempts"],
+  "properties": {
+    "schema": { "const": "agent-manager.master-return.v1" },
+    "host": { "enum": ["codex", "claude", "cursor"] },
+    "mode": { "enum": ["direct", "signal"] },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "source": { "enum": ["cli", "environment", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "CURSOR_AGENT"] },
+    "configuredAt": { "type": "string", "format": "date-time" },
+    "state": { "enum": ["configured", "watching", "delivering", "delivered", "signal_ready", "failed"] },
+    "attempts": { "type": "integer", "minimum": 0 },
+    "watcherPid": { "type": "integer" },
+    "watcherStartedAt": { "type": "string", "format": "date-time" },
+    "lastAttemptAt": { "type": "string", "format": "date-time" },
+    "lastDeliveredAt": { "type": "string", "format": "date-time" },
+    "lastSignaledAt": { "type": "string", "format": "date-time" },
+    "lastError": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "mode": { "const": "direct" } } },
+      "then": { "required": ["sessionId"] }
+    },
+    {
+      "if": { "properties": { "mode": { "const": "signal" } } },
+      "then": {
+        "properties": { "host": { "const": "cursor" } },
+        "not": { "required": ["sessionId"] }
+      }
+    }
+  ]
+}

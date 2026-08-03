@@ -32,6 +32,13 @@ import { assertDangerousPermissionApproval, loadWorkflow } from "../src/workflow
 import { formatRuntime } from "../src/runtime.mjs";
 import { deliveryReadiness } from "../src/delivery.mjs";
 import { deriveOperatorCadence } from "../src/cadence.mjs";
+import {
+  dispatchMasterReturn,
+  masterReturnSummary,
+  readMasterReturn,
+  resolveMasterReturn,
+  writeMasterReturn,
+} from "../src/master-return.mjs";
 
 const selfPath = fileURLToPath(import.meta.url);
 const packageRoot = resolve(dirname(selfPath), "..");
@@ -45,6 +52,9 @@ function usage() {
     "",
     "Usage:",
     "  agent-manager run <workflow.yaml> --detach [--repo <path>] [--json]",
+    "    master return: auto-detected in Codex, Claude Code, and Cursor",
+    "                   override with --return-host codex|claude|cursor",
+    "                   --return-session <id>; disable with --no-master-return",
     "  agent-manager validate <workflow.yaml> [--repo <path>] [--json]",
     "  agent-manager doctor [--repo <path>] [--json]",
     "  agent-manager init [--repo <path>] [--request <text>] [--harnesses claude,codex]",
@@ -134,19 +144,39 @@ function flagValue(name, source = args) {
 }
 
 function parseRunFlags(rest) {
-  const flags = { detach: false, json: false, runId: null, repo: null, dangerous: false, expectedPlanningDigest: null, file: null };
-  const valued = new Set(["--run-id", "--repo", "--expected-planning-digest"]);
+  const flags = {
+    detach: false,
+    json: false,
+    runId: null,
+    repo: null,
+    dangerous: false,
+    expectedPlanningDigest: null,
+    returnHost: null,
+    returnSession: null,
+    noMasterReturn: false,
+    file: null,
+  };
+  const valued = new Set([
+    "--run-id",
+    "--repo",
+    "--expected-planning-digest",
+    "--return-host",
+    "--return-session",
+  ]);
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     if (arg === "--detach") flags.detach = true;
     else if (arg === "--json") flags.json = true;
     else if (arg === "--allow-dangerous-permissions") flags.dangerous = true;
+    else if (arg === "--no-master-return") flags.noMasterReturn = true;
     else if (valued.has(arg)) {
       const value = rest[++index];
       if (!value) throw new Error(`${arg} requires a value`);
       if (arg === "--run-id") flags.runId = value;
       else if (arg === "--repo") flags.repo = value;
-      else flags.expectedPlanningDigest = value;
+      else if (arg === "--expected-planning-digest") flags.expectedPlanningDigest = value;
+      else if (arg === "--return-host") flags.returnHost = value;
+      else flags.returnSession = value;
     } else if (arg.startsWith("-")) throw new Error("unknown run flag: " + arg);
     else if (flags.file) throw new Error("unexpected argument: " + arg);
     else flags.file = arg;
@@ -189,22 +219,63 @@ function detachRun(flags) {
   const dir = runDir(runId);
   if (existsSync(dir)) throw new Error(`run id already exists: ${runId}`);
   ensurePrivateDir(dir);
+  const masterReturn = resolveMasterReturn({
+    host: flags.returnHost,
+    sessionId: flags.returnSession,
+    disabled: flags.noMasterReturn,
+  });
+  if (masterReturn) writeMasterReturn(runId, masterReturn);
   const logPath = join(dir, "supervisor.log");
   const childArgs = ["run", workflowPath, "--run-id", runId];
   if (flags.repo) childArgs.push("--repo", resolve(flags.repo));
   if (flags.dangerous) childArgs.push("--allow-dangerous-permissions");
   childArgs.push("--expected-planning-digest", workflow.planning.context_digest);
   const child = spawnDetached(childArgs, logPath, flags.dangerous ? { AGENT_MANAGER_ALLOW_DANGEROUS_PERMISSIONS: "1" } : {});
+  let returnWatcher = null;
+  if (masterReturn) {
+    const returnLog = join(dir, "master-return-supervisor.log");
+    try {
+      const watcher = spawnDetached(["_watch-master-return", runId], returnLog);
+      const watching = {
+        ...masterReturn,
+        state: "watching",
+        watcherPid: watcher.pid,
+        watcherStartedAt: new Date().toISOString(),
+      };
+      writeMasterReturn(runId, watching);
+      returnWatcher = {
+        state: "watching",
+        pid: watcher.pid,
+        log: returnLog,
+        channel: masterReturnSummary(watching),
+      };
+    } catch (error) {
+      const failed = {
+        ...masterReturn,
+        state: "failed",
+        lastError: `return watcher failed to start: ${error.message}`,
+      };
+      writeMasterReturn(runId, failed);
+      returnWatcher = {
+        state: "failed",
+        pid: null,
+        log: returnLog,
+        channel: masterReturnSummary(failed),
+      };
+    }
+  }
   const payload = {
     runId, state: "detached", pid: child.pid,
     runtime: workflow.runtime,
     telemetry: join(dir, "status.json"), supervisorLog: logPath,
     statusCommand: `agent-manager status ${runId}`,
+    masterReturn: returnWatcher,
   };
   console.log(flags.json ? JSON.stringify(payload) : [
     `runId: ${runId}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
     `runtime: ${formatRuntime(payload.runtime)}`,
     `supervisorLog: ${logPath}`, `status: ${payload.statusCommand}`,
+    `masterReturn: ${returnWatcher ? `${returnWatcher.state} (${returnWatcher.channel.host}/${returnWatcher.channel.mode})` : "not configured"}`,
     `monitor: agent-manager monitor ${runId}`, `watch-signal: agent-manager watch-signal ${runId}`,
   ].join("\n"));
   return payload;
@@ -355,7 +426,11 @@ async function main() {
     if (watch) { await runMonitor(runId, { intervalMs: Math.max(0.5, Number(flagValue("--interval") || 2)) * 1000 }); return; }
     const status = readStatus(runId);
     if (!status) throw new Error("no status for " + (runId || "(none)"));
-    console.log(args.includes("--json") ? JSON.stringify(status) : formatStatus(status));
+    const presented = {
+      ...status,
+      masterReturn: masterReturnSummary(readMasterReturn(runId)),
+    };
+    console.log(args.includes("--json") ? JSON.stringify(presented) : formatStatus(presented));
     return;
   }
 
@@ -369,6 +444,28 @@ async function main() {
 
   if (cmd === "monitor") { await runMonitor(firstPositional(args.slice(1), ["--interval"]) || latestRunId(), { intervalMs: Math.max(0.5, Number(flagValue("--interval") || 2)) * 1000 }); return; }
   if (cmd === "watch-signal") { await runWatchSignal(firstPositional(args.slice(1), ["--heartbeat-sec", "--poll-ms"]) || latestRunId(), { heartbeatSec: Math.max(5, Number(flagValue("--heartbeat-sec") || 180)), pollMs: Math.max(200, Number(flagValue("--poll-ms") || 2000)) }); return; }
+
+  if (cmd === "_watch-master-return") {
+    const runId = args[1];
+    if (!runId || !readMasterReturn(runId)) throw new Error("master return watcher requires a configured run");
+    await runWatchSignal(runId, {
+      heartbeatSec: 180,
+      pollMs: 2_000,
+      onWake: async (payload, status) => {
+        const result = await dispatchMasterReturn(runId, payload, status);
+        if (!result.skipped) {
+          console.log(`AGENT_MANAGER_MASTER_RETURN_${runId} ${JSON.stringify({
+            delivered: result.delivered,
+            signaled: result.signaled || false,
+            state: result.channel?.state || null,
+            attempts: result.channel?.attempts || 0,
+            error: result.error || null,
+          })}`);
+        }
+      },
+    });
+    return;
+  }
 
   if (cmd === "reply") {
     if (!args[1] || !args[2]) throw new Error("reply requires <runId> <laneId>");

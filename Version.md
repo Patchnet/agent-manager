@@ -1,11 +1,16 @@
 ---
 enabled: true
-current: 1.5.0
+current: 1.6.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.6.0 - 2026-08-02
+
+Added cross-host Master return handoffs for Codex, Claude, and Cursor,
+including direct chat return where available and a portable signal fallback.
 
 ## 1.5.0 - 2026-08-01
 

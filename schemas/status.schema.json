@@ -10,6 +10,12 @@
     "endedAt": { "type": ["string", "null"] }, "lanes": { "type": "array" },
     "topology": { "type": "object" },
     "runtime": { "$ref": "#/$defs/runtime" },
+    "masterReturn": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/masterReturnSummary" }
+      ]
+    },
     "planning": {
       "type": "object",
       "required": ["state", "sourceRefs", "planRef", "contextFile", "contextDigest", "reviewedBaseSha", "actualBaseSha", "verifiedBy", "verifiedAt", "reviewedPaths", "repositoryInstructionRefs", "attestations"],
@@ -68,6 +74,22 @@
     }
   },
   "$defs": {
+    "masterReturnSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "mode", "configured", "state", "attempts", "lastAttemptAt", "lastDeliveredAt", "lastSignaledAt", "lastError"],
+      "properties": {
+        "host": { "enum": ["codex", "claude", "cursor"] },
+        "mode": { "enum": ["direct", "signal"] },
+        "configured": { "const": true },
+        "state": { "enum": ["configured", "watching", "delivering", "delivered", "signal_ready", "failed"] },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "lastAttemptAt": { "type": ["string", "null"] },
+        "lastDeliveredAt": { "type": ["string", "null"] },
+        "lastSignaledAt": { "type": ["string", "null"] },
+        "lastError": { "type": ["string", "null"] }
+      }
+    },
     "runtime": {
       "type": "object",
       "additionalProperties": false,

@@ -190,6 +190,22 @@ test("runtime profiles and command adapters distinguish Windows, macOS, and Linu
   );
 });
 
+test("Master return authentication stays out of worker harness environments", async () => {
+  const { buildHarnessEnv, buildMasterReturnEnv } = await import("../src/environment.mjs?master-return-env");
+  const source = {
+    PATH: "fixture-path",
+    CURSOR_API_KEY: "cursor-secret",
+    CLAUDE_CODE_SESSION_ID: "private-session",
+  };
+  const worker = buildHarnessEnv([], source);
+  const master = buildMasterReturnEnv([], source);
+  assert.equal(worker.CURSOR_API_KEY, undefined);
+  assert.equal(worker.CLAUDE_CODE_SESSION_ID, undefined);
+  assert.equal(master.CURSOR_API_KEY, "cursor-secret");
+  assert.equal(master.CLAUDE_CODE_SESSION_ID, undefined);
+  assert.equal(master.AGENT_MANAGER_MASTER_RETURN, "1");
+});
+
 test("allow_commit=false blocks mutators but allows read-only git tag/show/log", async () => {
   const { createPolicyEventInspector, isForbiddenGitMutation } = await import(
     "../src/guardrails.mjs?git-ro"

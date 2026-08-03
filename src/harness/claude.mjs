@@ -74,6 +74,7 @@ export function resumeClaude({
   onEvent,
   logName = "resume.log",
   envAllowlist = [],
+  env = null,
 }) {
   if (!sessionId) throw new Error("Claude resume requires a session id");
   return spawnClaudeProcess({
@@ -87,6 +88,7 @@ export function resumeClaude({
     onEvent,
     logName,
     envAllowlist,
+    env,
   });
 }
 
@@ -101,6 +103,7 @@ function spawnClaudeProcess({
   onEvent,
   logName,
   envAllowlist = [],
+  env = null,
 }) {
   ensurePrivateDir(laneDir);
   const promptPath = join(
@@ -132,7 +135,7 @@ function spawnClaudeProcess({
   const cmd = resolveClaudeBin();
   const child = spawn(cmd, args, {
     cwd,
-    env: buildHarnessEnv(envAllowlist),
+    env: env || buildHarnessEnv(envAllowlist),
     detached: process.platform !== "win32",
     windowsHide: true,
     shell: false,

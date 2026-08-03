@@ -185,6 +185,7 @@ test("detached run publishes feed events, resumes the exact session, and release
   assert.equal(launchPayload.runId, runId);
   assert.equal(launchPayload.state, "detached");
   assert.equal(launchPayload.runtime.hostPlatform, process.platform);
+  assert.equal(launchPayload.masterReturn, null);
 
   const blocked = await waitForStatus(runId, (status) => status.state === "blocked");
   const writer = blocked.lanes.find((lane) => lane.id === "writer");

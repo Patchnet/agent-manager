@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/master-handoff.schema.json",
+  "title": "agent-manager structured handoff to Master Dev",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "createdAt", "runId", "reason", "state", "cadence", "statusPath", "reportPath"],
+  "properties": {
+    "schema": { "const": "agent-manager.master-handoff.v1" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "runId": { "type": "string" },
+    "reason": { "enum": ["heartbeat", "state_change", "needs_input", "terminal"] },
+    "state": { "type": ["string", "null"] },
+    "cadence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "transition", "nextAction", "operatorInputRequired", "template"],
+      "properties": {
+        "stage": { "type": ["string", "null"] },
+        "transition": { "enum": ["AUTO_CONTINUE", "WAIT_OPERATOR", "TERMINAL", null] },
+        "nextAction": { "type": ["string", "null"] },
+        "operatorInputRequired": { "type": "array", "items": { "type": "string" } },
+        "template": { "type": ["string", "null"] }
+      }
+    },
+    "statusPath": { "type": "string" },
+    "reportPath": { "type": "string" }
+  }
+}

@@ -153,6 +153,7 @@ export async function runWatchSignal(runId, {
   heartbeatSec = DEFAULT_HEARTBEAT_SEC,
   pollMs = DEFAULT_POLL_MS,
   write = (line) => process.stdout.write(line + "\n"),
+  onWake = null,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
   maxTicks = Infinity,
@@ -163,6 +164,11 @@ export async function runWatchSignal(runId, {
   let previous = null;
   let lastHeartbeatAt = 0;
   let ticks = 0;
+
+  const emitWake = async (payload, status) => {
+    write(formatWakeLine(id, payload));
+    if (onWake) await onWake(payload, status);
+  };
 
   write(`watch-signal ${id} heartbeat=${heartbeatSec}s poll=${pollMs}ms`);
 
@@ -181,7 +187,7 @@ export async function runWatchSignal(runId, {
       lastHeartbeatAt = now();
       if (next && isTerminalState(next.state)) {
         const payload = buildPayload(next, "terminal");
-        write(formatWakeLine(id, payload));
+        await emitWake(payload, next);
         return payload;
       }
       if (next) {
@@ -198,10 +204,11 @@ export async function runWatchSignal(runId, {
             ? "needs_input"
             : "state_change";
           const blockedLane = (next.lanes || []).find((lane) => lane.state === "blocked" || lane.needsInput);
-          write(formatWakeLine(id, buildPayload(next, reason, {
+          await emitWake(buildPayload(next, reason, {
             phase: next.ship?.needsInput ? "ship" : "delivery",
             ...(blockedLane ? { laneId: blockedLane.id } : {}),
-          })));
+          }), next);
+          if (onWake) previous = readStatus(id) || previous;
         }
       }
       await sleep(pollMs);
@@ -210,8 +217,12 @@ export async function runWatchSignal(runId, {
 
     const payload = classifyWake(previous, next, { heartbeatDue });
     if (payload) {
-      write(formatWakeLine(id, payload));
-      previous = next;
+      await emitWake(payload, next);
+      // A host callback can advance the run (for example, Master Dev can
+      // present Delivery Review while handling a workers-complete wake).
+      // Refresh after callback completion so the watcher does not re-deliver
+      // the transition that the callback already handled.
+      previous = onWake ? (readStatus(id) || next) : next;
       if (payload.reason === "heartbeat") lastHeartbeatAt = now();
       else if (payload.reason !== "terminal") {
         // state changes reset the heartbeat clock so pulses stay spaced

@@ -181,6 +181,13 @@ export function formatStatus(status) {
     if (status.ship.needsInput?.prompt) lines.push(`      needs input: ${status.ship.needsInput.prompt}`);
     lines.push("");
   }
+  if (status.masterReturn) {
+    lines.push(`master return: ${status.masterReturn.state}  host=${status.masterReturn.host}  mode=${status.masterReturn.mode}  attempts=${status.masterReturn.attempts}`);
+    if (status.masterReturn.lastDeliveredAt) lines.push(`      delivered: ${status.masterReturn.lastDeliveredAt}`);
+    if (status.masterReturn.lastSignaledAt) lines.push(`      signaled: ${status.masterReturn.lastSignaledAt}`);
+    if (status.masterReturn.lastError) lines.push(`      error: ${status.masterReturn.lastError}`);
+    lines.push("");
+  }
   if (status.feed?.lastError) lines.push(`feed warning: ${status.feed.lastError}`);
   return lines.join("\n");
 }

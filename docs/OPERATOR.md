@@ -71,6 +71,18 @@ a `runId`, runtime profile, telemetry path, supervisor log, and status command
 in milliseconds.
 A foreground run is for a dedicated terminal, not a chat turn.
 
+Master return is independent of the worker lane harness. Codex and Claude Code
+launches capture `CODEX_THREAD_ID` or `CLAUDE_CODE_SESSION_ID` as a private
+return channel and start a detached watcher. Actionable changes such as worker
+completion, blocked input, and terminal delivery resume the originating Master
+Dev thread. Cursor Agent CLI supports direct return when a chat ID is supplied
+with `--return-host cursor --return-session <chat-id>`. Cursor IDE launches use
+signal mode because the IDE does not expose a documented chat ID to terminal
+subprocesses; keep the host's `AGENT_MANAGER_WAKE_` notification attached.
+Routine lane progress does not create extra turns. Use `--no-master-return` to
+disable return handling. Session IDs are stored only in private run telemetry
+and are omitted from `status` output.
+
 Worker success enters `delivery_review_pending`. It is deliberately not a
 terminal delivery state. Change-producing work reaches `merged` or `released`
 only after its
@@ -114,6 +126,15 @@ agent-manager watch-signal <runId> --heartbeat-sec 180
 ```
 
 `status.json` is authoritative. `events.jsonl` and `watch-signal` are notification sources, not alternate state stores. A `blocked` run is resumable and is not terminal.
+
+Inspect the sanitized return state with
+`agent-manager status <runId>`. Private return telemetry is stored at
+`<run>/master-return.json`; the latest structured handoff is
+`<run>/master-handoff.json`. If delivery fails, resume manually with
+`agent-manager next-action <runId> --json` and inspect
+`<run>/master-return-supervisor.log`. An actionable `AUTO_CONTINUE` stage is
+retried on its next heartbeat if a direct return attempt fails. The normal
+`watch-signal` remains the portable heartbeat and fallback path for every host.
 
 Every wake payload includes `cadence.stage`, `cadence.transition`,
 `cadence.nextAction`, `cadence.operatorInputRequired`, and the canonical

@@ -218,6 +218,42 @@ test("runWatchSignal immediately surfaces an actionable stage present at attach 
   assert.equal(payload.cadence.stage, "workers_complete");
 });
 
+test("runWatchSignal refreshes status after a Master callback advances the run", async () => {
+  const runId = "run-signal-master-callback";
+  mkdirSync(join(root, ".runs", runId), { recursive: true });
+  const reviewReady = sampleStatus({
+    runId,
+    state: "delivery_review_pending",
+    delivery: {
+      state: "review_pending",
+      review: { state: "not_started", latestPass: 0, history: [] },
+      targets: [],
+    },
+    lanes: [{ id: "core", state: "done", harness: "claude", exitCode: 0 }],
+  });
+  writeStatus(runId, reviewReady);
+  const wakes = [];
+  await runWatchSignal(runId, {
+    heartbeatSec: 180,
+    pollMs: 1,
+    maxTicks: 3,
+    write: (line) => {
+      if (line.startsWith("AGENT_MANAGER_WAKE_")) wakes.push(line);
+    },
+    onWake: async () => {
+      writeStatus(runId, {
+        ...reviewReady,
+        delivery: {
+          ...reviewReady.delivery,
+          review: { state: "awaiting_operator", latestPass: 1, history: [] },
+        },
+      });
+    },
+    sleep: async () => {},
+  });
+  assert.equal(wakes.length, 1);
+});
+
 test("monitor board exits only on delivery-terminal states", () => {
   const board = formatMonitorBoard(sampleStatus({ feed: { enabled: false } }));
   assert.match(board, /agent-manager · monitor/);
