@@ -732,6 +732,21 @@ async function waitForCiIfConfigured(
       ]);
     }
     const failed = runs.filter((run) => FAILURE_CONCLUSIONS.has(run.conclusion));
+    const pending = runs.filter((run) => run.status !== "completed");
+    status.ship.ci = {
+      state: failed.length ? "failed" : runs.length && !pending.length ? "green" : "running",
+      runs: runs.map((run) => ({
+        id: run.databaseId,
+        workflow: run.workflowName,
+        status: run.status || null,
+        conclusion: run.conclusion || null,
+        url: run.url || null,
+      })),
+    };
+    status.ship.lastActivity = runs.length
+      ? `CI running (${pending.length} pending)`
+      : "waiting for GitHub to register CI";
+    status = save(runId, status);
     if (failed.length) {
       throw new ShipBlockedError(
         `Release CI failed: ${failed.map((run) => run.workflowName || run.databaseId).join(", ")}`,
@@ -739,21 +754,8 @@ async function waitForCiIfConfigured(
       );
     }
     if (runs.length && runs.every((run) => run.status === "completed")) {
-      status.ship.ci = {
-        state: "green",
-        runs: runs.map((run) => ({
-          id: run.databaseId,
-          workflow: run.workflowName,
-          conclusion: run.conclusion,
-          url: run.url,
-        })),
-      };
       return step(runId, status, "ci", "done", `${runs.length} workflow run(s) green`);
     }
-    status.ship.lastActivity = runs.length
-      ? `CI running (${runs.filter((run) => run.status !== "completed").length} pending)`
-      : "waiting for GitHub to register CI";
-    status = save(runId, status);
     await sleep(handoff.pollSec * 1000);
   }
   throw new ShipBlockedError("Timed out waiting for release CI.", [

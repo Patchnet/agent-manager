@@ -7,7 +7,7 @@ import {
   readdirSync,
   statSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import readline from "node:readline";
 import { RUNS_ROOT } from "./paths.mjs";
 import { isTerminalState } from "./status.mjs";
@@ -337,6 +337,8 @@ function normalizeRun(status) {
       id: lane.id,
       state: lane.state,
       harness: lane.harness || null,
+      modelRequested: lane.modelRequested || null,
+      modelObserved: lane.modelObserved || null,
       elapsedSec: lane.elapsedSec ?? 0,
       summary: signal.summary,
       tool: signal.tool,
@@ -346,11 +348,20 @@ function normalizeRun(status) {
     };
   });
   const blocker = runBlocker(status, lanes);
+  const shortId = shortRunId(status.runId);
+  const repoShorthand = status.identity?.repoShorthand || basename(status.repoRoot || status.repo || "repo");
+  const subject = status.identity?.subject || ticketFor(status);
+  const displayTitle = status.identity?.displayTitle || `[AM ${shortId}] ${repoShorthand} · ${subject}`;
   return {
     runId: status.runId,
-    shortId: shortRunId(status.runId),
+    shortId,
     repo: status.repo || "-",
     ticket: ticketFor(status),
+    identity: status.identity || null,
+    displayTitle,
+    repoShorthand,
+    subject,
+    manager: status.identity?.manager || { harness: null, model: null, modelSource: "unavailable", threadTitle: null },
     state: status.state,
     startedAt: status.startedAt || null,
     updatedAt: status.updatedAt || null,
@@ -362,6 +373,19 @@ function normalizeRun(status) {
     reviewState: status.delivery?.review?.state || null,
     shipState: status.ship?.state || null,
     shipPhase: status.ship?.phase || null,
+    ship: status.ship ? {
+      state: status.ship.state || null,
+      phase: status.ship.phase || null,
+      approve: status.ship.approve || null,
+      targetId: status.ship.targetId || null,
+      version: status.ship.version || null,
+      plannedTag: status.ship.plannedTag || null,
+      prUrl: status.ship.prUrl || null,
+      lastActivity: status.ship.lastActivity || null,
+      steps: status.ship.steps || [],
+      checks: status.ship.checks || [],
+      ci: status.ship.ci || null,
+    } : null,
     blocker,
     needsInput: Boolean(blocker),
   };
@@ -370,6 +394,15 @@ function normalizeRun(status) {
 function shortRunId(runId) {
   const match = /^run-\d{8}-\d{6}-(.+)$/.exec(String(runId || ""));
   return match ? match[1].slice(-8) : String(runId || "-").slice(-8);
+}
+
+function laneModel(lane) {
+  if (lane.modelObserved) {
+    return lane.modelRequested && lane.modelRequested !== lane.modelObserved
+      ? `${lane.modelObserved} (requested ${lane.modelRequested})`
+      : lane.modelObserved;
+  }
+  return lane.modelRequested ? `${lane.modelRequested} · unverified` : "default · unverified";
 }
 
 export function buildFleetSnapshot(options = {}, {
@@ -568,11 +601,11 @@ function changedRunIds(previous, next) {
   if (!previous) return new Set();
   const before = new Map(previous.runs.map((run) => [run.runId, JSON.stringify({
     state: run.state,
-    lanes: run.lanes.map((lane) => [lane.id, lane.state, lane.summary]),
+    lanes: run.lanes.map((lane) => [lane.id, lane.state, lane.summary, lane.modelObserved]),
   })]));
   return new Set(next.runs.filter((run) => before.get(run.runId) !== JSON.stringify({
     state: run.state,
-    lanes: run.lanes.map((lane) => [lane.id, lane.state, lane.summary]),
+    lanes: run.lanes.map((lane) => [lane.id, lane.state, lane.summary, lane.modelObserved]),
   })).map((run) => run.runId));
 }
 
@@ -627,7 +660,7 @@ export function formatFleetBoard(snapshot, {
   const ticketWidth = Math.max(18, contentWidth - fixed);
   const header = [
     "  ",
-    pad("PLAN / TICKET", ticketWidth),
+    pad("RUN / SUBJECT", ticketWidth),
     wide ? pad("REPO", repoWidth) : null,
     pad("RUN", runWidth),
     pad("STATE", stateWidth),
@@ -639,14 +672,17 @@ export function formatFleetBoard(snapshot, {
   for (const run of snapshot.runs) {
     const isSelected = selected?.runId === run.runId;
     const [icon, stateLabel, stateColor] = statePresentation(run.state, frame);
+    const rowStateLabel = run.state === "shipping" && run.shipPhase
+      ? `SHIP · ${run.shipPhase.toUpperCase()}`
+      : stateLabel;
     const changedMark = changed.has(run.runId) ? style(color, "yellow", "◆") : icon;
     const lanes = `${progressBar(run.laneCounts, 8, frame, color)} ${run.laneCounts.done}/${run.laneCounts.total}`;
     const fields = [
       isSelected ? style(color, "brightCyan", "›") : " ",
-      pad(run.ticket, ticketWidth),
-      wide ? pad(run.repo, repoWidth) : null,
+      pad(run.subject, ticketWidth),
+      wide ? pad(run.repoShorthand, repoWidth) : null,
       pad(run.shortId, runWidth),
-      pad(`${changedMark} ${stateLabel}`, stateWidth),
+      pad(`${changedMark} ${rowStateLabel}`, stateWidth),
       pad(lanes, lanesWidth),
       pad(formatDuration(runAge(run, snapshot.at)), ageWidth, "right"),
     ].filter((value) => value !== null);
@@ -659,19 +695,68 @@ export function formatFleetBoard(snapshot, {
 
   if (selected) {
     lines.push("");
-    lines.push(`${style(color, "bold", "FOCUS")} ${style(color, "brightCyan", selected.shortId)} ${style(color, "gray", "·")} ${truncate(selected.ticket, Math.max(20, contentWidth - 22))}`);
+    lines.push(`${style(color, "bold", "RUN DETAILS")} ${style(color, "brightCyan", truncate(selected.displayTitle, Math.max(20, contentWidth - 14)))}`);
+    lines.push(style(color, "gray", `  Repository ${selected.repoShorthand} · Plan ${selected.ticket} · Run ${selected.runId}`));
+    const managerHarness = selected.manager?.harness || "unavailable";
+    const managerModel = selected.manager?.model
+      ? `${selected.manager.model} · ${selected.manager.modelSource || "declared"}`
+      : "unavailable";
+    lines.push(`  ${style(color, "gray", "Manager Harness")} ${managerHarness}  ${style(color, "gray", "· Manager Model")} ${managerModel}`);
+    if (selected.manager?.threadTitle) {
+      lines.push(style(color, "gray", `  Host thread ${truncate(selected.manager.threadTitle, Math.max(20, contentWidth - 14))}`));
+    }
     const laneIdWidth = Math.min(32, Math.max(20, Math.floor(contentWidth * 0.28)));
     const laneStateWidth = 13;
     const laneElapsedWidth = 8;
-    const summaryWidth = Math.max(18, contentWidth - laneIdWidth - laneStateWidth - laneElapsedWidth - 7);
-    lines.push(style(color, "gray", `  ${pad("LANE", laneIdWidth)} ${pad("STATE", laneStateWidth)} ${pad("ELAPSED", laneElapsedWidth)} UPDATE`));
+    const expandedColumns = contentWidth >= 104;
+    const harnessWidth = 12;
+    const modelWidth = 24;
+    lines.push(style(color, "gray", expandedColumns
+      ? `  ${pad("LANE", laneIdWidth)} ${pad("HARNESS", harnessWidth)} ${pad("MODEL", modelWidth)} ${pad("STATE", laneStateWidth)} ${pad("ELAPSED", laneElapsedWidth)}`
+      : `  ${pad("LANE", laneIdWidth)} ${pad("STATE", laneStateWidth)} ${pad("ELAPSED", laneElapsedWidth)}`));
     for (const lane of selected.lanes) {
       const [icon, label, laneColor] = statePresentation(lane.state, frame);
       const activity = lane.tool && lane.state === "running"
         ? `${lane.summary} · ${lane.tool}`
         : lane.summary;
-      const row = `  ${pad(lane.id, laneIdWidth)} ${pad(`${icon} ${label}`, laneStateWidth)} ${pad(formatDuration(lane.elapsedSec), laneElapsedWidth)} ${truncate(activity, summaryWidth)}`;
+      const row = expandedColumns
+        ? `  ${pad(lane.id, laneIdWidth)} ${pad(lane.harness || "-", harnessWidth)} ${pad(laneModel(lane), modelWidth)} ${pad(`${icon} ${label}`, laneStateWidth)} ${pad(formatDuration(lane.elapsedSec), laneElapsedWidth)}`
+        : `  ${pad(lane.id, laneIdWidth)} ${pad(`${icon} ${label}`, laneStateWidth)} ${pad(formatDuration(lane.elapsedSec), laneElapsedWidth)}`;
       lines.push(style(color, laneColor, row));
+      if (!expandedColumns) lines.push(style(color, "gray", `      ${lane.harness || "-"} · ${laneModel(lane)}`));
+      lines.push(style(color, "gray", `      Update ${truncate(activity, Math.max(20, contentWidth - 13))}`));
+    }
+
+    if (selected.ship) {
+      const ship = selected.ship;
+      lines.push("");
+      lines.push(`${style(color, "bold", "SHIPPING PROGRESS")} ${style(color, "blue", String(ship.phase || "preflight").toUpperCase())}`);
+      lines.push(style(color, "gray", `  ${ship.lastActivity || "waiting for ship telemetry"}`));
+      if (ship.prUrl) lines.push(style(color, "gray", `  PR ${ship.prUrl}`));
+      if (ship.targetId || ship.version || ship.plannedTag) {
+        lines.push(style(color, "gray", `  Target ${ship.targetId || "single"} · Version ${ship.version || "n/a"} · Tag ${ship.plannedTag || "n/a"}`));
+      }
+      if (ship.steps.length) {
+        const progress = ship.steps.map((item) => {
+          const icon = item.state === "done" ? "✓" : item.state === "skipped" ? "−" : item.state === "running" ? "●" : "○";
+          return `${icon} ${item.name}`;
+        }).join("  →  ");
+        for (const line of wrapText(progress, Math.max(30, contentWidth - 4), 3)) {
+          lines.push(style(color, "blue", `  ${line}`));
+        }
+      }
+      const actionRuns = ship.ci?.runs || [];
+      const checks = actionRuns.length ? actionRuns : ship.checks;
+      if (checks.length) {
+        const heading = actionRuns.length ? "GITHUB ACTIONS" : "GITHUB CHECKS";
+        const completed = checks.filter((item) => item.status === "completed" || item.conclusion).length;
+        lines.push(style(color, "bold", `${heading} ${completed}/${checks.length} complete`));
+        for (const item of checks.slice(0, 6)) {
+          const name = item.workflow || item.name || `run ${item.id || "?"}`;
+          const result = item.conclusion || item.status || "pending";
+          lines.push(style(color, result === "success" ? "green" : /fail|cancel|timed/.test(result) ? "red" : "yellow", `  ${name} · ${result}`));
+        }
+      }
     }
 
     const blocker = selected.blocker;
@@ -736,6 +821,8 @@ export function diffFleetSnapshots(previous, next) {
         changes.push({ at: next.at, kind: lane.needsInput ? "needs_input" : "lane_state", runId: run.runId, shortId: run.shortId, text: `${lane.id} → ${lane.needsInput ? "needs input" : lane.state}` });
       } else if (lane.summary && lane.summary !== priorLane.summary && lane.state === "running") {
         changes.push({ at: next.at, kind: "worker_update", runId: run.runId, shortId: run.shortId, text: `${lane.id}: ${lane.summary}` });
+      } else if (lane.modelObserved && lane.modelObserved !== priorLane.modelObserved) {
+        changes.push({ at: next.at, kind: "worker_model", runId: run.runId, shortId: run.shortId, text: `${lane.id}: model ${lane.modelObserved}` });
       }
     }
   }

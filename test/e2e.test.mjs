@@ -163,6 +163,7 @@ test("detached run publishes feed events, resumes the exact session, and release
   const workflow = writeWorkflow("reply", baseWorkflow([
     {
       id: "writer",
+      model: "worker-test-model",
       scope: "allowed.txt",
       prompt: "write allowed file",
       fake: { write: { path: "allowed.txt", content: "allowed\n" } },
@@ -179,18 +180,28 @@ test("detached run publishes feed events, resumes the exact session, and release
   ]));
 
   const launchStarted = Date.now();
-  const launch = await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  const launch = await runCli([
+    "run", workflow, "--detach", "--json", "--run-id", runId,
+    "--title", "Reply workflow", "--repo-shorthand", "fixture",
+    "--manager-harness", "codex", "--manager-model", "manager-test-model",
+  ]);
   assert.ok(Date.now() - launchStarted < 1_000, "detached launch should return immediately");
   const launchPayload = JSON.parse(launch.stdout.trim());
   assert.equal(launchPayload.runId, runId);
   assert.equal(launchPayload.state, "detached");
   assert.equal(launchPayload.runtime.hostPlatform, process.platform);
   assert.equal(launchPayload.masterReturn, null);
+  assert.equal(launchPayload.suggestedThreadTitle, "[AM st-reply] fixture · Reply workflow");
+  assert.equal(launchPayload.identity.manager.model, "manager-test-model");
 
   const blocked = await waitForStatus(runId, (status) => status.state === "blocked");
   const writer = blocked.lanes.find((lane) => lane.id === "writer");
   const question = blocked.lanes.find((lane) => lane.id === "question");
   assert.equal(writer.state, "done");
+  assert.equal(writer.modelRequested, "worker-test-model");
+  assert.equal(writer.modelObserved, null);
+  assert.equal(blocked.identity.manager.harness, "codex");
+  assert.equal(blocked.identity.manager.model, "manager-test-model");
   assert.equal(question.state, "blocked");
   assert.match(question.sessionId, /^fake-/);
   assert.equal(question.claim.state, "retained");

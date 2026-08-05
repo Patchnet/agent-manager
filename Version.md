@@ -1,11 +1,17 @@
 ---
 enabled: true
-current: 1.7.0
+current: 1.8.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.8.0 - 2026-08-05
+
+Added canonical run identity and model telemetry, expanded shipping and GitHub
+Actions progress, and standardized cross-platform worker-harness discovery and
+setup guidance.
 
 ## 1.7.0 - 2026-08-05
 

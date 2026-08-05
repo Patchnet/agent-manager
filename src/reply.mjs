@@ -134,6 +134,7 @@ export async function resumeLane(runId, laneId, messagePath) {
       lane.lastActivity = summary;
     },
     onEvent: (event) => {
+      lane.modelObserved ||= adapter.parseModel?.(event) || null;
       runtimeViolation ||= inspectPolicyEvent(event);
       if (runtimeViolation) handle?.kill?.();
     },

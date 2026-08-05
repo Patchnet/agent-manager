@@ -3,6 +3,7 @@ import { resolveClaudeBin } from "./harness/claude.mjs";
 import { resolveCodexBin } from "./harness/codex.mjs";
 import { assertPlanningReady } from "./planning.mjs";
 import { spawnCommandSync } from "./command.mjs";
+import { harnessFailureRecommendation } from "./harness/setup.mjs";
 
 export function checkCommand(command, args = ["--version"], options = {}) {
   const { result, resolved } = spawnCommandSync(command, args, {
@@ -37,17 +38,24 @@ export function validateRepository(workflow) {
 export function preflightWorkflow(workflow) {
   assertPlanningReady(workflow);
   const checks = [checkCommand("git"), ...validateRepository(workflow)];
+  const harnessCommands = new Map();
   for (const name of new Set(workflow.lanes.map((lane) => lane.harness))) {
     getHarnessAdapter(name);
     if (name === "fake") {
       checks.push({ ok: process.env.AGENT_MANAGER_TEST_MODE === "1", command: "fake", version: "test", error: "fake harness requires AGENT_MANAGER_TEST_MODE=1" });
     } else {
-      checks.push(checkCommand(name === "claude" ? resolveClaudeBin() : resolveCodexBin()));
+      const command = name === "claude" ? resolveClaudeBin() : resolveCodexBin();
+      harnessCommands.set(command, name);
+      checks.push(checkCommand(command));
     }
   }
   const failed = checks.filter((check) => !check.ok);
   if (failed.length) {
-    throw new Error("preflight failed: " + failed.map((check) => `${check.command}: ${check.error}`).join("; "));
+    throw new Error("preflight failed: " + failed.map((check) => {
+      const harness = harnessCommands.get(check.command);
+      const fix = harness ? ` ${harnessFailureRecommendation(harness)}` : "";
+      return `${check.command}: ${check.error}.${fix}`;
+    }).join("; "));
   }
   return checks;
 }

@@ -2,16 +2,21 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildHarnessEnv } from "../environment.mjs";
+import { resolveSpawnCommand } from "../command.mjs";
 import { terminateProcessTree } from "../process.mjs";
 import { ensurePrivateDir, writePrivateFile } from "../fs-safe.mjs";
 
-export function resolveClaudeBin() {
-  if (process.env.CLAUDE_BIN && existsSync(process.env.CLAUDE_BIN)) {
-    return process.env.CLAUDE_BIN;
+export function resolveClaudeBin({
+  env = process.env,
+  platform = process.platform,
+  exists = existsSync,
+} = {}) {
+  if (typeof env.CLAUDE_BIN === "string" && env.CLAUDE_BIN.trim()) {
+    return env.CLAUDE_BIN.trim();
   }
-  if (process.platform === "win32") {
+  if (platform === "win32") {
     const fromNpm = join(
-      process.env.APPDATA || "",
+      env.APPDATA || "",
       "npm",
       "node_modules",
       "@anthropic-ai",
@@ -19,9 +24,17 @@ export function resolveClaudeBin() {
       "bin",
       "claude.exe",
     );
-    if (existsSync(fromNpm)) return fromNpm;
+    const candidates = [
+      join(env.APPDATA || "", "npm", "claude.cmd"),
+      join(env.APPDATA || "", "npm", "claude.exe"),
+      join(env.USERPROFILE || "", ".local", "bin", "claude.exe"),
+      fromNpm,
+    ];
+    for (const candidate of candidates) {
+      if (candidate && exists(candidate)) return candidate;
+    }
   }
-  return process.platform === "win32" ? "claude.cmd" : "claude";
+  return platform === "win32" ? "claude.cmd" : "claude";
 }
 
 /**
@@ -38,6 +51,7 @@ export function spawnClaude({
   onEvent,
   logName = "stdout.log",
   envAllowlist = [],
+  model = null,
 }) {
   return spawnClaudeProcess({
     cwd,
@@ -49,6 +63,7 @@ export function spawnClaude({
     onEvent,
     logName,
     envAllowlist,
+    model,
   });
 }
 
@@ -75,6 +90,7 @@ export function resumeClaude({
   logName = "resume.log",
   envAllowlist = [],
   env = null,
+  model = null,
 }) {
   if (!sessionId) throw new Error("Claude resume requires a session id");
   return spawnClaudeProcess({
@@ -89,6 +105,7 @@ export function resumeClaude({
     logName,
     envAllowlist,
     env,
+    model,
   });
 }
 
@@ -104,6 +121,7 @@ function spawnClaudeProcess({
   logName,
   envAllowlist = [],
   env = null,
+  model = null,
 }) {
   ensurePrivateDir(laneDir);
   const promptPath = join(
@@ -128,14 +146,19 @@ function spawnClaudeProcess({
   if (permissionMode) {
     args.push("--permission-mode", permissionModeForClaude(permissionMode));
   }
+  if (typeof model === "string" && model.trim()) {
+    args.push("--model", model.trim());
+  }
   if (dangerouslySkipPermissions) {
     args.push("--dangerously-skip-permissions");
   }
 
-  const cmd = resolveClaudeBin();
-  const child = spawn(cmd, args, {
+  const childEnv = env || buildHarnessEnv(envAllowlist);
+  const cmd = resolveClaudeBin({ env: childEnv });
+  const resolved = resolveSpawnCommand(cmd, args, { env: childEnv });
+  const child = spawn(resolved.command, resolved.args, {
     cwd,
-    env: env || buildHarnessEnv(envAllowlist),
+    env: childEnv,
     detached: process.platform !== "win32",
     windowsHide: true,
     shell: false,
@@ -238,6 +261,12 @@ export function parseSessionId(event) {
     event.message?.sessionId ||
     null;
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+export function parseModel(event) {
+  if (!event || typeof event !== "object") return null;
+  const value = event.model || event.model_id || event.modelId || event.message?.model || null;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function summarizeEvent(ev) {

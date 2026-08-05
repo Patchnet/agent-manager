@@ -44,10 +44,19 @@ function runningStatus(overrides = {}) {
     startedAt: "2026-08-04T12:00:00.000Z",
     updatedAt: "2026-08-04T12:05:00.000Z",
     planning: { planRef: "ticket-session-authority" },
+    identity: {
+      displayTitle: "[AM 12345678] fixture · Session authority",
+      suggestedThreadTitle: "[AM 12345678] fixture · Session authority",
+      repoShorthand: "fixture",
+      subject: "Session authority",
+      manager: { harness: "codex", model: "gpt-5.6", modelSource: "declared", threadTitle: null },
+    },
     delivery: { state: "workers_running", review: { state: "not_started" } },
     lanes: [{
       id: "authority",
       harness: "codex",
+      modelRequested: "gpt-5.6",
+      modelObserved: "gpt-5.6",
       state: "running",
       elapsedSec: 300,
       lastActivity: "turn.completed",
@@ -125,6 +134,9 @@ test("fleet snapshot and board show tickets, lane progress, narrative, and trans
   const board = formatFleetBoard(snapshot, { width: 130, color: false, frame: 1 });
   assert.match(board, /AGENT MANAGER/);
   assert.match(board, /ticket-session-authority/);
+  assert.match(board, /\[AM 12345678\] fixture · Session authority/);
+  assert.match(board, /Manager Harness.*codex.*Manager Model.*gpt-5\.6/);
+  assert.match(board, /HARNESS.*MODEL/);
   assert.match(board, /46 focused tests pass/);
   assert.match(board, /RECENT TRANSITIONS/);
   assert.doesNotMatch(board, /\u001b\[/);
@@ -182,6 +194,49 @@ test("fleet surfaces integration blockers after worker lanes settle", () => {
   assert.match(board, /NEEDS INPUT.*integrate/);
   assert.match(board, /verification failed: npm test/);
   assert.match(board, /agent-manager status/);
+});
+
+test("fleet expands shipping phases, steps, and GitHub Actions progress", () => {
+  const runId = "run-20260804-122000-ship001";
+  writeRun(runId, runningStatus({
+    state: "shipping",
+    updatedAt: "2026-08-04T12:20:00.000Z",
+    delivery: { state: "shipping", review: { state: "accepted" } },
+    lanes: [{ id: "worker", harness: "codex", state: "done", elapsedSec: 600 }],
+    ship: {
+      state: "running",
+      phase: "ci",
+      approve: "all",
+      version: "1.8.0",
+      plannedTag: "v1.8.0",
+      prUrl: "https://example.invalid/pull/42",
+      lastActivity: "CI running (1 pending)",
+      steps: [
+        { name: "commit", state: "done", detail: "release committed" },
+        { name: "push", state: "done", detail: "main pushed" },
+        { name: "ci", state: "running", detail: "waiting for CI" },
+      ],
+      ci: {
+        state: "running",
+        runs: [
+          { id: 1, workflow: "Ubuntu", status: "completed", conclusion: "success", url: "https://example.invalid/actions/1" },
+          { id: 2, workflow: "Windows", status: "in_progress", conclusion: null, url: "https://example.invalid/actions/2" },
+        ],
+      },
+    },
+  }));
+
+  const snapshot = buildFleetSnapshot({ runId }, {
+    runsRoot,
+    now: () => Date.parse("2026-08-04T12:21:00.000Z"),
+  });
+  const board = formatFleetBoard(snapshot, { width: 130, color: false });
+  assert.match(board, /SHIP · CI/);
+  assert.match(board, /SHIPPING PROGRESS CI/);
+  assert.match(board, /CI running \(1 pending\)/);
+  assert.match(board, /GITHUB ACTIONS 1\/2 complete/);
+  assert.match(board, /Ubuntu · success/);
+  assert.match(board, /Windows · in_progress/);
 });
 
 test("fleet diffs produce lane and worker update stream events", () => {

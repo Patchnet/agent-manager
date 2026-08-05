@@ -30,6 +30,7 @@ export function initWorkflow({ repo = process.cwd(), output = "agent-manager.yam
   }));
   const workflow = {
     repo: ".",
+    title: request.length > 120 ? request.slice(0, 119) + "…" : request,
     base_ref: "HEAD",
     claim_mode: "auto",
     max_concurrency: Math.min(DEFAULT_MAX_CONCURRENCY, lanes.length),

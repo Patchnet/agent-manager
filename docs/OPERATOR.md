@@ -29,6 +29,13 @@ agent-manager validate /path/to/repo/agent-manager.yaml
 agent-manager run /path/to/repo/agent-manager.yaml --detach --json
 ```
 
+Worker harnesses must be installed, authenticated, and visible in the same OS
+environment that launches Agent Manager. Run `agent-manager doctor --json` from
+that environment before the first run. If it reports a missing harness, follow
+the structured recommendation and restart the launching app after PATH or
+environment changes. See [Worker harness setup](HARNESS-SETUP.md), including
+Windows npm-shim guidance.
+
 Always inspect generated lane scopes before launch.
 
 The invoking manager owns source check-in and close-out. Agent Manager remains
@@ -64,6 +71,23 @@ Use one writable owner per path.
 ```bash
 agent-manager run <workflow.yaml> --detach --json
 ```
+
+Give the run a concise `title` and optional `repo_shorthand` in the workflow.
+The detach payload returns a canonical `suggestedThreadTitle` in this form:
+
+```text
+[AM <short-run-id>] <repo-shorthand> · <subject>
+```
+
+When supported, the Manager host may apply that title to the originating task.
+The run does not depend on native title support. Pass `--manager-harness` and
+`--manager-model` when they cannot be detected by the launch environment.
+Select a run in `agent-manager fleet` to view Manager identity and requested or
+observed lane models without adding those fields to the compact fleet list.
+While shipping, the selected run also shows its current phase, last activity,
+step progression, pull request, and GitHub workflow/check status. Meaningful
+ship phase and CI/check changes wake the Manager thread; unchanged polling does
+not create repeated updates.
 
 The command validates the workflow, planning evidence, repository, base ref,
 harness names, and required binaries before reporting detach success. It returns

@@ -33,6 +33,7 @@ import { formatRuntime } from "../src/runtime.mjs";
 import { deliveryReadiness } from "../src/delivery.mjs";
 import { deriveOperatorCadence } from "../src/cadence.mjs";
 import { fleetUsage, parseFleetArgs, runFleet } from "../src/fleet.mjs";
+import { buildRunIdentity } from "../src/identity.mjs";
 import {
   dispatchMasterReturn,
   masterReturnSummary,
@@ -53,6 +54,9 @@ function usage() {
     "",
     "Usage:",
     "  agent-manager run <workflow.yaml> --detach [--repo <path>] [--json]",
+    "    identity: --title <subject> --repo-shorthand <name>",
+    "              --manager-harness <name> --manager-model <model>",
+    "              --manager-thread-title <title>",
     "    master return: auto-detected in Codex, Claude Code, and Cursor",
     "                   override with --return-host codex|claude|cursor",
     "                   --return-session <id>; disable with --no-master-return",
@@ -156,6 +160,11 @@ function parseRunFlags(rest) {
     returnHost: null,
     returnSession: null,
     noMasterReturn: false,
+    title: null,
+    repoShorthand: null,
+    managerHarness: null,
+    managerModel: null,
+    managerThreadTitle: null,
     file: null,
   };
   const valued = new Set([
@@ -164,6 +173,11 @@ function parseRunFlags(rest) {
     "--expected-planning-digest",
     "--return-host",
     "--return-session",
+    "--title",
+    "--repo-shorthand",
+    "--manager-harness",
+    "--manager-model",
+    "--manager-thread-title",
   ]);
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -178,12 +192,31 @@ function parseRunFlags(rest) {
       else if (arg === "--repo") flags.repo = value;
       else if (arg === "--expected-planning-digest") flags.expectedPlanningDigest = value;
       else if (arg === "--return-host") flags.returnHost = value;
-      else flags.returnSession = value;
+      else if (arg === "--return-session") flags.returnSession = value;
+      else if (arg === "--title") flags.title = value;
+      else if (arg === "--repo-shorthand") flags.repoShorthand = value;
+      else if (arg === "--manager-harness") flags.managerHarness = value;
+      else if (arg === "--manager-model") flags.managerModel = value;
+      else flags.managerThreadTitle = value;
     } else if (arg.startsWith("-")) throw new Error("unknown run flag: " + arg);
     else if (flags.file) throw new Error("unexpected argument: " + arg);
     else flags.file = arg;
   }
   return flags;
+}
+
+function identityOverrides(flags, masterReturn = null) {
+  const managerModel = flags.managerModel || process.env.AGENT_MANAGER_MANAGER_MODEL || null;
+  return {
+    title: flags.title,
+    repoShorthand: flags.repoShorthand,
+    managerHarness: flags.managerHarness || masterReturn?.host || process.env.AGENT_MANAGER_MANAGER_HARNESS || null,
+    managerModel,
+    managerModelSource: flags.managerModel
+      ? "cli"
+      : process.env.AGENT_MANAGER_MANAGER_MODEL ? "environment" : "unavailable",
+    managerThreadTitle: flags.managerThreadTitle || process.env.AGENT_MANAGER_MANAGER_THREAD_TITLE || null,
+  };
 }
 
 function firstPositional(rest, valueFlags = []) {
@@ -227,10 +260,23 @@ function detachRun(flags) {
     disabled: flags.noMasterReturn,
   });
   if (masterReturn) writeMasterReturn(runId, masterReturn);
+  const runIdentity = buildRunIdentity({
+    runId,
+    workflow,
+    overrides: identityOverrides(flags, masterReturn),
+  });
   const logPath = join(dir, "supervisor.log");
   const childArgs = ["run", workflowPath, "--run-id", runId];
   if (flags.repo) childArgs.push("--repo", resolve(flags.repo));
   if (flags.dangerous) childArgs.push("--allow-dangerous-permissions");
+  const identityFlags = [
+    ["--title", flags.title],
+    ["--repo-shorthand", flags.repoShorthand],
+    ["--manager-harness", runIdentity.manager.harness],
+    ["--manager-model", runIdentity.manager.model],
+    ["--manager-thread-title", runIdentity.manager.threadTitle],
+  ];
+  for (const [name, value] of identityFlags) if (value) childArgs.push(name, value);
   childArgs.push("--expected-planning-digest", workflow.planning.context_digest);
   const child = spawnDetached(childArgs, logPath, flags.dangerous ? { AGENT_MANAGER_ALLOW_DANGEROUS_PERMISSIONS: "1" } : {});
   let returnWatcher = null;
@@ -268,13 +314,15 @@ function detachRun(flags) {
   }
   const payload = {
     runId, state: "detached", pid: child.pid,
+    identity: runIdentity,
+    suggestedThreadTitle: runIdentity.suggestedThreadTitle,
     runtime: workflow.runtime,
     telemetry: join(dir, "status.json"), supervisorLog: logPath,
     statusCommand: `agent-manager status ${runId}`,
     masterReturn: returnWatcher,
   };
   console.log(flags.json ? JSON.stringify(payload) : [
-    `runId: ${runId}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
+    `runId: ${runId}`, `title: ${runIdentity.displayTitle}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
     `runtime: ${formatRuntime(payload.runtime)}`,
     `supervisorLog: ${logPath}`, `status: ${payload.statusCommand}`,
     `masterReturn: ${returnWatcher ? `${returnWatcher.state} (${returnWatcher.channel.host}/${returnWatcher.channel.mode})` : "not configured"}`,
@@ -366,6 +414,11 @@ async function main() {
       repoOverride: flags.repo,
       allowDangerousPermissions: flags.dangerous,
       expectedPlanningDigest: flags.expectedPlanningDigest,
+      identityOverrides: identityOverrides(flags, resolveMasterReturn({
+        host: flags.returnHost,
+        sessionId: flags.returnSession,
+        disabled: flags.noMasterReturn,
+      })),
     });
     if (flags.json) console.log(JSON.stringify({ runId: result.runId, status: result.status }));
     return;

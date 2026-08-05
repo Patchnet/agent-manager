@@ -7,6 +7,8 @@
   "required": ["repo", "planning", "lanes"],
   "properties": {
     "repo": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "repo_shorthand": { "type": "string", "minLength": 1, "maxLength": 64 },
     "harness_default": { "enum": ["claude", "codex", "fake"] },
     "model_default": { "type": "string", "minLength": 1 },
     "integrate": { "type": "boolean" },

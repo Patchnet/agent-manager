@@ -429,6 +429,14 @@ platform-specific command adapters use the detected profile. On Windows, npm
 and other command scripts run through `cmd.exe` while authored lane commands
 are identified as PowerShell commands.
 
+Install worker CLIs in the same OS environment that launches Agent Manager,
+restart that harness after PATH changes, and run `agent-manager doctor --json`
+there. Doctor provides structured remediation for missing harnesses. On Windows,
+Agent Manager recognizes npm `.cmd` and `.ps1` shims and supports explicit
+`CLAUDE_BIN` and `CODEX_BIN` overrides. See the
+[worker harness setup guide](docs/HARNESS-SETUP.md) for standardized Claude Code,
+Codex CLI, Cursor, Windows, macOS, and Linux instructions.
+
 ### Watch the fleet in a terminal
 
 Launch one self-contained CLI view from any terminal. It discovers runs under
@@ -576,6 +584,8 @@ Lane count and active concurrency are separate:
 
 ```yaml
 repo: .
+title: Fleet telemetry
+repo_shorthand: agent-manager
 claim_mode: required
 max_concurrency: 3
 integrate: true
@@ -694,6 +704,9 @@ agent-manager doctor [--repo <path>]
 agent-manager validate <workflow.yaml> [--repo <path>]
 agent-manager init --repo <path> [--request <text>] [--harnesses claude,codex]
 agent-manager run <workflow.yaml> --detach [--repo <path>] [--json]
+  [--title <subject>] [--repo-shorthand <name>]
+  [--manager-harness <name>] [--manager-model <model>]
+  [--manager-thread-title <title>]
   [--return-host codex|claude|cursor --return-session <thread-id> | --no-master-return]
 agent-manager status [runId] [--json]
 agent-manager monitor [runId]
@@ -711,6 +724,22 @@ agent-manager cancel <runId>
 agent-manager cleanup <runId>
 agent-manager cleanup --stale --older-than-days 30
 ```
+
+Every run has a harness-neutral identity:
+
+```text
+[AM <short-run-id>] <repo-shorthand> · <subject>
+```
+
+Set `title` and optional `repo_shorthand` in the workflow, or override them at
+launch. Detached launch output includes `suggestedThreadTitle`; a host may use
+it to rename the originating Manager task when its API supports title changes.
+Title synchronization is best effort and never gates orchestration. Selecting
+a run in `fleet` expands its Manager Harness, Manager Model, optional host
+thread title, and each lane's requested or observed worker model. Requested
+models remain marked unverified until the harness reports the effective model.
+During shipping, the same expanded panel shows the active ship phase, completed
+and running steps, PR context, and per-workflow GitHub Actions progress.
 
 ### 📦 PR Manager function
 

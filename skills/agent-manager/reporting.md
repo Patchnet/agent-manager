@@ -114,7 +114,10 @@ Post once when a run starts, then again on meaningful updates
 | | |
 |---|---|
 | **runId** | `<runId>` |
+| **title** | `<identity.displayTitle>` |
 | **repo** | `<repo>` |
+| **Manager Harness** | `<identity.manager.harness or n/a>` |
+| **Manager Model** | `<identity.manager.model or n/a>` |
 | **state** | `running \| delivery_review_pending \| correction_pending \| ship_gate_pending \| shipping \| blocked \| release_pending \| reviewed \| merged \| released \| rejected \| failed \| cancelled` |
 | **target_dev_flow** | `simple \| formal` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
@@ -127,9 +130,9 @@ Post once when a run starts, then again on meaningful updates
 
 ### Lanes
 
-| Lane | State | Harness | Branch | Elapsed | Last activity |
-|------|-------|---------|--------|---------|---------------|
-| `<id>` | `queued\|running\|blocked\|done\|failed\|cancelled` | `claude\|…` | `<branch>` | `<Ns>` | `<lastActivity>` |
+| Lane | State | Harness | Model | Branch | Elapsed | Last activity |
+|------|-------|---------|-------|--------|---------|---------------|
+| `<id>` | `queued\|running\|blocked\|done\|failed\|cancelled` | `claude\|…` | `<observed \| requested + unverified>` | `<branch>` | `<Ns>` | `<lastActivity>` |
 
 ### Actions
 - Monitor (side terminal): `agent-manager monitor <runId>`

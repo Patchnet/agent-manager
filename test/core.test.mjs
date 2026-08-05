@@ -76,7 +76,7 @@ test("feed publisher emits the Agent Feed HTTP contract and fails soft", async (
 
 test("codex harness is supported and parses thread_id session ids", async () => {
   const { getHarnessAdapter, listHarnessAdapters } = await import("../src/harness/index.mjs?codex-core");
-  const { parseSessionId, summarizeEvent } = await import("../src/harness/codex.mjs?codex-core");
+  const { parseModel, parseSessionId, summarizeEvent } = await import("../src/harness/codex.mjs?codex-core");
   const { createPolicyEventInspector } = await import("../src/guardrails.mjs?codex-core");
 
   const listed = listHarnessAdapters();
@@ -86,6 +86,7 @@ test("codex harness is supported and parses thread_id session ids", async () => 
 
   const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
   assert.equal(parseSessionId({ type: "thread.started", thread_id: threadId }), threadId);
+  assert.equal(parseModel({ type: "thread.started", model: "gpt-test" }), "gpt-test");
   assert.match(
     summarizeEvent({
       type: "item.started",
@@ -105,13 +106,14 @@ test("codex harness is supported and parses thread_id session ids", async () => 
 });
 
 test("Claude permission modes translate manager policy to native CLI values", async () => {
-  const { permissionModeForClaude } = await import("../src/harness/claude.mjs?permission-core");
+  const { parseModel, permissionModeForClaude } = await import("../src/harness/claude.mjs?permission-core");
 
   assert.equal(permissionModeForClaude("readOnly"), "plan");
   assert.equal(permissionModeForClaude("read-only"), "plan");
   assert.equal(permissionModeForClaude("read_only"), "plan");
   assert.equal(permissionModeForClaude("workspace-write"), "acceptEdits");
   assert.equal(permissionModeForClaude("acceptEdits"), "acceptEdits");
+  assert.equal(parseModel({ type: "assistant", message: { model: "claude-test" } }), "claude-test");
 });
 
 test("runtime profiles and command adapters distinguish Windows, macOS, and Linux", async () => {
@@ -166,6 +168,33 @@ test("runtime profiles and command adapters distinguish Windows, macOS, and Linu
     "cmd.exe",
   );
   assert.deepEqual(
+    resolveSpawnCommand("C:\\Users\\operator\\AppData\\Roaming\\npm\\claude.cmd", ["--version"], {
+      platform: "win32",
+      env: { ComSpec: "cmd.exe" },
+    }),
+    {
+      command: "cmd.exe",
+      args: [
+        "/d", "/s", "/c",
+        "C:\\Users\\operator\\AppData\\Roaming\\npm\\claude.cmd",
+        "--version",
+      ],
+    },
+  );
+  assert.deepEqual(
+    resolveSpawnCommand("C:\\tools\\claude.ps1", ["--version"], {
+      platform: "win32",
+      env: { SystemRoot: "C:\\Windows" },
+    }),
+    {
+      command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      args: [
+        "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        "C:\\tools\\claude.ps1", "--version",
+      ],
+    },
+  );
+  assert.deepEqual(
     resolveSpawnCommand("npm", ["--version"], { platform: "linux" }),
     { command: "npm", args: ["--version"] },
   );
@@ -188,12 +217,74 @@ test("runtime profiles and command adapters distinguish Windows, macOS, and Linu
     }),
     /via cmd\.exe \/d \/s \/c npm --version/,
   );
+  assert.match(
+    formatDoctor({
+      ok: false,
+      runtime: windows,
+      checks: [{
+        name: "claude",
+        ok: false,
+        detail: "not found",
+        recommendation: "Install or configure Claude Code, then restart the launching harness.",
+      }],
+    }),
+    /fix: Install or configure Claude Code/,
+  );
+});
+
+test("harness discovery recognizes Windows npm shims and explicit overrides", async () => {
+  const { resolveClaudeBin } = await import("../src/harness/claude.mjs?discovery-core");
+  const { resolveCodexBin } = await import("../src/harness/codex.mjs?discovery-core");
+  const claudeShim = "C:\\Users\\operator\\AppData\\Roaming\\npm\\claude.cmd";
+  const codexShim = "C:\\Users\\operator\\AppData\\Roaming\\npm\\codex.cmd";
+  const existing = new Set([claudeShim, codexShim]);
+  const exists = (candidate) => existing.has(candidate);
+  const env = {
+    APPDATA: "C:\\Users\\operator\\AppData\\Roaming",
+    USERPROFILE: "C:\\Users\\operator",
+    LOCALAPPDATA: "C:\\Users\\operator\\AppData\\Local",
+  };
+
+  assert.equal(resolveClaudeBin({ env, platform: "win32", exists }), claudeShim);
+  assert.equal(resolveCodexBin({ env, platform: "win32", exists }), codexShim);
+  assert.equal(resolveClaudeBin({
+    env: { ...env, CLAUDE_BIN: "D:\\tools\\claude.cmd" },
+    platform: "win32",
+    exists,
+  }), "D:\\tools\\claude.cmd");
+  assert.equal(resolveCodexBin({
+    env: { ...env, CODEX_BIN: "D:\\tools\\codex.exe" },
+    platform: "win32",
+    exists,
+  }), "D:\\tools\\codex.exe");
+});
+
+test("harness setup provides platform-specific, machine-readable remediation", async () => {
+  const { harnessFailureRecommendation, harnessSetup } = await import("../src/harness/setup.mjs?setup-core");
+  const claude = harnessSetup("claude", { platform: "win32" });
+  const codex = harnessSetup("codex", { platform: "darwin" });
+  const cursor = harnessSetup("cursor", { platform: "win32" });
+
+  assert.equal(claude.overrideEnv, "CLAUDE_BIN");
+  assert.match(claude.shimGuidance, /full \.cmd path/);
+  assert.match(codex.install, /install\.sh/);
+  assert.match(cursor.install, /WSL/);
+  assert.match(
+    harnessFailureRecommendation("claude", { platform: "win32" }),
+    /Verify from the same environment: claude --version/,
+  );
+  assert.match(
+    harnessFailureRecommendation("claude", { platform: "win32" }),
+    /does not prove it is uninstalled/,
+  );
 });
 
 test("Master return authentication stays out of worker harness environments", async () => {
   const { buildHarnessEnv, buildMasterReturnEnv } = await import("../src/environment.mjs?master-return-env");
   const source = {
     PATH: "fixture-path",
+    CLAUDE_BIN: "C:\\tools\\claude.cmd",
+    CODEX_BIN: "C:\\tools\\codex.cmd",
     CURSOR_API_KEY: "cursor-secret",
     CLAUDE_CODE_SESSION_ID: "private-session",
   };
@@ -201,6 +292,8 @@ test("Master return authentication stays out of worker harness environments", as
   const master = buildMasterReturnEnv([], source);
   assert.equal(worker.CURSOR_API_KEY, undefined);
   assert.equal(worker.CLAUDE_CODE_SESSION_ID, undefined);
+  assert.equal(worker.CLAUDE_BIN, "C:\\tools\\claude.cmd");
+  assert.equal(worker.CODEX_BIN, "C:\\tools\\codex.cmd");
   assert.equal(master.CURSOR_API_KEY, "cursor-secret");
   assert.equal(master.CLAUDE_CODE_SESSION_ID, undefined);
   assert.equal(master.AGENT_MANAGER_MASTER_RETURN, "1");

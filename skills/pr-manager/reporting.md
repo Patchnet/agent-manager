@@ -13,6 +13,7 @@ out and stop.
 | | |
 |---|---|
 | **runId** | `<runId>` |
+| **title** | `<identity.displayTitle>` |
 | **repo** | `<repo>` |
 | **approval** | `through-pr \| all` |
 | **target** | `<ship.targetId or single>` |
@@ -39,6 +40,7 @@ outcome.
 | | |
 |---|---|
 | **runId** | `<runId>` |
+| **title** | `<identity.displayTitle>` |
 | **state** | `queued \| running` |
 | **phase** | `<ship.phase>` |
 | **approval** | `through-pr \| all` |
@@ -51,6 +53,12 @@ outcome.
 | Step | State | Detail |
 |---|---|---|
 | `<name>` | `running \| done \| skipped` | `<detail>` |
+
+When `ship.phase=ci` or GitHub check telemetry is present, append:
+
+| GitHub workflow / check | Status | Result | URL |
+|---|---|---|---|
+| `<workflow or check name>` | `<queued \| in_progress \| completed>` | `<conclusion or pending>` | `<URL or n/a>` |
 
 ### Transition
 

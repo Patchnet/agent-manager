@@ -141,6 +141,7 @@ export function masterReturnSummary(channel) {
 export function shouldReturnToMaster(payload) {
   if (!payload) return false;
   if (["needs_input", "terminal"].includes(payload.reason)) return true;
+  if (payload.reason === "state_change" && payload.cadence?.stage === "shipping_active") return true;
   return [
     "workers_complete",
     "correction_required",
@@ -149,13 +150,14 @@ export function shouldReturnToMaster(payload) {
   ].includes(payload.cadence?.stage);
 }
 
-export function buildMasterHandoff(runId, payload) {
+export function buildMasterHandoff(runId, payload, status = null) {
   const dir = runDir(runId);
   const cadence = payload?.cadence || {};
   return {
     schema: HANDOFF_SCHEMA,
     createdAt: new Date().toISOString(),
     runId,
+    title: status?.identity?.displayTitle || null,
     reason: payload?.reason || "state_change",
     state: payload?.state || null,
     cadence: {
@@ -176,6 +178,7 @@ export function masterReturnPrompt(handoff) {
     : "none";
   return [
     `Agent Manager returned run ${handoff.runId} to the Master Dev thread.`,
+    ...(handoff.title ? [`Run title: ${handoff.title}`] : []),
     `Reason: ${handoff.reason}`,
     `State: ${handoff.state || "unknown"}`,
     `Transition: ${handoff.cadence.transition || "unknown"}`,
@@ -301,7 +304,7 @@ export async function dispatchMasterReturn(runId, payload, status, {
     return { delivered: false, skipped: true, reason: "not_actionable" };
   }
 
-  const handoff = buildMasterHandoff(runId, payload);
+  const handoff = buildMasterHandoff(runId, payload, status);
   writePrivateFile(masterHandoffPath(runId), JSON.stringify(handoff, null, 2) + "\n", "utf8");
   const attemptAt = new Date().toISOString();
   const nextChannel = {

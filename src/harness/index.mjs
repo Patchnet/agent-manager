@@ -1,5 +1,6 @@
 import {
   detectNeedsInput,
+  parseModel as parseClaudeModel,
   parseSessionId as parseClaudeSessionId,
   resumeClaude,
   spawnClaude,
@@ -14,6 +15,7 @@ const claudeAdapter = {
   resume: resumeClaude,
   cancel: (handle) => handle?.kill?.(),
   parseSessionId: parseClaudeSessionId,
+  parseModel: parseClaudeModel,
   parseNeedsInput: detectNeedsInput,
 };
 

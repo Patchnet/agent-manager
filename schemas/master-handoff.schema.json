@@ -9,6 +9,7 @@
     "schema": { "const": "agent-manager.master-handoff.v1" },
     "createdAt": { "type": "string", "format": "date-time" },
     "runId": { "type": "string" },
+    "title": { "type": ["string", "null"] },
     "reason": { "enum": ["heartbeat", "state_change", "needs_input", "terminal"] },
     "state": { "type": ["string", "null"] },
     "cadence": {

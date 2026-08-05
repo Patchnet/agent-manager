@@ -99,6 +99,27 @@ test("classifyWake distinguishes heartbeat, state_change, needs_input, terminal"
     },
   });
   assert.equal(classifyWake(running, shipping).reason, "state_change");
+  const shippingCi = sampleStatus({
+    state: "shipping",
+    ship: {
+      ...shipping.ship,
+      phase: "ci",
+      lastActivity: "CI running (2 pending)",
+      steps: [{ name: "ci", state: "running", detail: "waiting" }],
+      ci: { runs: [{ id: 1, status: "queued", conclusion: null }] },
+    },
+  });
+  const shippingProgress = sampleStatus({
+    state: "shipping",
+    ship: {
+      ...shippingCi.ship,
+      lastActivity: "CI running (1 pending)",
+      ci: { runs: [{ id: 1, status: "in_progress", conclusion: null }] },
+    },
+  });
+  const progressWake = classifyWake(shippingCi, shippingProgress);
+  assert.equal(progressWake.reason, "state_change");
+  assert.equal(progressWake.ship.lastActivity, "CI running (1 pending)");
   const shipBlocked = sampleStatus({
     state: "blocked",
     ship: {

@@ -16,7 +16,7 @@ const TOP_LEVEL_KEYS = new Set([
   "repo", "lanes", "feed", "target_dev_flow", "harness_default", "model_default",
   "integrate", "policy", "claim_mode", "remote", "base_ref", "env_allowlist",
   "max_concurrency", "scope_overrides", "verification",
-  "planning", "delivery",
+  "planning", "delivery", "title", "repo_shorthand",
 ]);
 const LANE_KEYS = new Set([
   "id", "harness", "model", "scope", "prompt", "prompt_file", "fake", "depends_on",
@@ -103,6 +103,8 @@ export function loadWorkflow(filePath, {
   if (doc.target_dev_flow !== undefined && !isNonEmptyString(doc.target_dev_flow)) {
     throw new Error("workflow.target_dev_flow must be a non-empty string");
   }
+  validateIdentityText(doc.title, "workflow.title", 160);
+  validateIdentityText(doc.repo_shorthand, "workflow.repo_shorthand", 64);
 
   const targetDevFlow = doc.target_dev_flow || readTargetDevFlow(repoRoot) || "simple";
   const delivery = normalizeDelivery(doc.delivery, {
@@ -241,6 +243,14 @@ function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDev
 function normalizeBaseRef(value) {
   const text = String(value || "HEAD");
   return text.startsWith("origin/") ? text.slice("origin/".length) : text;
+}
+
+function validateIdentityText(value, label, maxLength) {
+  if (value === undefined) return;
+  if (!isNonEmptyString(value)) throw new Error(`${label} must be a non-empty string`);
+  if (value.trim().length > maxLength || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`${label} contains unsupported characters or exceeds ${maxLength} characters`);
+  }
 }
 
 function normalizeLane(input, index, repoRoot, harnessDefault, ids, policy) {

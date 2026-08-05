@@ -4,6 +4,7 @@ import { RUNS_ROOT } from "./paths.mjs";
 import { checkCommand } from "./preflight.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
 import { resolveCodexBin } from "./harness/codex.mjs";
+import { harnessFailureRecommendation, harnessSetup } from "./harness/setup.mjs";
 import { detectRuntimeProfile, formatRuntime } from "./runtime.mjs";
 
 export function runDoctor({ repo = process.cwd() } = {}) {
@@ -14,14 +15,27 @@ export function runDoctor({ repo = process.cwd() } = {}) {
     asCheck("git", checkCommand("git")),
     { ...asCheck("npm (version checks)", checkCommand("npm")), optional: true, shipping: true },
     { ...asCheck("gh (shipping)", checkCommand("gh")), optional: true },
-    { ...asCheck("claude", checkCommand(resolveClaudeBin())), optional: true, harness: true },
-    { ...asCheck("codex", checkCommand(resolveCodexBin())), optional: true, harness: true },
+    asHarnessCheck("claude", checkCommand(resolveClaudeBin()), runtime),
+    asHarnessCheck("codex", checkCommand(resolveCodexBin()), runtime),
     { name: "repository", ok: existsSync(root), detail: root },
     writableCheck("runs root", RUNS_ROOT),
   ];
   const coreReady = checks.filter((check) => !check.optional).every((check) => check.ok);
   const harnessReady = checks.filter((check) => check.harness).some((check) => check.ok);
   return { schema: "agent-manager.doctor.v1", ok: coreReady && harnessReady, runtime, checks };
+}
+
+function asHarnessCheck(name, result, runtime) {
+  const setup = harnessSetup(name, { platform: runtime.hostPlatform });
+  return {
+    ...asCheck(name, result),
+    optional: true,
+    harness: true,
+    setup,
+    recommendation: result.ok
+      ? null
+      : harnessFailureRecommendation(name, { platform: runtime.hostPlatform }),
+  };
 }
 
 function asCheck(name, result) {
@@ -54,6 +68,7 @@ export function formatDoctor(result) {
       ? ` (via ${check.invocation.join(" ")})`
       : "";
     lines.push(`${label}  ${check.name}: ${check.detail}${via}`);
+    if (check.recommendation) lines.push(`      fix: ${check.recommendation}`);
   }
   return lines.join("\n");
 }

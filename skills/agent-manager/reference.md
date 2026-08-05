@@ -186,9 +186,14 @@ merged|released` as the machine-readable downstream gate.
   `spawn-no-shell`, and Windows path style before work starts.
 - Command scripts such as `npm` and `*.cmd` run through `cmd.exe`; native
   executables continue to launch without a shell.
+- PowerShell `*.ps1` shims run through Windows PowerShell with a scoped bypass;
+  this does not enable a general shell for worker commands.
 - Prompt is delivered on **stdin** (multiline argv is unreliable).
-- Binary resolved to `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`
-  when present (`CLAUDE_BIN` override supported).
+- Claude and Codex discovery checks native binaries and global npm `.cmd` shims.
+  `CLAUDE_BIN` and `CODEX_BIN` overrides take precedence.
+- Install and verify worker CLIs in the same OS environment that launches Agent
+  Manager. Restart the launching harness after PATH or environment changes, then
+  run `agent-manager doctor --json`. See `docs/HARNESS-SETUP.md`.
 - Empty-prompt failure is detected and marked failed (exit 2).
 
 ## status.json shape
@@ -211,6 +216,18 @@ merged|released` as the machine-readable downstream gate.
   },
   "maxConcurrency": 3,
   "baseCommit": "immutable SHA",
+  "identity": {
+    "displayTitle": "[AM a1b2c3d4] agent-manager · Fleet telemetry",
+    "suggestedThreadTitle": "[AM a1b2c3d4] agent-manager · Fleet telemetry",
+    "repoShorthand": "agent-manager",
+    "subject": "Fleet telemetry",
+    "manager": {
+      "harness": "codex",
+      "model": "gpt-5.6",
+      "modelSource": "cli",
+      "threadTitle": null
+    }
+  },
   "planning": {
     "state": "verified",
     "planRef": "approved plan reference",
@@ -223,6 +240,8 @@ merged|released` as the machine-readable downstream gate.
     {
       "id": "build-plan",
       "harness": "claude",
+      "modelRequested": "claude-sonnet",
+      "modelObserved": "claude-sonnet-4-6",
       "repo": "…",
       "branch": "am/<runId>/<lane>",
       "scope": "BUILD_PLAN.md",

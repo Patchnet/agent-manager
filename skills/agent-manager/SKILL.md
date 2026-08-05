@@ -85,6 +85,12 @@ themselves in one chat — that stays a normal focused session.
     and reply vocabulary. On `AUTO_CONTINUE`, take that action before ending
     the turn. Never report only that a stage finished. Use
     `agent-manager next-action <runId> --json` to resolve ambiguity.
+14. **Verify worker harness visibility before planning a run.** Run
+    `agent-manager doctor --json` in the same OS environment that will launch
+    Agent Manager. If a harness is missing, follow Doctor's structured setup
+    recommendation. Restart the host after PATH or binary-override changes.
+    Native Windows, WSL, containers, remote hosts, and CI are separate
+    environments. See `docs/HARNESS-SETUP.md`.
 
 ## Quick commands
 
@@ -230,6 +236,8 @@ chat ID is configured. Cursor IDE uses signal mode and requires the host's
 `AGENT_MANAGER_WAKE_` notification to stay attached. Worker completion therefore
 resumes at Run Outcome and Delivery Review instead of ending with the worker's
 stop message. The return watcher does not open turns for routine lane progress.
+Meaningful shipping phase, PR-check, and GitHub Actions transitions do return a
+PR Manager Ship board; unchanged CI polling does not create repeated updates.
 Inspect its sanitized state with `agent-manager status <runId>`. On delivery
 failure, use `agent-manager next-action <runId> --json` and inspect the private
 `master-return-supervisor.log`; keep the portable watcher armed as fallback.
@@ -240,6 +248,22 @@ say to end with the exact `<heartbeat>` block and `NOTIFY` or `DONT_NOTIFY`.
 Never instruct Codex to output “only” the Agent Manager Markdown template; that
 conflicts with the heartbeat protocol and can suppress delivery to the chat.
 The heartbeat is telemetry only. Delivery enforcement remains in `status.json`.
+
+### Run identity and host title
+
+Set a concise workflow `title` and optional `repo_shorthand`. Agent Manager
+emits one canonical title for every harness:
+
+```text
+[AM <short-run-id>] <repo-shorthand> · <subject>
+```
+
+After detach, use `suggestedThreadTitle` to rename the originating Master Dev
+task when the host exposes a supported title action. Native title changes are
+best effort and must never gate the run. Do not rename worker tasks. Supply the
+Manager identity with `--manager-harness` and `--manager-model` when the host
+cannot expose it automatically. Fleet keeps this metadata in the selected
+run's expanded details; it does not crowd the compact run list.
 
 ## Telemetry contract (do not reinvent)
 

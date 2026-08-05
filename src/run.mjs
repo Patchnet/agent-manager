@@ -28,6 +28,7 @@ import {
 import { deriveRunState, readStatus, writeStatus } from "./status.mjs";
 import { createDeliveryStatus, markWorkersComplete } from "./delivery.mjs";
 import { getHarnessAdapter } from "./harness/index.mjs";
+import { buildRunIdentity } from "./identity.mjs";
 import { writeReport } from "./report.mjs";
 import { integrateLanes } from "./integrate.mjs";
 import { mergeDependencyBranches } from "./lane-snapshot.mjs";
@@ -192,6 +193,7 @@ export async function runWorkflow(workflowPath, {
   repoOverride = null,
   allowDangerousPermissions = false,
   expectedPlanningDigest = null,
+  identityOverrides = {},
 } = {}) {
   const workflow = loadWorkflow(workflowPath, { repoOverride });
   assertDangerousPermissionApproval(workflow, allowDangerousPermissions);
@@ -203,6 +205,7 @@ export async function runWorkflow(workflowPath, {
     );
   }
   const runId = assertSafeSlug(forcedId || newRunId(), "run id");
+  const identity = buildRunIdentity({ runId, workflow, overrides: identityOverrides });
   const dir = runDir(runId);
   ensurePrivateDir(dir);
   const lockPath = join(dir, "supervisor.lock");
@@ -224,6 +227,8 @@ export async function runWorkflow(workflowPath, {
     id: lane.id,
     kind: lane.kind,
     harness: lane.harness || workflow.harness_default,
+    modelRequested: lane.model || workflow.model_default || null,
+    modelObserved: null,
     repo: workflow.repo,
     branch: "am/" + runId + "/" + lane.id,
     scope: scopeList(lane.scope).join(", "),
@@ -258,6 +263,7 @@ export async function runWorkflow(workflowPath, {
 
   const status = {
     runId,
+    identity,
     state: "running",
     repo: workflow.repo,
     repoRoot: workflow.repoRoot,
@@ -302,6 +308,7 @@ export async function runWorkflow(workflowPath, {
       immutableBaseCommit,
       planning,
       runtime,
+      identity,
     }, null, 2) + "\n",
   );
 
@@ -477,6 +484,7 @@ export async function runWorkflow(workflowPath, {
             laneState.lastActivity = summary;
           },
           onEvent: (event) => {
+            laneState.modelObserved ||= adapter.parseModel?.(event) || null;
             runtimeViolation ||= inspectPolicyEvent(event);
             if (runtimeViolation) handle?.kill?.();
           },

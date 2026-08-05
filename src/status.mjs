@@ -42,6 +42,8 @@ export function writeStatus(runId, status) {
         lanes: (payload.lanes || []).map((lane) => ({
           id: lane.id,
           harness: lane.harness,
+          modelRequested: lane.modelRequested || null,
+          modelObserved: lane.modelObserved || null,
           state: lane.state,
           exitCode: lane.exitCode ?? null,
           needsInput: lane.needsInput || null,
@@ -129,7 +131,9 @@ export function formatStatus(status) {
   const cadence = deriveOperatorCadence(status);
   if (!status) return "no status";
   const lines = [
-    `run ${status.runId}  state=${status.state}  repo=${status.repo}  updated=${status.updatedAt || "-"}`,
+    `${status.identity?.displayTitle || `run ${status.runId}`}  state=${status.state}  updated=${status.updatedAt || "-"}`,
+    `repo=${status.repo}  runId=${status.runId}`,
+    `managerHarness=${status.identity?.manager?.harness || "-"}  managerModel=${status.identity?.manager?.model || "-"}`,
     `target_dev_flow=${status.target_dev_flow || "-"}  workflow=${status.workflow || "-"}`,
     `runtime=${formatRuntime(status.runtime)}`,
     `transition=${cadence.transition}  stage=${cadence.stage}`,
@@ -142,7 +146,7 @@ export function formatStatus(status) {
   ];
   for (const lane of status.lanes || []) {
     const spin = lane.state === "running" ? "*" : " ";
-    lines.push(`[${spin}] ${lane.id.padEnd(12)} ${lane.state.padEnd(8)} ${lane.harness}  ${lane.branch || "-"}`);
+    lines.push(`[${spin}] ${lane.id.padEnd(12)} ${lane.state.padEnd(8)} ${lane.harness}  model=${lane.modelObserved || lane.modelRequested || "default/unverified"}  ${lane.branch || "-"}`);
     lines.push(`      scope: ${lane.scope}`);
     lines.push(`      kind: ${lane.kind || "-"}  completion=${lane.completion?.state || "-"}`);
     lines.push(`      last: ${lane.lastActivity || "-"}`);
@@ -178,6 +182,12 @@ export function formatStatus(status) {
     if (status.ship.mergeSha) lines.push(`      merge: ${status.ship.mergeSha}`);
     if (status.ship.tag) lines.push(`      tag: ${status.ship.tag}`);
     if (status.ship.lastActivity) lines.push(`      last: ${status.ship.lastActivity}`);
+    if (status.ship.ci?.runs?.length) {
+      lines.push(`      GitHub Actions: ${status.ship.ci.state || "unknown"}`);
+      for (const run of status.ship.ci.runs) {
+        lines.push(`        ${run.workflow || run.id || "run"}: ${run.conclusion || run.status || "pending"}${run.url ? `  ${run.url}` : ""}`);
+      }
+    }
     if (status.ship.needsInput?.prompt) lines.push(`      needs input: ${status.ship.needsInput.prompt}`);
     lines.push("");
   }
@@ -259,6 +269,7 @@ function eventFingerprint(status) {
     lanes: (status.lanes || []).map((lane) => ({
       id: lane.id,
       state: lane.state,
+      modelObserved: lane.modelObserved || null,
       exitCode: lane.exitCode ?? null,
       needsInput: lane.needsInput || null,
       waitingFor: lane.waitingFor || [],
@@ -270,6 +281,10 @@ function eventFingerprint(status) {
           prUrl: status.ship.prUrl || null,
           mergeSha: status.ship.mergeSha || null,
           tag: status.ship.tag || null,
+          lastActivity: status.ship.lastActivity || null,
+          steps: (status.ship.steps || []).map((step) => [step.name, step.state, step.detail || null]),
+          checks: (status.ship.checks || []).map((check) => [check.name, check.status, check.conclusion]),
+          ci: (status.ship.ci?.runs || []).map((run) => [run.id, run.status, run.conclusion]),
           needsInput: status.ship.needsInput || null,
         }
       : null,

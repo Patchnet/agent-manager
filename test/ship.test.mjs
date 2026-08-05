@@ -509,6 +509,9 @@ test("Simple all shipping stamps, pushes, waits for CI, and tags", async () => {
   const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
   assert.equal(result.state, "released");
   assert.equal(result.ship.tag, "v1.1.0");
+  assert.equal(result.ship.ci.state, "green");
+  assert.equal(result.ship.ci.runs[0].workflow, "CI");
+  assert.equal(result.ship.ci.runs[0].status, "completed");
   assert.equal(result.delivery.targets[0].state, "merged");
   assert.equal(result.delivery.targets[0].mergeSha, result.ship.releaseSha);
   assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "1.1.0");

@@ -25,6 +25,10 @@ export function statusFingerprint(status) {
           prUrl: status.ship.prUrl || null,
           mergeSha: status.ship.mergeSha || null,
           tag: status.ship.tag || null,
+          lastActivity: status.ship.lastActivity || null,
+          steps: (status.ship.steps || []).map((step) => [step.name, step.state, step.detail || null]),
+          checks: (status.ship.checks || []).map((check) => [check.name, check.status, check.conclusion]),
+          ci: (status.ship.ci?.runs || []).map((run) => [run.id, run.status, run.conclusion]),
           needsInput: Boolean(status.ship.needsInput),
         }
       : null,
@@ -124,6 +128,9 @@ function buildPayload(status, reason, extra = {}) {
           prUrl: status.ship.prUrl || null,
           tag: status.ship.tag || null,
           lastActivity: status.ship.lastActivity || null,
+          steps: status.ship.steps || [],
+          checks: status.ship.checks || [],
+          ci: status.ship.ci || null,
           needsInput: status.ship.needsInput || null,
         }
       : null,

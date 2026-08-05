@@ -2,25 +2,31 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync } from "node:fs";
 import { join } from "node:path";
 import { buildHarnessEnv } from "../environment.mjs";
+import { resolveSpawnCommand } from "../command.mjs";
 import { terminateProcessTree } from "../process.mjs";
 import { ensurePrivateDir, writePrivateFile } from "../fs-safe.mjs";
 import { detectNeedsInput } from "./claude.mjs";
 
-export function resolveCodexBin() {
-  if (process.env.CODEX_BIN && existsSync(process.env.CODEX_BIN)) {
-    return process.env.CODEX_BIN;
+export function resolveCodexBin({
+  env = process.env,
+  platform = process.platform,
+  exists = existsSync,
+} = {}) {
+  if (typeof env.CODEX_BIN === "string" && env.CODEX_BIN.trim()) {
+    return env.CODEX_BIN.trim();
   }
-  if (process.platform === "win32") {
+  if (platform === "win32") {
     const candidates = [
-      join(process.env.LOCALAPPDATA || "", "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
-      join(process.env.USERPROFILE || "", ".codex", "packages", "standalone", "current", "bin", "codex.exe"),
-      join(process.env.APPDATA || "", "npm", "codex.cmd"),
+      join(env.LOCALAPPDATA || "", "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
+      join(env.USERPROFILE || "", ".codex", "packages", "standalone", "current", "bin", "codex.exe"),
+      join(env.APPDATA || "", "npm", "codex.cmd"),
+      join(env.APPDATA || "", "npm", "codex.exe"),
     ];
     for (const candidate of candidates) {
-      if (candidate && existsSync(candidate)) return candidate;
+      if (candidate && exists(candidate)) return candidate;
     }
   }
-  return process.platform === "win32" ? "codex.cmd" : "codex";
+  return platform === "win32" ? "codex.cmd" : "codex";
 }
 
 function sandboxForPermissionMode(permissionMode) {
@@ -91,10 +97,12 @@ function spawnCodexProcess({
   }
   args.push("-");
 
-  const cmd = resolveCodexBin();
-  const child = spawn(cmd, args, {
+  const childEnv = env || buildHarnessEnv(envAllowlist);
+  const cmd = resolveCodexBin({ env: childEnv });
+  const resolved = resolveSpawnCommand(cmd, args, { env: childEnv });
+  const child = spawn(resolved.command, resolved.args, {
     cwd,
-    env: env || buildHarnessEnv(envAllowlist),
+    env: childEnv,
     detached: process.platform !== "win32",
     windowsHide: true,
     shell: false,
@@ -190,6 +198,12 @@ export function parseSessionId(event) {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+export function parseModel(event) {
+  if (!event || typeof event !== "object") return null;
+  const value = event.model || event.model_id || event.modelId || event.message?.model || null;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 export function summarizeEvent(ev) {
   if (!ev || typeof ev !== "object") return null;
   if (ev.type === "thread.started") {
@@ -228,5 +242,6 @@ export const codexAdapter = {
   resume: resumeCodex,
   cancel: (handle) => handle?.kill?.(),
   parseSessionId,
+  parseModel,
   parseNeedsInput: detectNeedsInput,
 };

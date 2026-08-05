@@ -17,6 +17,14 @@ export function resolveSpawnCommand(command, args = [], {
       args: ["/d", "/s", "/c", command, ...args],
     };
   }
+  if (platform === "win32" && String(command).toLowerCase().endsWith(".ps1")) {
+    return {
+      command: env.SystemRoot
+        ? `${env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+        : "powershell.exe",
+      args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", command, ...args],
+    };
+  }
   return { command, args };
 }
 

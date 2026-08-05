@@ -38,6 +38,18 @@ function actionablePayload(overrides = {}) {
   };
 }
 
+test("meaningful detached shipping progress returns to the Manager thread", () => {
+  assert.equal(shouldReturnToMaster(actionablePayload({
+    state: "shipping",
+    cadence: { stage: "shipping_active", transition: "AUTO_CONTINUE" },
+  })), true);
+  assert.equal(shouldReturnToMaster(actionablePayload({
+    reason: "heartbeat",
+    state: "shipping",
+    cadence: { stage: "shipping_active", transition: "AUTO_CONTINUE" },
+  })), false);
+});
+
 test("Master return auto-detects Codex, Claude Code, and Cursor host signals", () => {
   const codex = resolveMasterReturn({
     env: { CODEX_THREAD_ID: "thread-test-1" },

@@ -6,8 +6,10 @@
   "required": ["runId", "state", "repo", "startedAt", "lanes"],
   "properties": {
     "runId": { "type": "string" }, "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "reviewed", "merged", "released", "rejected", "failed", "cancelled"] },
+    "identity": { "$ref": "#/$defs/runIdentity" },
     "repo": { "type": "string" }, "startedAt": { "type": "string", "format": "date-time" },
-    "endedAt": { "type": ["string", "null"] }, "lanes": { "type": "array" },
+    "endedAt": { "type": ["string", "null"] },
+    "lanes": { "type": "array", "items": { "$ref": "#/$defs/laneStatus" } },
     "topology": { "type": "object" },
     "runtime": { "$ref": "#/$defs/runtime" },
     "masterReturn": {
@@ -67,6 +69,9 @@
         "releaseSha": { "type": ["string", "null"] },
         "plannedTag": { "type": ["string", "null"] },
         "tag": { "type": ["string", "null"] },
+        "lastActivity": { "type": ["string", "null"] },
+        "checks": { "type": "array" },
+        "ci": { "type": ["object", "null"] },
         "releaseWorktree": { "type": ["string", "null"] },
         "needsInput": { "type": ["object", "null"] },
         "steps": { "type": "array" }
@@ -74,6 +79,40 @@
     }
   },
   "$defs": {
+    "runIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "displayTitle", "suggestedThreadTitle", "repoShorthand", "subject", "manager"],
+      "properties": {
+        "schema": { "const": "agent-manager.run-identity.v1" },
+        "displayTitle": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "suggestedThreadTitle": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "repoShorthand": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "manager": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["harness", "model", "modelSource", "threadTitle"],
+          "properties": {
+            "harness": { "type": ["string", "null"] },
+            "model": { "type": ["string", "null"] },
+            "modelSource": { "enum": ["cli", "environment", "declared", "unavailable"] },
+            "threadTitle": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "laneStatus": {
+      "type": "object",
+      "required": ["id", "harness", "state"],
+      "properties": {
+        "id": { "type": "string" },
+        "harness": { "type": "string" },
+        "modelRequested": { "type": ["string", "null"] },
+        "modelObserved": { "type": ["string", "null"] },
+        "state": { "type": "string" }
+      }
+    },
     "masterReturnSummary": {
       "type": "object",
       "additionalProperties": false,

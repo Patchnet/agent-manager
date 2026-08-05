@@ -10,7 +10,10 @@ export function writeReport(runId, status) {
     `# agent-manager run report`,
     "",
     `- **runId:** ${runId}`,
+    `- **title:** ${status.identity?.displayTitle || "-"}`,
     `- **repo:** ${status.repo}`,
+    `- **manager harness:** ${status.identity?.manager?.harness || "-"}`,
+    `- **manager model:** ${status.identity?.manager?.model || "-"}`,
     `- **state:** ${status.state}`,
     `- **target_dev_flow:** ${status.target_dev_flow || "-"}`,
     `- **runtime:** ${formatRuntime(status.runtime)}`,
@@ -47,6 +50,8 @@ export function writeReport(runId, status) {
     lines.push(`### ${lane.id}`);
     lines.push("");
     lines.push(`- harness: ${lane.harness}`);
+    lines.push(`- model requested: ${lane.modelRequested || "default"}`);
+    lines.push(`- model observed: ${lane.modelObserved || "unverified"}`);
     lines.push(`- kind: ${lane.kind || "-"}`);
     lines.push(`- state: ${lane.state}`);
     lines.push(`- completion: ${lane.completion?.state || "-"}`);
@@ -196,6 +201,15 @@ export function writeReport(runId, status) {
     lines.push(`- release SHA: ${status.ship.releaseSha || "-"}`);
     lines.push(`- tag: ${status.ship.tag || "-"}`);
     lines.push(`- last activity: ${status.ship.lastActivity || "-"}`);
+    for (const step of status.ship.steps || []) {
+      lines.push(`- step ${step.name}: ${step.state} · ${step.detail || "-"}`);
+    }
+    if (status.ship.ci?.runs?.length) {
+      lines.push(`- GitHub Actions: ${status.ship.ci.state || "unknown"}`);
+      for (const run of status.ship.ci.runs) {
+        lines.push(`  - ${run.workflow || run.id || "run"}: ${run.conclusion || run.status || "pending"}${run.url ? ` · ${run.url}` : ""}`);
+      }
+    }
     if (status.ship.needsInput?.prompt) {
       lines.push(`- **needs input:** ${status.ship.needsInput.prompt}`);
     }

@@ -49,6 +49,8 @@ test("workflow validation rejects traversal, duplicate ids, wrong booleans, cred
   assert.throws(() => loadWorkflow(workflow("boolean", valid({ policy: { allow_commit: "yes" } }))), /must be a boolean/);
   assert.throws(() => loadWorkflow(workflow("feed-creds", valid({ feed: { enabled: true, baseUrl: "https://user:pass@example.invalid" } }))), /must not embed credentials/);
   assert.throws(() => loadWorkflow(workflow("unknown", { ...valid(), surprise: true })), /unknown field/);
+  assert.equal(loadWorkflow(workflow("identity", valid({ title: "Fleet telemetry", repo_shorthand: "fixture" }))).title, "Fleet telemetry");
+  assert.throws(() => loadWorkflow(workflow("long-title", valid({ title: "x".repeat(161) }))), /exceeds 160/);
   assert.throws(() => runDir("../escape"), /safe slug/);
   assert.throws(() => runDir("run..escape"), /not safe for paths and Git refs/);
   assert.throws(() => loadWorkflow(workflow("invalid-ref-id", valid({ lanes: [{ id: "bad.lock", scope: "src/**", prompt: "work" }] }))), /not safe for paths and Git refs/);
