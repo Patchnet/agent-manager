@@ -121,9 +121,18 @@ Gate presentation.
 ```bash
 agent-manager status <runId> --json
 agent-manager monitor <runId>
+agent-manager fleet
+agent-manager fleet --active
+agent-manager fleet --stream
 agent-manager events <runId> --jsonl
 agent-manager watch-signal <runId> --heartbeat-sec 180
 ```
+
+`fleet` is the read-only side-terminal view across runs. In an interactive
+terminal it redraws with lane progress, worker updates, blockers, transitions,
+and keyboard focus. Use `--stream` for an append-only event feed or `--once`
+for logs and scripts. It reads the run directory directly and does not need a
+mounted service.
 
 `status.json` is authoritative. `events.jsonl` and `watch-signal` are notification sources, not alternate state stores. A `blocked` run is resumable and is not terminal.
 

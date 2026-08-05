@@ -1,11 +1,16 @@
 ---
 enabled: true
-current: 1.6.0
+current: 1.7.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.7.0 - 2026-08-05
+
+Added a local, read-only Fleet terminal dashboard for observing multiple runs,
+lane progress, worker updates, blockers, and recent transitions.
 
 ## 1.6.0 - 2026-08-02
 

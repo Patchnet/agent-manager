@@ -398,8 +398,9 @@ not replace the harness security model or operating-system isolation.
 Dangerous permission bypass is disabled by default. Enabling it requires two
 explicit approvals: one in the workflow and one at launch.
 
-Agent Manager is also not a terminal multiplexer, fleet dashboard, or automatic
-merge service.
+Agent Manager is also not a terminal multiplexer, hosted dashboard, or automatic
+merge service. Its `fleet` command is a local, read-only terminal watcher over
+the same run telemetry used by `status` and `monitor`.
 
 ## Requirements
 
@@ -416,6 +417,7 @@ npm ci
 npm link
 agent-manager --version
 agent-manager doctor
+agent-manager fleet
 ```
 
 You can also replace `agent-manager` in the examples with `node bin/agent-manager.mjs`.
@@ -426,6 +428,27 @@ prompt and worker environment. Operators do not select the host OS manually;
 platform-specific command adapters use the detected profile. On Windows, npm
 and other command scripts run through `cmd.exe` while authored lane commands
 are identified as PowerShell commands.
+
+### Watch the fleet in a terminal
+
+Launch one self-contained CLI view from any terminal. It discovers runs under
+`AGENT_MANAGER_RUNS_ROOT`, redraws live when attached to a TTY, and does not
+mount a web app or modify orchestration state.
+
+```bash
+agent-manager fleet
+agent-manager fleet --active
+agent-manager fleet --stream
+agent-manager fleet --once --no-color
+agent-manager fleet --json
+```
+
+The live view shows plans or tickets, repositories, run states, lane progress,
+worker summaries, elapsed time, blockers, and recent transitions. Use arrow
+keys or `j`/`k` to focus a run, `a` to toggle active-only filtering, `r` to
+refresh, and `q` to quit. Colors, progress animation, transition flashes, and
+the alternate screen are enabled for interactive terminals; pipes receive a
+stable one-shot view automatically.
 
 ## Use each component standalone
 
@@ -674,6 +697,8 @@ agent-manager run <workflow.yaml> --detach [--repo <path>] [--json]
   [--return-host codex|claude|cursor --return-session <thread-id> | --no-master-return]
 agent-manager status [runId] [--json]
 agent-manager monitor [runId]
+agent-manager fleet [runId] [--active] [--since 24h] [--repo <name>]
+  [--stream | --once | --json] [--no-color] [--no-effects]
 agent-manager events <runId> --jsonl
 agent-manager watch-signal <runId>
 agent-manager reply <runId> <laneId> --message <text>

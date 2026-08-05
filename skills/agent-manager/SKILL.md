@@ -94,6 +94,7 @@ Prefer absolute paths to your clone:
 agent-manager run <workflow.yaml> --detach
 agent-manager status [runId]
 agent-manager monitor [runId]
+agent-manager fleet [runId] [--active | --stream | --once]
 agent-manager watch-signal [runId] --heartbeat-sec 180
 agent-manager reply <runId> <laneId> --message "..."
 agent-manager cancel <runId>
@@ -124,7 +125,9 @@ parent that contains the `agent-manager` folder).
    change this host return route. Do not print private IDs into boards.
 3. **Report** immediately with **Run board** template ([reporting.md](./reporting.md)).
 4. **Arm watch-signal** (mandatory) — see **Watch loop** below. Optionally tell
-   the operator they can open `monitor <runId>` in a side terminal.
+   the operator they can open `fleet` (all runs) or `monitor <runId>` (one run)
+   in a side terminal. `fleet` is observational and does not replace the
+   required chat reporting templates.
 5. On each wake: Heartbeat / Run board / Escalation / Run outcome per templates.
 6. **Escalate** any `blocked` / `needsInput` with the **Escalation** template.
 7. **On `delivery_review_pending`:** post **Run outcome**, then immediately

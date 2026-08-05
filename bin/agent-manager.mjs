@@ -32,6 +32,7 @@ import { assertDangerousPermissionApproval, loadWorkflow } from "../src/workflow
 import { formatRuntime } from "../src/runtime.mjs";
 import { deliveryReadiness } from "../src/delivery.mjs";
 import { deriveOperatorCadence } from "../src/cadence.mjs";
+import { fleetUsage, parseFleetArgs, runFleet } from "../src/fleet.mjs";
 import {
   dispatchMasterReturn,
   masterReturnSummary,
@@ -61,6 +62,7 @@ function usage() {
     "  agent-manager status [runId] [--watch] [--json]",
     "  agent-manager events <runId> [--jsonl]",
     "  agent-manager monitor [runId] [--interval <sec>]",
+    "  agent-manager fleet [runId] [--active] [--since 24h] [--stream|--once|--json]",
     "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000]",
     "  agent-manager reply <runId> <laneId> --message <text> [--json]",
     "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--notes <text>]] [--json]",
@@ -439,6 +441,16 @@ async function main() {
     if (!runId) throw new Error("events requires <runId>");
     const events = readEvents(runId);
     console.log(args.includes("--jsonl") ? events.map((event) => JSON.stringify(event)).join("\n") : JSON.stringify(events));
+    return;
+  }
+
+  if (cmd === "fleet") {
+    const options = parseFleetArgs(args.slice(1));
+    if (options.help) {
+      console.log(fleetUsage());
+      return;
+    }
+    await runFleet(options);
     return;
   }
 

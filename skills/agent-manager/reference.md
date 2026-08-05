@@ -14,13 +14,13 @@ Master Dev (chat)
               → harness adapter (claude -p | codex exec --json)
               → $AGENT_MANAGER_RUNS_ROOT/<runId>/status.json  (supervisor polls ~2s)
     → Master arms watch-signal (3m heartbeat + state wakes) → chat templates
-    → optional side terminal: monitor
+    → optional side terminal: fleet (all runs) or monitor (one run)
     → accepted Delivery Review + Ship Gate
          → ship --detach → PR / CI / merge / release telemetry in status.ship
 ```
 
 Not a bridge/daemon. Master Dev **must** arm `watch-signal` after detach so
-chat is not silent. Side-terminal `monitor` is for human glance; chat boards
+chat is not silent. Side-terminal `fleet` and `monitor` are for human glance; chat boards
 still come from Master reading `status.json` on each wake
 ([reporting.md](./reporting.md)).
 
@@ -49,7 +49,7 @@ Prints `runId`, `pid`, `telemetry`, `supervisorLog` and exits. The supervisor
 continues writing `status.json` under the runs root. Never await a
 non-detach `run` from a Master Dev chat turn.
 
-## Watch-signal + monitor
+## Watch-signal + terminal watchers
 
 ```bash
 node bin/agent-manager.mjs watch-signal <runId> --heartbeat-sec 180
@@ -57,13 +57,17 @@ node bin/agent-manager.mjs watch-signal <runId> --heartbeat-sec 180
 
 node bin/agent-manager.mjs monitor <runId> [--interval 2]
 # live lane/delivery board; exits on reviewed/merged/released/rejected/failed/cancelled
+
+node bin/agent-manager.mjs fleet [runId] [--active | --stream | --once]
+# live multi-run board; interactive focus, blockers, transitions, and worker summaries
 ```
 
 `watch-signal` baselines `status.json`, then emits wakes for Cursor
 `notify_on_output` (`^AGENT_MANAGER_WAKE_`). Heartbeat default is **180s**;
 pass `--heartbeat-sec <n>` to adjust (operator preference). State-change /
 needs-input / terminal wakes do not wait for that interval. `monitor` is the
-side-terminal cooking view (`status --watch` aliases it).
+single-run cooking view (`status --watch` aliases it). `fleet` is the read-only
+multi-run view and can emit an append-only stream or one-shot JSON for scripts.
 
 Every wake contains an `agent-manager.operator-cadence.v1` object. Query the
 same deterministic mapping directly with:

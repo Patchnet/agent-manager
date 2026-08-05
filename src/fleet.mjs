@@ -1,0 +1,897 @@
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
+import { join } from "node:path";
+import readline from "node:readline";
+import { RUNS_ROOT } from "./paths.mjs";
+import { isTerminalState } from "./status.mjs";
+
+const DEFAULT_INTERVAL_MS = 1_000;
+const DEFAULT_SINCE_MS = 24 * 60 * 60 * 1_000;
+const DEFAULT_LIMIT = 12;
+const DEFAULT_EVENT_LIMIT = 8;
+const LOG_TAIL_BYTES = 256 * 1_024;
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const ANSI_RE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+
+export function fleetUsage() {
+  return [
+    "agent-manager fleet - live terminal fleet watcher",
+    "",
+    "Usage:",
+    "  agent-manager fleet [runId] [options]",
+    "",
+    "Options:",
+    "  --active             show active and attention-needed runs only",
+    "  --since <duration>   include recent terminal runs (default: 24h)",
+    "  --repo <name>        filter by repository",
+    "  --limit <n>          maximum runs on screen (default: 12)",
+    "  --interval <sec>     telemetry refresh interval (default: 1)",
+    "  --stream             append state and worker updates instead of redrawing",
+    "  --once               print one snapshot and exit",
+    "  --json               print one machine-readable snapshot and exit",
+    "  --no-color           disable ANSI colors",
+    "  --no-effects         disable animation and alternate-screen rendering",
+    "  -h, --help           show this help",
+    "",
+    "Live keys: ↑/↓ or j/k select · a active filter · r refresh · q quit",
+  ].join("\n");
+}
+
+export function parseDuration(value) {
+  if (value === "all") return Infinity;
+  const match = /^(\d+(?:\.\d+)?)(ms|s|m|h|d|w)$/i.exec(String(value || "").trim());
+  if (!match) throw new Error("duration must look like 30m, 24h, 7d, or all");
+  const amount = Number(match[1]);
+  const units = {
+    ms: 1,
+    s: 1_000,
+    m: 60_000,
+    h: 3_600_000,
+    d: 86_400_000,
+    w: 604_800_000,
+  };
+  return amount * units[match[2].toLowerCase()];
+}
+
+export function parseFleetArgs(argv = []) {
+  const options = {
+    runId: null,
+    activeOnly: false,
+    sinceMs: DEFAULT_SINCE_MS,
+    repo: null,
+    limit: DEFAULT_LIMIT,
+    eventLimit: DEFAULT_EVENT_LIMIT,
+    intervalMs: DEFAULT_INTERVAL_MS,
+    stream: false,
+    once: false,
+    json: false,
+    color: process.env.NO_COLOR === undefined,
+    effects: true,
+    help: false,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    const nextValue = () => {
+      const value = argv[++index];
+      if (!value) throw new Error(`${arg} requires a value`);
+      return value;
+    };
+    if (arg === "--active") options.activeOnly = true;
+    else if (arg === "--since") options.sinceMs = parseDuration(nextValue());
+    else if (arg === "--repo") options.repo = nextValue();
+    else if (arg === "--limit") options.limit = positiveInteger(nextValue(), "--limit");
+    else if (arg === "--interval") {
+      const seconds = Number(nextValue());
+      if (!Number.isFinite(seconds) || seconds < 0.2) {
+        throw new Error("--interval must be at least 0.2 seconds");
+      }
+      options.intervalMs = Math.round(seconds * 1_000);
+    } else if (arg === "--stream") options.stream = true;
+    else if (arg === "--once") options.once = true;
+    else if (arg === "--json") {
+      options.json = true;
+      options.once = true;
+    } else if (arg === "--no-color") options.color = false;
+    else if (arg === "--no-effects") options.effects = false;
+    else if (arg === "-h" || arg === "--help") options.help = true;
+    else if (arg.startsWith("-")) throw new Error(`unknown fleet option: ${arg}`);
+    else if (!options.runId) options.runId = arg;
+    else throw new Error(`unexpected fleet argument: ${arg}`);
+  }
+
+  if (options.json && options.stream) {
+    throw new Error("--json and --stream cannot be combined; use --once --json or --stream");
+  }
+  return options;
+}
+
+function positiveInteger(value, label) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${label} must be a positive integer`);
+  return parsed;
+}
+
+function safeJson(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function safeJsonLines(path) {
+  if (!existsSync(path)) return [];
+  try {
+    return readFileSync(path, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line)];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+function readTail(path, maxBytes = LOG_TAIL_BYTES) {
+  if (!path || !existsSync(path)) return "";
+  let fd;
+  try {
+    const size = statSync(path).size;
+    const length = Math.min(size, maxBytes);
+    const offset = Math.max(0, size - length);
+    const buffer = Buffer.alloc(length);
+    fd = openSync(path, "r");
+    readSync(fd, buffer, 0, length, offset);
+    let text = buffer.toString("utf8");
+    if (offset > 0) text = text.slice(Math.max(0, text.indexOf("\n") + 1));
+    return text;
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+export function parseHarnessLog(text) {
+  const signal = { summary: null, tool: null };
+  const lines = String(text || "").split(/\r?\n/).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    let event;
+    try {
+      event = JSON.parse(lines[index]);
+    } catch {
+      continue;
+    }
+    const item = event.item;
+    if (!signal.summary && item?.type === "agent_message" && item.text) {
+      signal.summary = cleanText(item.text, 260);
+    }
+    if (!signal.summary && event.type === "assistant" && Array.isArray(event.message?.content)) {
+      const part = event.message.content.find((entry) => entry?.type === "text" && entry.text);
+      if (part) signal.summary = cleanText(part.text, 260);
+    }
+    if (!signal.summary && event.type === "result" && typeof event.result === "string") {
+      signal.summary = cleanText(event.result, 260);
+    }
+    if (!signal.tool && item?.type === "command_execution") {
+      signal.tool = describeCommand(item.command, item.exit_code, item.status);
+    }
+    if (!signal.tool && event.type === "assistant" && Array.isArray(event.message?.content)) {
+      const part = event.message.content.find((entry) => entry?.type === "tool_use");
+      if (part) signal.tool = describeTool(part.name);
+    }
+    if (signal.summary && signal.tool) break;
+  }
+  return signal;
+}
+
+function describeTool(name) {
+  const value = String(name || "tool").replace(/[_-]+/g, " ");
+  return `using ${value}`;
+}
+
+export function describeCommand(command, exitCode = null, status = null) {
+  const text = stripAnsi(String(command || "")).toLowerCase();
+  const failed = exitCode !== null && Number(exitCode) !== 0 || status === "failed";
+  if (/npm test|pnpm test|node --test|vitest|jest|pytest|cargo test/.test(text)) {
+    return failed ? "tests failed" : status === "completed" ? "tests passed" : "running tests";
+  }
+  if (/typecheck|tsc\b|mypy|pyright/.test(text)) {
+    return failed ? "typecheck failed" : status === "completed" ? "typecheck passed" : "running typecheck";
+  }
+  if (/npm ci|npm install|pnpm install|yarn install/.test(text)) return "installing dependencies";
+  if (/apply_patch|\*\*\* begin patch|file_change/.test(text)) return "editing files";
+  if (/git diff|git status|git show/.test(text)) return "reviewing changes";
+  if (/rg\b|select-string|get-content|findstr|grep\b/.test(text)) return "inspecting code";
+  if (/gh pr|gh run|github/.test(text)) return "checking GitHub";
+  return failed ? "command failed" : "running a command";
+}
+
+function stripAnsi(value) {
+  return String(value || "").replace(ANSI_RE, "");
+}
+
+function cleanText(value, max = 180) {
+  const cleaned = stripAnsi(value)
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/^#+\s*/, "")
+    .trim();
+  if (!cleaned) return null;
+  return cleaned.length > max ? cleaned.slice(0, Math.max(0, max - 1)) + "…" : cleaned;
+}
+
+function meaningfulActivity(value) {
+  const text = cleanText(value, 260);
+  if (!text) return null;
+  if (/^(cmd:|turn\.|thread\.|item\.|tool:|result:)/i.test(text)) return null;
+  if (/\*\*\* begin patch|apply_patch/i.test(text)) return null;
+  return text;
+}
+
+function laneSignal(lane) {
+  const parsed = parseHarnessLog(readTail(lane.logPath));
+  const waiting = lane.waitingFor?.length
+    ? `waiting for ${lane.waitingFor.join(", ")}`
+    : lane.queueReason || null;
+  const summary = lane.needsInput?.prompt
+    ? cleanText(lane.needsInput.prompt, 260)
+    : meaningfulActivity(lane.lastActivity) || parsed.summary || waiting || defaultLaneSummary(lane.state);
+  return { summary, tool: parsed.tool };
+}
+
+function defaultLaneSummary(state) {
+  const messages = {
+    queued: "queued for a worker",
+    "dependency-waiting": "waiting for dependencies",
+    running: "worker is active",
+    blocked: "operator input required",
+    done: "work completed",
+    failed: "worker failed",
+    cancelled: "work cancelled",
+  };
+  return messages[state] || state || "unknown";
+}
+
+function statusTimestamp(status) {
+  return Date.parse(status.updatedAt || status.endedAt || status.startedAt || 0) || 0;
+}
+
+const FLEET_TERMINAL_STATES = new Set([
+  "done",
+  "reviewed",
+  "merged",
+  "released",
+  "rejected",
+  "failed",
+  "cancelled",
+]);
+
+function isFleetTerminalState(state) {
+  return FLEET_TERMINAL_STATES.has(state) || isTerminalState(state);
+}
+
+function runBlocker(status, lanes) {
+  const lane = lanes.find((entry) => entry.needsInput?.prompt);
+  if (lane) {
+    return { scope: "lane", id: lane.id, prompt: cleanText(lane.needsInput.prompt, 500) };
+  }
+  for (const [scope, phase] of [["integrate", status.integrate], ["ship", status.ship]]) {
+    const prompt = phase?.needsInput?.prompt || phase?.error;
+    if (prompt) return { scope, id: scope, prompt: cleanText(prompt, 500) };
+  }
+  return null;
+}
+
+function attentionRank(status) {
+  if (status.state === "blocked" || status.lanes?.some((lane) => lane.needsInput) || status.integrate?.needsInput || status.ship?.needsInput) return 0;
+  if (["delivery_review_pending", "correction_pending", "ship_gate_pending", "release_pending"].includes(status.state)) return 1;
+  if (status.state === "shipping") return 2;
+  if (!isFleetTerminalState(status.state)) return 3;
+  if (["failed", "cancelled", "rejected"].includes(status.state)) return 4;
+  return 5;
+}
+
+function ticketFor(status) {
+  return status.planning?.planRef || status.planning?.sourceRefs?.[0] || status.workflow?.split(/[\\/]/).pop() || "unplanned";
+}
+
+function summarizeLanes(lanes = []) {
+  const counts = {
+    total: lanes.length,
+    done: 0,
+    active: 0,
+    blocked: 0,
+    waiting: 0,
+    failed: 0,
+    settled: 0,
+  };
+  for (const lane of lanes) {
+    if (lane.state === "done") counts.done += 1;
+    if (lane.state === "running") counts.active += 1;
+    if (lane.state === "blocked") counts.blocked += 1;
+    if (["queued", "dependency-waiting"].includes(lane.state)) counts.waiting += 1;
+    if (lane.state === "failed") counts.failed += 1;
+    if (["done", "failed", "cancelled"].includes(lane.state)) counts.settled += 1;
+  }
+  return counts;
+}
+
+function normalizeRun(status) {
+  const lanes = (status.lanes || []).map((lane) => {
+    const signal = laneSignal(lane);
+    return {
+      id: lane.id,
+      state: lane.state,
+      harness: lane.harness || null,
+      elapsedSec: lane.elapsedSec ?? 0,
+      summary: signal.summary,
+      tool: signal.tool,
+      waitingFor: lane.waitingFor || [],
+      needsInput: lane.needsInput || null,
+      exitCode: lane.exitCode ?? null,
+    };
+  });
+  const blocker = runBlocker(status, lanes);
+  return {
+    runId: status.runId,
+    shortId: shortRunId(status.runId),
+    repo: status.repo || "-",
+    ticket: ticketFor(status),
+    state: status.state,
+    startedAt: status.startedAt || null,
+    updatedAt: status.updatedAt || null,
+    endedAt: status.endedAt || null,
+    targetDevFlow: status.target_dev_flow || null,
+    laneCounts: summarizeLanes(lanes),
+    lanes,
+    deliveryState: status.delivery?.state || null,
+    reviewState: status.delivery?.review?.state || null,
+    shipState: status.ship?.state || null,
+    shipPhase: status.ship?.phase || null,
+    blocker,
+    needsInput: Boolean(blocker),
+  };
+}
+
+function shortRunId(runId) {
+  const match = /^run-\d{8}-\d{6}-(.+)$/.exec(String(runId || ""));
+  return match ? match[1].slice(-8) : String(runId || "-").slice(-8);
+}
+
+export function buildFleetSnapshot(options = {}, {
+  runsRoot = RUNS_ROOT,
+  now = () => Date.now(),
+} = {}) {
+  const config = {
+    runId: null,
+    activeOnly: false,
+    sinceMs: DEFAULT_SINCE_MS,
+    repo: null,
+    limit: DEFAULT_LIMIT,
+    eventLimit: DEFAULT_EVENT_LIMIT,
+    ...options,
+  };
+  const currentTime = now();
+  const statuses = [];
+  if (existsSync(runsRoot)) {
+    for (const entry of readdirSync(runsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(entry.name)) continue;
+      const status = safeJson(join(runsRoot, entry.name, "status.json"));
+      if (!status?.runId) continue;
+      const active = !isFleetTerminalState(status.state);
+      if (config.runId && status.runId !== config.runId) continue;
+      if (config.repo && status.repo !== config.repo) continue;
+      if (config.activeOnly && !active) continue;
+      if (!active && Number.isFinite(config.sinceMs) && currentTime - statusTimestamp(status) > config.sinceMs) continue;
+      statuses.push(status);
+    }
+  }
+
+  statuses.sort((left, right) => attentionRank(left) - attentionRank(right) || statusTimestamp(right) - statusTimestamp(left));
+  const allRuns = statuses.map(normalizeRun);
+  const runs = allRuns.slice(0, config.limit);
+  const events = [];
+  for (const run of runs) {
+    const eventPath = join(runsRoot, run.runId, "events.jsonl");
+    const runEvents = safeJsonLines(eventPath);
+    let previous = null;
+    for (const event of runEvents) {
+      if (!event?.at) continue;
+      if (!previous || previous.state !== event.state) {
+        events.push({ at: event.at, runId: run.runId, shortId: run.shortId, kind: "run", text: `run → ${event.state}` });
+      }
+      const previousLanes = new Map((previous?.lanes || []).map((lane) => [lane.id, lane]));
+      for (const lane of event.lanes || []) {
+        const before = previousLanes.get(lane.id);
+        if (!before || before.state !== lane.state || (!before.needsInput && lane.needsInput)) {
+          events.push({
+            at: event.at,
+            runId: run.runId,
+            shortId: run.shortId,
+            kind: lane.needsInput ? "needs_input" : "lane",
+            text: `${lane.id} → ${lane.needsInput ? "needs input" : lane.state}`,
+          });
+        }
+      }
+      if (previous?.ship?.phase !== event.ship?.phase && event.ship?.phase) {
+        events.push({ at: event.at, runId: run.runId, shortId: run.shortId, kind: "ship", text: `shipping → ${event.ship.phase}` });
+      }
+      previous = event;
+    }
+  }
+  events.sort((left, right) => Date.parse(right.at) - Date.parse(left.at));
+
+  return {
+    schema: "agent-manager.fleet.v1",
+    at: new Date(currentTime).toISOString(),
+    counts: {
+      visible: runs.length,
+      total: allRuns.length,
+      active: allRuns.filter((run) => !isFleetTerminalState(run.state)).length,
+      blocked: allRuns.filter((run) => run.state === "blocked" || run.needsInput).length,
+      review: allRuns.filter((run) => ["delivery_review_pending", "correction_pending", "ship_gate_pending"].includes(run.state)).length,
+      shipping: allRuns.filter((run) => run.state === "shipping").length,
+    },
+    runs,
+    recentEvents: events.slice(0, config.eventLimit),
+  };
+}
+
+const COLORS = {
+  reset: "\u001b[0m",
+  bold: "\u001b[1m",
+  dim: "\u001b[2m",
+  inverse: "\u001b[7m",
+  cyan: "\u001b[36m",
+  brightCyan: "\u001b[96m",
+  blue: "\u001b[94m",
+  magenta: "\u001b[95m",
+  green: "\u001b[92m",
+  yellow: "\u001b[93m",
+  red: "\u001b[91m",
+  gray: "\u001b[90m",
+  white: "\u001b[97m",
+  bgYellow: "\u001b[43m",
+  black: "\u001b[30m",
+};
+
+function style(enabled, ...codes) {
+  const text = codes.pop();
+  return enabled ? codes.map((code) => COLORS[code] || code).join("") + text + COLORS.reset : text;
+}
+
+function visibleLength(value) {
+  return stripAnsi(value).length;
+}
+
+function truncate(value, width) {
+  const text = cleanText(value, 10_000) || "-";
+  if (text.length <= width) return text;
+  return width <= 1 ? text.slice(0, width) : text.slice(0, width - 1) + "…";
+}
+
+function pad(value, width, align = "left") {
+  const text = truncate(value, width);
+  const missing = Math.max(0, width - visibleLength(text));
+  return align === "right" ? " ".repeat(missing) + text : text + " ".repeat(missing);
+}
+
+function formatDuration(seconds) {
+  const value = Math.max(0, Number(seconds || 0));
+  if (value < 60) return `${Math.round(value)}s`;
+  if (value < 3_600) return `${Math.floor(value / 60)}m${String(Math.round(value % 60)).padStart(2, "0")}s`;
+  if (value < 86_400) return `${Math.floor(value / 3_600)}h${String(Math.floor(value % 3_600 / 60)).padStart(2, "0")}m`;
+  return `${Math.floor(value / 86_400)}d${String(Math.floor(value % 86_400 / 3_600)).padStart(2, "0")}h`;
+}
+
+function runAge(run, at) {
+  const start = Date.parse(run.startedAt || 0);
+  const end = Date.parse(run.endedAt || at || 0);
+  return start && end ? Math.max(0, (end - start) / 1_000) : 0;
+}
+
+function clockTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf())
+    ? "--:--:--"
+    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+function statePresentation(state, frame = 0) {
+  const presentations = {
+    running: [SPINNER[frame % SPINNER.length], "RUNNING", "brightCyan"],
+    blocked: ["!", "NEEDS INPUT", "yellow"],
+    delivery_review_pending: ["◆", "DELIVERY REVIEW", "magenta"],
+    correction_pending: ["◆", "CORRECTION", "magenta"],
+    ship_gate_pending: ["◆", "SHIP GATE", "yellow"],
+    shipping: [SPINNER[frame % SPINNER.length], "SHIPPING", "blue"],
+    release_pending: ["◆", "RELEASE GATE", "yellow"],
+    reviewed: ["✓", "REVIEWED", "green"],
+    merged: ["✓", "MERGED", "green"],
+    released: ["✓", "RELEASED", "green"],
+    rejected: ["×", "REJECTED", "red"],
+    failed: ["×", "FAILED", "red"],
+    cancelled: ["×", "CANCELLED", "gray"],
+    queued: ["○", "QUEUED", "gray"],
+    "dependency-waiting": ["○", "WAITING", "gray"],
+    done: ["✓", "DONE", "green"],
+  };
+  return presentations[state] || ["·", String(state || "UNKNOWN").toUpperCase(), "white"];
+}
+
+function progressBar(counts, width, frame, color) {
+  const total = Math.max(1, counts.total || 0);
+  const settled = Math.min(total, counts.settled || 0);
+  const filled = Math.round(settled / total * width);
+  const active = counts.active > 0 && filled < width;
+  let bar = "━".repeat(filled);
+  if (active) bar += frame % 2 === 0 ? "╸" : "╺";
+  bar += "─".repeat(Math.max(0, width - visibleLength(bar)));
+  return style(color, counts.blocked ? "yellow" : counts.failed ? "red" : "cyan", bar);
+}
+
+function wrapText(value, width, maxLines = 3) {
+  const words = String(value || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    if (!line) line = word;
+    else if (line.length + word.length + 1 <= width) line += " " + word;
+    else {
+      lines.push(line);
+      line = word;
+      if (lines.length >= maxLines) break;
+    }
+  }
+  if (line && lines.length < maxLines) lines.push(line);
+  if (lines.length === maxLines && words.join(" ").length > lines.join(" ").length) {
+    lines[lines.length - 1] = truncate(lines[lines.length - 1], Math.max(1, width - 1)) + "…";
+  }
+  return lines;
+}
+
+function changedRunIds(previous, next) {
+  if (!previous) return new Set();
+  const before = new Map(previous.runs.map((run) => [run.runId, JSON.stringify({
+    state: run.state,
+    lanes: run.lanes.map((lane) => [lane.id, lane.state, lane.summary]),
+  })]));
+  return new Set(next.runs.filter((run) => before.get(run.runId) !== JSON.stringify({
+    state: run.state,
+    lanes: run.lanes.map((lane) => [lane.id, lane.state, lane.summary]),
+  })).map((run) => run.runId));
+}
+
+function gradientTitle(text, color) {
+  if (!color) return text;
+  const palette = ["brightCyan", "cyan", "blue", "magenta"];
+  return [...text].map((character, index) => style(true, palette[Math.floor(index / 5) % palette.length], character)).join("");
+}
+
+export function formatFleetBoard(snapshot, {
+  width = 120,
+  frame = 0,
+  color = false,
+  effects = false,
+  selectedRunId = null,
+  previousSnapshot = null,
+  interactive = false,
+  activeOnly = false,
+} = {}) {
+  const terminalWidth = Math.max(72, width || 120);
+  const contentWidth = terminalWidth - 2;
+  const lines = [];
+  const changed = changedRunIds(previousSnapshot, snapshot);
+  const selected = snapshot.runs.find((run) => run.runId === selectedRunId) || snapshot.runs[0] || null;
+  const pulseCode = effects && frame % 8 < 4 ? "bold" : "white";
+  const title = gradientTitle("AGENT MANAGER", color);
+  const badges = [
+    style(color, "brightCyan", `active ${snapshot.counts.active}`),
+    style(color, snapshot.counts.blocked ? "yellow" : "gray", `blocked ${snapshot.counts.blocked}`),
+    style(color, snapshot.counts.review ? "magenta" : "gray", `review ${snapshot.counts.review}`),
+    style(color, snapshot.counts.shipping ? "blue" : "gray", `shipping ${snapshot.counts.shipping}`),
+  ].join(style(color, "gray", " · "));
+  const frameIcon = snapshot.counts.active ? SPINNER[frame % SPINNER.length] : "◆";
+  lines.push(`${style(color, pulseCode, frameIcon)} ${style(color, "bold", title)} ${style(color, "gray", "· FLEET")}  ${badges}`);
+  lines.push(style(color, "gray", "─".repeat(contentWidth)));
+
+  if (!snapshot.runs.length) {
+    lines.push("");
+    lines.push(style(color, "yellow", "  No runs match the current filters."));
+    lines.push("");
+    lines.push(style(color, "gray", "  Waiting for telemetry under $AGENT_MANAGER_RUNS_ROOT…"));
+    return lines.join("\n");
+  }
+
+  const wide = terminalWidth >= 108;
+  const runWidth = 9;
+  const stateWidth = 17;
+  const lanesWidth = 16;
+  const ageWidth = 8;
+  const repoWidth = wide ? 16 : 0;
+  const fixed = 2 + runWidth + stateWidth + lanesWidth + ageWidth + (wide ? repoWidth + 1 : 0) + 5;
+  const ticketWidth = Math.max(18, contentWidth - fixed);
+  const header = [
+    "  ",
+    pad("PLAN / TICKET", ticketWidth),
+    wide ? pad("REPO", repoWidth) : null,
+    pad("RUN", runWidth),
+    pad("STATE", stateWidth),
+    pad("LANES", lanesWidth),
+    pad("AGE", ageWidth, "right"),
+  ].filter((value) => value !== null).join(" ");
+  lines.push(style(color, "gray", header));
+
+  for (const run of snapshot.runs) {
+    const isSelected = selected?.runId === run.runId;
+    const [icon, stateLabel, stateColor] = statePresentation(run.state, frame);
+    const changedMark = changed.has(run.runId) ? style(color, "yellow", "◆") : icon;
+    const lanes = `${progressBar(run.laneCounts, 8, frame, color)} ${run.laneCounts.done}/${run.laneCounts.total}`;
+    const fields = [
+      isSelected ? style(color, "brightCyan", "›") : " ",
+      pad(run.ticket, ticketWidth),
+      wide ? pad(run.repo, repoWidth) : null,
+      pad(run.shortId, runWidth),
+      pad(`${changedMark} ${stateLabel}`, stateWidth),
+      pad(lanes, lanesWidth),
+      pad(formatDuration(runAge(run, snapshot.at)), ageWidth, "right"),
+    ].filter((value) => value !== null);
+    let row = fields.join(" ");
+    if (isSelected) row = style(color, "bold", row);
+    else if (isFleetTerminalState(run.state)) row = style(color, "dim", row);
+    else row = style(color, stateColor, row);
+    lines.push(row);
+  }
+
+  if (selected) {
+    lines.push("");
+    lines.push(`${style(color, "bold", "FOCUS")} ${style(color, "brightCyan", selected.shortId)} ${style(color, "gray", "·")} ${truncate(selected.ticket, Math.max(20, contentWidth - 22))}`);
+    const laneIdWidth = Math.min(32, Math.max(20, Math.floor(contentWidth * 0.28)));
+    const laneStateWidth = 13;
+    const laneElapsedWidth = 8;
+    const summaryWidth = Math.max(18, contentWidth - laneIdWidth - laneStateWidth - laneElapsedWidth - 7);
+    lines.push(style(color, "gray", `  ${pad("LANE", laneIdWidth)} ${pad("STATE", laneStateWidth)} ${pad("ELAPSED", laneElapsedWidth)} UPDATE`));
+    for (const lane of selected.lanes) {
+      const [icon, label, laneColor] = statePresentation(lane.state, frame);
+      const activity = lane.tool && lane.state === "running"
+        ? `${lane.summary} · ${lane.tool}`
+        : lane.summary;
+      const row = `  ${pad(lane.id, laneIdWidth)} ${pad(`${icon} ${label}`, laneStateWidth)} ${pad(formatDuration(lane.elapsedSec), laneElapsedWidth)} ${truncate(activity, summaryWidth)}`;
+      lines.push(style(color, laneColor, row));
+    }
+
+    const blocker = selected.blocker;
+    if (blocker?.prompt) {
+      lines.push("");
+      lines.push(style(color, "bgYellow", "black", "bold", ` NEEDS INPUT · ${blocker.id} `));
+      for (const line of wrapText(blocker.prompt, Math.max(30, contentWidth - 4), 3)) {
+        lines.push(style(color, "yellow", `  ${line}`));
+      }
+      const action = blocker.scope === "lane"
+        ? `reply: agent-manager reply ${selected.runId} ${blocker.id} --message "…"`
+        : `inspect: agent-manager status ${selected.runId}`;
+      lines.push(style(color, "gray", `  ${action}`));
+    }
+  }
+
+  if (snapshot.recentEvents.length) {
+    lines.push("");
+    lines.push(style(color, "bold", "RECENT TRANSITIONS"));
+    for (const event of snapshot.recentEvents) {
+      const eventColor = event.kind === "needs_input" ? "yellow" : event.kind === "ship" ? "blue" : "gray";
+      lines.push(`${style(color, "gray", clockTime(event.at))}  ${style(color, "cyan", event.shortId)}  ${style(color, eventColor, truncate(event.text, Math.max(20, contentWidth - 22)))}`);
+    }
+  }
+
+  lines.push("");
+  const filter = activeOnly ? style(color, "brightCyan", "ACTIVE ONLY") : "active + recent";
+  const controls = interactive
+    ? "↑/↓ or j/k select · a filter · r refresh · q quit"
+    : "Ctrl+C to stop";
+  lines.push(`${style(color, "gray", controls)}  ${style(color, "gray", "·")}  ${filter}  ${style(color, "gray", `· refresh ${clockTime(snapshot.at)}`)}`);
+  return lines.join("\n");
+}
+
+export function diffFleetSnapshots(previous, next) {
+  if (!previous) {
+    return next.runs.map((run) => ({
+      at: next.at,
+      kind: "run_seen",
+      runId: run.runId,
+      shortId: run.shortId,
+      text: `${run.ticket} · ${run.state} · ${run.laneCounts.done}/${run.laneCounts.total} lanes`,
+    }));
+  }
+  const changes = [];
+  const beforeRuns = new Map(previous.runs.map((run) => [run.runId, run]));
+  for (const run of next.runs) {
+    const before = beforeRuns.get(run.runId);
+    if (!before) {
+      changes.push({ at: next.at, kind: "run_started", runId: run.runId, shortId: run.shortId, text: `${run.ticket} · run discovered` });
+      continue;
+    }
+    if (run.state !== before.state) {
+      changes.push({ at: next.at, kind: run.state === "blocked" ? "needs_input" : "run_state", runId: run.runId, shortId: run.shortId, text: `run → ${run.state}` });
+    }
+    const beforeLanes = new Map(before.lanes.map((lane) => [lane.id, lane]));
+    for (const lane of run.lanes) {
+      const priorLane = beforeLanes.get(lane.id);
+      if (!priorLane) {
+        changes.push({ at: next.at, kind: "lane_started", runId: run.runId, shortId: run.shortId, text: `${lane.id} → ${lane.state}` });
+      } else if (lane.state !== priorLane.state || Boolean(lane.needsInput) !== Boolean(priorLane.needsInput)) {
+        changes.push({ at: next.at, kind: lane.needsInput ? "needs_input" : "lane_state", runId: run.runId, shortId: run.shortId, text: `${lane.id} → ${lane.needsInput ? "needs input" : lane.state}` });
+      } else if (lane.summary && lane.summary !== priorLane.summary && lane.state === "running") {
+        changes.push({ at: next.at, kind: "worker_update", runId: run.runId, shortId: run.shortId, text: `${lane.id}: ${lane.summary}` });
+      }
+    }
+  }
+  return changes;
+}
+
+export function formatFleetStreamEvent(event, { color = false } = {}) {
+  const eventColor = event.kind === "needs_input"
+    ? "yellow"
+    : event.kind === "worker_update"
+      ? "brightCyan"
+      : /failed|cancelled|rejected/.test(event.text)
+        ? "red"
+        : "green";
+  return `${style(color, "gray", clockTime(event.at))}  ${style(color, "cyan", event.shortId)}  ${style(color, eventColor, event.text)}`;
+}
+
+export async function runFleet(options = {}, {
+  runsRoot = RUNS_ROOT,
+  output = process.stdout,
+  input = process.stdin,
+  now = () => Date.now(),
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  maxTicks = Infinity,
+} = {}) {
+  const config = {
+    activeOnly: false,
+    sinceMs: DEFAULT_SINCE_MS,
+    repo: null,
+    limit: DEFAULT_LIMIT,
+    eventLimit: DEFAULT_EVENT_LIMIT,
+    intervalMs: DEFAULT_INTERVAL_MS,
+    stream: false,
+    once: false,
+    json: false,
+    color: process.env.NO_COLOR === undefined,
+    effects: true,
+    ...options,
+  };
+  const isTty = Boolean(output.isTTY);
+  const takeSnapshot = () => buildFleetSnapshot(config, { runsRoot, now });
+  const writeLine = (value) => output.write(String(value) + "\n");
+
+  if (config.once || (!isTty && !config.stream)) {
+    const snapshot = takeSnapshot();
+    if (config.json) writeLine(JSON.stringify(snapshot));
+    else writeLine(formatFleetBoard(snapshot, { width: output.columns || 120, color: config.color && isTty, effects: false, activeOnly: config.activeOnly }));
+    return snapshot;
+  }
+
+  if (config.stream) {
+    let previous = null;
+    let ticks = 0;
+    while (ticks < maxTicks) {
+      ticks += 1;
+      const snapshot = takeSnapshot();
+      for (const event of diffFleetSnapshots(previous, snapshot)) {
+        writeLine(formatFleetStreamEvent(event, { color: config.color && isTty }));
+      }
+      previous = snapshot;
+      await sleep(config.intervalMs);
+    }
+    return previous;
+  }
+
+  return runInteractiveFleet(config, { runsRoot, output, input, now, sleep, maxTicks });
+}
+
+async function runInteractiveFleet(config, { runsRoot, output, input, now, sleep, maxTicks }) {
+  let stopped = false;
+  let forceRefresh = true;
+  let selectedRunId = config.runId || null;
+  let selectedIndex = 0;
+  let activeOnly = config.activeOnly;
+  let snapshot = null;
+  let previousSnapshot = null;
+  let nextRefreshAt = 0;
+  let frame = 0;
+  let ticks = 0;
+  const effects = config.effects && Boolean(output.isTTY);
+  const color = config.color && Boolean(output.isTTY);
+  const interactive = Boolean(input.isTTY && typeof input.setRawMode === "function");
+  const writeRaw = (value) => output.write(String(value));
+
+  const refreshSelection = () => {
+    if (!snapshot?.runs.length) {
+      selectedRunId = null;
+      selectedIndex = 0;
+      return;
+    }
+    const existing = snapshot.runs.findIndex((run) => run.runId === selectedRunId);
+    if (existing >= 0) selectedIndex = existing;
+    else selectedIndex = Math.min(selectedIndex, snapshot.runs.length - 1);
+    selectedRunId = snapshot.runs[selectedIndex]?.runId || null;
+  };
+
+  const keypress = (_text, key = {}) => {
+    if (key.ctrl && key.name === "c" || key.name === "q") stopped = true;
+    else if (["down", "j"].includes(key.name) && snapshot?.runs.length) {
+      selectedIndex = Math.min(snapshot.runs.length - 1, selectedIndex + 1);
+      selectedRunId = snapshot.runs[selectedIndex].runId;
+    } else if (["up", "k"].includes(key.name) && snapshot?.runs.length) {
+      selectedIndex = Math.max(0, selectedIndex - 1);
+      selectedRunId = snapshot.runs[selectedIndex].runId;
+    } else if (key.name === "a") {
+      activeOnly = !activeOnly;
+      forceRefresh = true;
+    } else if (key.name === "r") forceRefresh = true;
+  };
+  const stop = () => { stopped = true; };
+
+  try {
+    if (effects) writeRaw("\u001b[?1049h\u001b[?25l");
+    if (interactive) {
+      readline.emitKeypressEvents(input);
+      input.setRawMode(true);
+      input.resume();
+      input.on("keypress", keypress);
+    }
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+
+    while (!stopped && ticks < maxTicks) {
+      ticks += 1;
+      const time = now();
+      if (forceRefresh || !snapshot || time >= nextRefreshAt) {
+        previousSnapshot = snapshot;
+        snapshot = buildFleetSnapshot({ ...config, activeOnly }, { runsRoot, now: () => time });
+        refreshSelection();
+        nextRefreshAt = time + config.intervalMs;
+        forceRefresh = false;
+      }
+      const board = formatFleetBoard(snapshot, {
+        width: output.columns || 120,
+        frame,
+        color,
+        effects,
+        selectedRunId,
+        previousSnapshot,
+        interactive,
+        activeOnly,
+      });
+      writeRaw(`\u001b[H\u001b[2J${board}`);
+      frame += 1;
+      await sleep(effects ? 120 : config.intervalMs);
+    }
+    return snapshot;
+  } finally {
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
+    if (interactive) {
+      input.removeListener("keypress", keypress);
+      input.setRawMode(false);
+      input.pause();
+    }
+    if (effects) writeRaw("\u001b[?25h\u001b[?1049l");
+    else writeRaw("\n");
+  }
+}
