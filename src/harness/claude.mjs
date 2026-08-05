@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, win32 as win32Path } from "node:path";
 import { buildHarnessEnv } from "../environment.mjs";
 import { resolveSpawnCommand } from "../command.mjs";
 import { terminateProcessTree } from "../process.mjs";
@@ -15,7 +15,8 @@ export function resolveClaudeBin({
     return env.CLAUDE_BIN.trim();
   }
   if (platform === "win32") {
-    const fromNpm = join(
+    const pathJoin = win32Path.join;
+    const fromNpm = pathJoin(
       env.APPDATA || "",
       "npm",
       "node_modules",
@@ -25,9 +26,9 @@ export function resolveClaudeBin({
       "claude.exe",
     );
     const candidates = [
-      join(env.APPDATA || "", "npm", "claude.cmd"),
-      join(env.APPDATA || "", "npm", "claude.exe"),
-      join(env.USERPROFILE || "", ".local", "bin", "claude.exe"),
+      pathJoin(env.APPDATA || "", "npm", "claude.cmd"),
+      pathJoin(env.APPDATA || "", "npm", "claude.exe"),
+      pathJoin(env.USERPROFILE || "", ".local", "bin", "claude.exe"),
       fromNpm,
     ];
     for (const candidate of candidates) {

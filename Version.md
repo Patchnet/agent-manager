@@ -1,11 +1,16 @@
 ---
 enabled: true
-current: 1.8.0
+current: 1.8.1
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.8.1 - 2026-08-05
+
+Made simulated Windows harness discovery use Windows path semantics on every
+host so the portability suite passes consistently on Windows, macOS, and Linux.
 
 ## 1.8.0 - 2026-08-05
 

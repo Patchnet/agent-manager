@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, win32 as win32Path } from "node:path";
 import { buildHarnessEnv } from "../environment.mjs";
 import { resolveSpawnCommand } from "../command.mjs";
 import { terminateProcessTree } from "../process.mjs";
@@ -16,11 +16,12 @@ export function resolveCodexBin({
     return env.CODEX_BIN.trim();
   }
   if (platform === "win32") {
+    const pathJoin = win32Path.join;
     const candidates = [
-      join(env.LOCALAPPDATA || "", "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
-      join(env.USERPROFILE || "", ".codex", "packages", "standalone", "current", "bin", "codex.exe"),
-      join(env.APPDATA || "", "npm", "codex.cmd"),
-      join(env.APPDATA || "", "npm", "codex.exe"),
+      pathJoin(env.LOCALAPPDATA || "", "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
+      pathJoin(env.USERPROFILE || "", ".codex", "packages", "standalone", "current", "bin", "codex.exe"),
+      pathJoin(env.APPDATA || "", "npm", "codex.cmd"),
+      pathJoin(env.APPDATA || "", "npm", "codex.exe"),
     ];
     for (const candidate of candidates) {
       if (candidate && exists(candidate)) return candidate;
