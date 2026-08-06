@@ -22,6 +22,10 @@ function run(args) {
 
 test("version, init, validate, and project Cursor install work from a fresh directory", () => {
   assert.match(run(["--version"]), /^\d+\.\d+\.\d+/);
+  const version = JSON.parse(run(["version", "--json"]));
+  assert.match(version.runtimeVersion, /^\d+\.\d+\.\d+/);
+  assert.equal(version.installedVersion, version.runtimeVersion);
+  assert.equal(version.restartRequired, false);
   const initialized = JSON.parse(run(["init", "--repo", repo, "--request", "Add a portable demo", "--json"]));
   assert.ok(existsSync(initialized.path));
   assert.equal(initialized.contextPath, null);

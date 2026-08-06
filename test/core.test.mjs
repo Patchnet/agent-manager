@@ -279,6 +279,19 @@ test("harness setup provides platform-specific, machine-readable remediation", a
   );
 });
 
+test("version metadata distinguishes running code from updated installed files", async () => {
+  const { currentVersionInfo } = await import("../src/version.mjs?version-core");
+  assert.deepEqual(currentVersionInfo({ runtimeVersion: "1.8.1", installedVersion: "1.8.1" }), {
+    runtimeVersion: "1.8.1",
+    installedVersion: "1.8.1",
+    restartRequired: false,
+    notice: null,
+  });
+  const updated = currentVersionInfo({ runtimeVersion: "1.8.1", installedVersion: "1.9.0" });
+  assert.equal(updated.restartRequired, true);
+  assert.match(updated.notice, /quit and restart.*runtime v1\.8\.1/);
+});
+
 test("Master return authentication stays out of worker harness environments", async () => {
   const { buildHarnessEnv, buildMasterReturnEnv } = await import("../src/environment.mjs?master-return-env");
   const source = {

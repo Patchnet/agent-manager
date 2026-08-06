@@ -14,6 +14,7 @@ import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 import { formatRuntime } from "./runtime.mjs";
 import { deriveOperatorCadence } from "./cadence.mjs";
 import { isOverallTerminalState } from "./delivery.mjs";
+import { AGENT_MANAGER_VERSION } from "./version.mjs";
 
 export function writeStatus(runId, status) {
   assertSafeSlug(runId, "run id");
@@ -133,6 +134,7 @@ export function formatStatus(status) {
   const lines = [
     `${status.identity?.displayTitle || `run ${status.runId}`}  state=${status.state}  updated=${status.updatedAt || "-"}`,
     `repo=${status.repo}  runId=${status.runId}`,
+    `viewerVersion=${AGENT_MANAGER_VERSION}  runEngineVersion=${status.agentManager?.version || "legacy/unrecorded"}`,
     `managerHarness=${status.identity?.manager?.harness || "-"}  managerModel=${status.identity?.manager?.model || "-"}`,
     `target_dev_flow=${status.target_dev_flow || "-"}  workflow=${status.workflow || "-"}`,
     `runtime=${formatRuntime(status.runtime)}`,

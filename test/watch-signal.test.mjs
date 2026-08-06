@@ -277,6 +277,7 @@ test("runWatchSignal refreshes status after a Master callback advances the run",
 
 test("monitor board exits only on delivery-terminal states", () => {
   const board = formatMonitorBoard(sampleStatus({ feed: { enabled: false } }));
+  assert.match(board, /version viewer=v\d+\.\d+\.\d+.*run-engine=legacy\/unrecorded/);
   assert.match(board, /agent-manager · monitor/);
   assert.match(board, /core/);
   assert.match(board, /tool: Read/);
@@ -285,4 +286,9 @@ test("monitor board exits only on delivery-terminal states", () => {
   assert.equal(shouldMonitorExit(sampleStatus({ state: "delivery_review_pending" })), false);
   assert.equal(shouldMonitorExit(sampleStatus({ state: "merged" })), true);
   assert.equal(shouldMonitorExit(sampleStatus({ state: "failed" })), true);
+
+  const updatedBoard = formatMonitorBoard(sampleStatus(), {
+    version: { runtimeVersion: "1.8.1", installedVersion: "1.9.0", restartRequired: true },
+  });
+  assert.match(updatedBoard, /UPDATE INSTALLED v1\.9\.0 - stop and restart monitor/);
 });

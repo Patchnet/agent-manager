@@ -1,6 +1,7 @@
 import { RUNS_ROOT } from "./paths.mjs";
 import { isTerminalState, latestRunId, readStatus } from "./status.mjs";
 import { formatRuntime } from "./runtime.mjs";
+import { currentVersionInfo } from "./version.mjs";
 
 function pad(value, width) {
   const text = String(value ?? "-");
@@ -16,7 +17,10 @@ function truncate(value, width) {
 /**
  * Rich side-terminal board for a run. Pure formatter for tests.
  */
-export function formatMonitorBoard(status, { previousLaneStates = {} } = {}) {
+export function formatMonitorBoard(status, {
+  previousLaneStates = {},
+  version = currentVersionInfo(),
+} = {}) {
   if (!status) return "no status";
 
   const feedEnabled = status.feed?.enabled ? "yes" : "no";
@@ -27,6 +31,10 @@ export function formatMonitorBoard(status, { previousLaneStates = {} } = {}) {
     "╚══════════════════════════════════════════════════════════════════════════╝",
     `runId   ${status.runId}`,
     `repo    ${status.repo || "-"}`,
+    `version viewer=v${version.runtimeVersion}  run-engine=${status.agentManager?.version ? `v${status.agentManager.version}` : "legacy/unrecorded"}`,
+    ...(version.restartRequired
+      ? [`UPDATE INSTALLED v${version.installedVersion} - stop and restart monitor`]
+      : []),
     `state   ${status.state}    target_dev_flow=${status.target_dev_flow || "-"}`,
     `runtime ${formatRuntime(status.runtime)}`,
     `started ${status.startedAt || "-"}`,

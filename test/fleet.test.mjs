@@ -39,6 +39,7 @@ function writeRun(runId, status, { events = [], logLines = [] } = {}) {
 
 function runningStatus(overrides = {}) {
   return {
+    agentManager: { version: "1.8.1" },
     state: "running",
     repo: "fixture-repo",
     startedAt: "2026-08-04T12:00:00.000Z",
@@ -126,16 +127,20 @@ test("fleet snapshot and board show tickets, lane progress, narrative, and trans
     now: () => Date.parse("2026-08-04T12:06:00.000Z"),
   });
   assert.equal(snapshot.counts.active, 1);
+  assert.match(snapshot.viewer.runtimeVersion, /^\d+\.\d+\.\d+/);
   assert.equal(snapshot.runs[0].ticket, "ticket-session-authority");
+  assert.equal(snapshot.runs[0].agentManagerVersion, "1.8.1");
   assert.match(snapshot.runs[0].lanes[0].summary, /46 focused tests pass/);
   assert.equal(snapshot.runs[0].lanes[0].tool, "running tests");
   assert.ok(snapshot.recentEvents.some((event) => /authority → done/.test(event.text)));
 
   const board = formatFleetBoard(snapshot, { width: 130, color: false, frame: 1 });
   assert.match(board, /AGENT MANAGER/);
+  assert.match(board, /v\d+\.\d+\.\d+ · FLEET/);
   assert.match(board, /ticket-session-authority/);
   assert.match(board, /\[AM 12345678\] fixture · Session authority/);
   assert.match(board, /Manager Harness.*codex.*Manager Model.*gpt-5\.6/);
+  assert.match(board, /Run engine v1\.8\.1 · Viewer v\d+\.\d+\.\d+/);
   assert.match(board, /HARNESS.*MODEL/);
   assert.match(board, /46 focused tests pass/);
   assert.match(board, /RECENT TRANSITIONS/);
@@ -143,6 +148,22 @@ test("fleet snapshot and board show tickets, lane progress, narrative, and trans
 
   const colorful = formatFleetBoard(snapshot, { width: 130, color: true, effects: true, frame: 2 });
   assert.match(colorful, /\u001b\[/);
+
+  const updated = {
+    ...snapshot,
+    viewer: {
+      runtimeVersion: "1.8.1",
+      installedVersion: "1.9.0",
+      restartRequired: true,
+      notice: "restart",
+    },
+  };
+  const restartBoard = formatFleetBoard(updated, { width: 130, color: false });
+  assert.match(restartBoard, /UPDATE INSTALLED v1\.9\.0 · press q, then restart Fleet/);
+
+  const legacy = structuredClone(snapshot);
+  legacy.runs[0].agentManagerVersion = null;
+  assert.match(formatFleetBoard(legacy, { width: 130, color: false }), /Run engine legacy\/unrecorded/);
 });
 
 test("fleet snapshot honors active and recent filters", () => {

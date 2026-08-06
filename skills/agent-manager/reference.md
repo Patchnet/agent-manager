@@ -69,6 +69,13 @@ needs-input / terminal wakes do not wait for that interval. `monitor` is the
 single-run cooking view (`status --watch` aliases it). `fleet` is the read-only
 multi-run view and can emit an append-only stream or one-shot JSON for scripts.
 
+`fleet` and `monitor` may be restarted while runs are active. Fleet shows its
+viewer runtime version and each run's recorded engine version. A live viewer
+detects when its installed package version changes and shows a quit/restart
+notice without contacting the network or writing telemetry. `watch-signal` is
+a notification process; stop the old watcher before replacing it so the host
+does not receive duplicate wakes.
+
 Every wake contains an `agent-manager.operator-cadence.v1` object. Query the
 same deterministic mapping directly with:
 

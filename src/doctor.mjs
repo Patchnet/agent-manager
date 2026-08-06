@@ -6,6 +6,7 @@ import { resolveClaudeBin } from "./harness/claude.mjs";
 import { resolveCodexBin } from "./harness/codex.mjs";
 import { harnessFailureRecommendation, harnessSetup } from "./harness/setup.mjs";
 import { detectRuntimeProfile, formatRuntime } from "./runtime.mjs";
+import { AGENT_MANAGER_VERSION } from "./version.mjs";
 
 export function runDoctor({ repo = process.cwd() } = {}) {
   const root = resolve(repo);
@@ -22,7 +23,7 @@ export function runDoctor({ repo = process.cwd() } = {}) {
   ];
   const coreReady = checks.filter((check) => !check.optional).every((check) => check.ok);
   const harnessReady = checks.filter((check) => check.harness).some((check) => check.ok);
-  return { schema: "agent-manager.doctor.v1", ok: coreReady && harnessReady, runtime, checks };
+  return { schema: "agent-manager.doctor.v1", version: AGENT_MANAGER_VERSION, ok: coreReady && harnessReady, runtime, checks };
 }
 
 function asHarnessCheck(name, result, runtime) {
@@ -59,7 +60,7 @@ function writableCheck(name, path) {
 
 export function formatDoctor(result) {
   const lines = [
-    `agent-manager doctor: ${result.ok ? "ready" : "action required"}`,
+    `agent-manager doctor v${result.version || "unknown"}: ${result.ok ? "ready" : "action required"}`,
     `runtime: ${formatRuntime(result.runtime)}`,
   ];
   for (const check of result.checks) {

@@ -416,6 +416,7 @@ cd agent-manager
 npm ci
 npm link
 agent-manager --version
+agent-manager version
 agent-manager doctor
 agent-manager fleet
 ```
@@ -457,6 +458,19 @@ keys or `j`/`k` to focus a run, `a` to toggle active-only filtering, `r` to
 refresh, and `q` to quit. Colors, progress animation, transition flashes, and
 the alternate screen are enabled for interactive terminals; pipes receive a
 stable one-shot view automatically.
+
+Fleet displays its own runtime version and the engine version recorded by each
+new run. `agent-manager version` reports the running version, the version now on
+disk, and whether the current process needs a restart. If Agent Manager is
+updated while Fleet is open, Fleet shows `UPDATE INSTALLED` and asks the operator
+to quit and restart the viewer. This check is offline and read-only; Fleet does
+not contact an update service or modify run telemetry.
+
+It is safe to restart `fleet` or `monitor` while detached runs are active. They
+are passive readers, and the run supervisors and workers continue independently.
+An active run keeps the engine version it started with; only future runs use
+newly installed code. `watch-signal` is also safe to restart, but stop the old
+watcher first so two notification processes do not emit duplicate wakes.
 
 ## Use each component standalone
 

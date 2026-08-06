@@ -101,6 +101,7 @@ async function waitForStatus(runId, predicate, timeoutMs = 30_000) {
   while (Date.now() < deadline) {
     if (existsSync(statusPath)) {
       const status = JSON.parse(readFileSync(statusPath, "utf8"));
+      assert.match(status.agentManager?.version || "", /^\d+\.\d+\.\d+/);
       latest = status;
       if (predicate(status)) return status;
     }
@@ -189,6 +190,7 @@ test("detached run publishes feed events, resumes the exact session, and release
   const launchPayload = JSON.parse(launch.stdout.trim());
   assert.equal(launchPayload.runId, runId);
   assert.equal(launchPayload.state, "detached");
+  assert.match(launchPayload.agentManagerVersion, /^\d+\.\d+\.\d+/);
   assert.equal(launchPayload.runtime.hostPlatform, process.platform);
   assert.equal(launchPayload.masterReturn, null);
   assert.equal(launchPayload.suggestedThreadTitle, "[AM st-reply] fixture · Reply workflow");

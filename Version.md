@@ -1,11 +1,17 @@
 ---
 enabled: true
-current: 1.8.1
+current: 1.9.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.9.0 - 2026-08-06
+
+Added CLI and viewer version reporting, captured the Agent Manager engine
+version for each run, and added offline update notices so viewers can restart
+without interrupting active detached runs.
 
 ## 1.8.1 - 2026-08-05
 

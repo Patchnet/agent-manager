@@ -158,6 +158,14 @@ and keyboard focus. Use `--stream` for an append-only event feed or `--once`
 for logs and scripts. It reads the run directory directly and does not need a
 mounted service.
 
+The Fleet header shows the viewer runtime version. Selected run details show
+the Agent Manager engine version captured when that run started. If installed
+files change while Fleet is open, it displays an offline `UPDATE INSTALLED`
+notice; quit and restart Fleet to load the new viewer. Restarting `fleet` or
+`monitor` does not affect active detached supervisors or workers. Active runs
+continue on their original engine version. Stop an existing `watch-signal`
+process before starting its replacement to avoid duplicate notifications.
+
 `status.json` is authoritative. `events.jsonl` and `watch-signal` are notification sources, not alternate state stores. A `blocked` run is resumable and is not terminal.
 
 Inspect the sanitized return state with

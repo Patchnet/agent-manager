@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cancelRun } from "../src/cancel.mjs";
 import { cleanupRun, cleanupStaleRuns } from "../src/cleanup.mjs";
@@ -34,6 +34,7 @@ import { deliveryReadiness } from "../src/delivery.mjs";
 import { deriveOperatorCadence } from "../src/cadence.mjs";
 import { fleetUsage, parseFleetArgs, runFleet } from "../src/fleet.mjs";
 import { buildRunIdentity } from "../src/identity.mjs";
+import { AGENT_MANAGER_VERSION, currentVersionInfo } from "../src/version.mjs";
 import {
   dispatchMasterReturn,
   masterReturnSummary,
@@ -43,14 +44,12 @@ import {
 } from "../src/master-return.mjs";
 
 const selfPath = fileURLToPath(import.meta.url);
-const packageRoot = resolve(dirname(selfPath), "..");
-const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
 const args = process.argv.slice(2);
 const cmd = args[0];
 
 function usage() {
   console.log([
-    "agent-manager - detached multi-harness supervisor",
+    `agent-manager v${AGENT_MANAGER_VERSION} - detached multi-harness supervisor`,
     "",
     "Usage:",
     "  agent-manager run <workflow.yaml> --detach [--repo <path>] [--json]",
@@ -82,6 +81,7 @@ function usage() {
     "  agent-manager integrate <runId> [--json]",
     "  agent-manager install cursor [--project <path>] [--force] [--json]",
     "  agent-manager harnesses [--json]",
+    "  agent-manager version [--json]",
     "  agent-manager --version",
     "",
     "Dangerous permission bypass requires both workflow policy and",
@@ -314,6 +314,7 @@ function detachRun(flags) {
   }
   const payload = {
     runId, state: "detached", pid: child.pid,
+    agentManagerVersion: AGENT_MANAGER_VERSION,
     identity: runIdentity,
     suggestedThreadTitle: runIdentity.suggestedThreadTitle,
     runtime: workflow.runtime,
@@ -322,7 +323,7 @@ function detachRun(flags) {
     masterReturn: returnWatcher,
   };
   console.log(flags.json ? JSON.stringify(payload) : [
-    `runId: ${runId}`, `title: ${runIdentity.displayTitle}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
+    `runId: ${runId}`, `title: ${runIdentity.displayTitle}`, `agent-manager: v${AGENT_MANAGER_VERSION}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
     `runtime: ${formatRuntime(payload.runtime)}`,
     `supervisorLog: ${logPath}`, `status: ${payload.statusCommand}`,
     `masterReturn: ${returnWatcher ? `${returnWatcher.state} (${returnWatcher.channel.host}/${returnWatcher.channel.mode})` : "not configured"}`,
@@ -401,7 +402,7 @@ function detachShip(flags) {
 }
 
 async function main() {
-  if (cmd === "--version" || cmd === "-v") { console.log(packageJson.version); return; }
+  if (cmd === "--version" || cmd === "-v") { console.log(AGENT_MANAGER_VERSION); return; }
   if (!cmd || cmd === "-h" || cmd === "--help") { usage(); process.exitCode = cmd ? 0 : 1; return; }
 
   if (cmd === "run") {
@@ -621,6 +622,16 @@ async function main() {
   if (cmd === "harnesses") {
     const adapters = listHarnessAdapters();
     console.log(args.includes("--json") ? JSON.stringify(adapters) : adapters.map((adapter) => `${adapter.name}: ${adapter.supported ? "supported" : "not implemented"}`).join("\n"));
+    return;
+  }
+  if (cmd === "version") {
+    const version = currentVersionInfo();
+    console.log(args.includes("--json") ? JSON.stringify(version) : [
+      `agent-manager runtime: v${version.runtimeVersion}`,
+      `installed files: v${version.installedVersion}`,
+      `restart required: ${version.restartRequired ? "yes" : "no"}`,
+      ...(version.notice ? [version.notice] : []),
+    ].join("\n"));
     return;
   }
   throw new Error("unknown command: " + cmd);

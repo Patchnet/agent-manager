@@ -29,6 +29,7 @@ import { deriveRunState, readStatus, writeStatus } from "./status.mjs";
 import { createDeliveryStatus, markWorkersComplete } from "./delivery.mjs";
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { buildRunIdentity } from "./identity.mjs";
+import { AGENT_MANAGER_VERSION } from "./version.mjs";
 import { writeReport } from "./report.mjs";
 import { integrateLanes } from "./integrate.mjs";
 import { mergeDependencyBranches } from "./lane-snapshot.mjs";
@@ -263,6 +264,7 @@ export async function runWorkflow(workflowPath, {
 
   const status = {
     runId,
+    agentManager: { version: AGENT_MANAGER_VERSION },
     identity,
     state: "running",
     repo: workflow.repo,
@@ -308,6 +310,7 @@ export async function runWorkflow(workflowPath, {
       immutableBaseCommit,
       planning,
       runtime,
+      agentManager: { version: AGENT_MANAGER_VERSION },
       identity,
     }, null, 2) + "\n",
   );

@@ -6,6 +6,12 @@
   "required": ["runId", "state", "repo", "startedAt", "lanes"],
   "properties": {
     "runId": { "type": "string" }, "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "reviewed", "merged", "released", "rejected", "failed", "cancelled"] },
+    "agentManager": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": { "version": { "type": "string" } }
+    },
     "identity": { "$ref": "#/$defs/runIdentity" },
     "repo": { "type": "string" }, "startedAt": { "type": "string", "format": "date-time" },
     "endedAt": { "type": ["string", "null"] },

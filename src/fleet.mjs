@@ -11,6 +11,7 @@ import { basename, join } from "node:path";
 import readline from "node:readline";
 import { RUNS_ROOT } from "./paths.mjs";
 import { isTerminalState } from "./status.mjs";
+import { currentVersionInfo } from "./version.mjs";
 
 const DEFAULT_INTERVAL_MS = 1_000;
 const DEFAULT_SINCE_MS = 24 * 60 * 60 * 1_000;
@@ -362,6 +363,7 @@ function normalizeRun(status) {
     repoShorthand,
     subject,
     manager: status.identity?.manager || { harness: null, model: null, modelSource: "unavailable", threadTitle: null },
+    agentManagerVersion: status.agentManager?.version || null,
     state: status.state,
     startedAt: status.startedAt || null,
     updatedAt: status.updatedAt || null,
@@ -408,6 +410,7 @@ function laneModel(lane) {
 export function buildFleetSnapshot(options = {}, {
   runsRoot = RUNS_ROOT,
   now = () => Date.now(),
+  version = currentVersionInfo(),
 } = {}) {
   const config = {
     runId: null,
@@ -470,6 +473,7 @@ export function buildFleetSnapshot(options = {}, {
 
   return {
     schema: "agent-manager.fleet.v1",
+    viewer: version,
     at: new Date(currentTime).toISOString(),
     counts: {
       visible: runs.length,
@@ -639,7 +643,11 @@ export function formatFleetBoard(snapshot, {
     style(color, snapshot.counts.shipping ? "blue" : "gray", `shipping ${snapshot.counts.shipping}`),
   ].join(style(color, "gray", " · "));
   const frameIcon = snapshot.counts.active ? SPINNER[frame % SPINNER.length] : "◆";
-  lines.push(`${style(color, pulseCode, frameIcon)} ${style(color, "bold", title)} ${style(color, "gray", "· FLEET")}  ${badges}`);
+  const viewerVersion = snapshot.viewer?.runtimeVersion || "unknown";
+  lines.push(`${style(color, pulseCode, frameIcon)} ${style(color, "bold", title)} ${style(color, "gray", `v${viewerVersion} · FLEET`)}  ${badges}`);
+  if (snapshot.viewer?.restartRequired) {
+    lines.push(style(color, "bgYellow", "black", "bold", ` UPDATE INSTALLED v${snapshot.viewer.installedVersion} · press q, then restart Fleet `));
+  }
   lines.push(style(color, "gray", "─".repeat(contentWidth)));
 
   if (!snapshot.runs.length) {
@@ -697,6 +705,10 @@ export function formatFleetBoard(snapshot, {
     lines.push("");
     lines.push(`${style(color, "bold", "RUN DETAILS")} ${style(color, "brightCyan", truncate(selected.displayTitle, Math.max(20, contentWidth - 14)))}`);
     lines.push(style(color, "gray", `  Repository ${selected.repoShorthand} · Plan ${selected.ticket} · Run ${selected.runId}`));
+    const runEngineVersion = selected.agentManagerVersion
+      ? `v${selected.agentManagerVersion}`
+      : "legacy/unrecorded";
+    lines.push(style(color, "gray", `  Run engine ${runEngineVersion} · Viewer v${viewerVersion}`));
     const managerHarness = selected.manager?.harness || "unavailable";
     const managerModel = selected.manager?.model
       ? `${selected.manager.model} · ${selected.manager.modelSource || "declared"}`
