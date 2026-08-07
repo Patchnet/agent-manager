@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { RUNS_ROOT } from "./paths.mjs";
 import { checkCommand } from "./preflight.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
-import { resolveCodexBin } from "./harness/codex.mjs";
+import { resolveCodexInstallation } from "./harness/codex.mjs";
 import { harnessFailureRecommendation, harnessSetup } from "./harness/setup.mjs";
 import { detectRuntimeProfile, formatRuntime } from "./runtime.mjs";
 import { AGENT_MANAGER_VERSION } from "./version.mjs";
@@ -11,13 +11,28 @@ import { AGENT_MANAGER_VERSION } from "./version.mjs";
 export function runDoctor({ repo = process.cwd() } = {}) {
   const root = resolve(repo);
   const runtime = detectRuntimeProfile();
+  const codexInstallation = resolveCodexInstallation();
+  const codexCommand = checkCommand(codexInstallation.command);
+  if (codexInstallation.sandboxReady === false) {
+    codexCommand.ok = false;
+    codexCommand.error =
+      "Windows Codex installation is missing codex-windows-sandbox-setup.exe";
+    codexCommand.version = null;
+  }
   const checks = [
     { name: "node", ok: Number(process.versions.node.split(".")[0]) >= 24, detail: process.version },
     asCheck("git", checkCommand("git")),
     { ...asCheck("npm (version checks)", checkCommand("npm")), optional: true, shipping: true },
     { ...asCheck("gh (shipping)", checkCommand("gh")), optional: true },
     asHarnessCheck("claude", checkCommand(resolveClaudeBin()), runtime),
-    asHarnessCheck("codex", checkCommand(resolveCodexBin()), runtime),
+    {
+      ...asHarnessCheck("codex", codexCommand, runtime),
+      installation: {
+        source: codexInstallation.source,
+        sandboxHelper: codexInstallation.sandboxHelper,
+        sandboxReady: codexInstallation.sandboxReady,
+      },
+    },
     { name: "repository", ok: existsSync(root), detail: root },
     writableCheck("runs root", RUNS_ROOT),
   ];

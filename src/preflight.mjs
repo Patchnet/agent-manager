@@ -1,6 +1,6 @@
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
-import { resolveCodexBin } from "./harness/codex.mjs";
+import { resolveCodexInstallation } from "./harness/codex.mjs";
 import { assertPlanningReady } from "./planning.mjs";
 import { spawnCommandSync } from "./command.mjs";
 import { harnessFailureRecommendation } from "./harness/setup.mjs";
@@ -44,9 +44,20 @@ export function preflightWorkflow(workflow) {
     if (name === "fake") {
       checks.push({ ok: process.env.AGENT_MANAGER_TEST_MODE === "1", command: "fake", version: "test", error: "fake harness requires AGENT_MANAGER_TEST_MODE=1" });
     } else {
-      const command = name === "claude" ? resolveClaudeBin() : resolveCodexBin();
+      const installation = name === "codex" ? resolveCodexInstallation() : null;
+      const command = name === "claude" ? resolveClaudeBin() : installation.command;
       harnessCommands.set(command, name);
       checks.push(checkCommand(command));
+      if (installation?.sandboxReady === false) {
+        checks.push({
+          ok: false,
+          command,
+          version: null,
+          error:
+            "Windows Codex installation is missing codex-windows-sandbox-setup.exe; " +
+            "install a complete Codex package or set CODEX_BIN to an explicit supported installation",
+        });
+      }
     }
   }
   const failed = checks.filter((check) => !check.ok);

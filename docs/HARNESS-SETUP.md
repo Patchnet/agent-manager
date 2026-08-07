@@ -2,8 +2,10 @@
 
 Agent Manager launches the agent CLIs that are already installed and
 authenticated for the operating-system user that starts Agent Manager. It does
-not install a harness, copy credentials between harnesses, or change a harness's
-sandbox and permission policy.
+not install a harness, copy credentials between harnesses, or weaken a harness's
+sandbox and permission policy. Native Windows Codex lanes explicitly keep the
+sandbox private desktop enabled so worker shells do not present interactive
+console windows on the operator's desktop.
 
 ## Standard setup rule
 
@@ -56,6 +58,31 @@ codex --version
 
 The npm package remains a fallback: `npm install -g @openai/codex`. See the
 [Codex CLI installation instructions](https://github.com/openai/codex#installing-and-running-codex-cli).
+
+#### Complete native Windows package
+
+The native Windows Codex sandbox requires the executable and its companion
+`codex-windows-sandbox-setup.exe`. Agent Manager prefers a complete packaged
+installation over a bare `codex.exe`, even when the bare executable appears
+earlier in the normal discovery order. This prevents a detached lane from
+repeatedly falling back to PowerShell launches on the operator's interactive
+desktop when the setup helper is unavailable.
+
+`agent-manager doctor --json` reports the selected installation source and
+sandbox-helper readiness. Workflow preflight stops before workers start when a
+known packaged installation is incomplete. Set `CODEX_BIN` only when you
+intentionally want to select another supported installation.
+
+Codex uses a private desktop by default for both native Windows sandbox modes.
+Agent Manager also passes that setting explicitly for every sandboxed Codex
+lane. See the official [Codex Windows sandbox
+guide](https://learn.chatgpt.com/docs/windows/windows-sandbox).
+
+Agent Manager can hide processes it launches directly, but it cannot set
+Windows creation flags on grandchildren created inside a third-party harness.
+If a complete helper launches successfully and an approval or escalated command
+still flashes a window, collect the Codex sandbox log and report that remaining
+process-launch issue to the harness owner rather than disabling the sandbox.
 
 ### Cursor Agent CLI
 

@@ -29,13 +29,21 @@ export function resolveSpawnCommand(command, args = [], {
 }
 
 export function spawnCommandSync(command, args = [], options = {}) {
-  const { platform, env = process.env, override, ...spawnOptions } = options;
+  const {
+    platform,
+    env = process.env,
+    override,
+    spawnImpl = spawnSync,
+    ...spawnOptions
+  } = options;
   const resolved = resolveSpawnCommand(command, args, { platform, env, override });
   return {
     resolved,
-    result: spawnSync(resolved.command, resolved.args, {
+    result: spawnImpl(resolved.command, resolved.args, {
       ...spawnOptions,
       env,
+      shell: false,
+      windowsHide: true,
     }),
   };
 }

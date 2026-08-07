@@ -1,11 +1,18 @@
 ---
 enabled: true
-current: 1.9.0
+current: 1.9.1
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.9.1 - 2026-08-07
+
+Prevented visible Windows Codex process churn by selecting a complete native
+package, enforcing hidden shell launches and private-desktop sandboxing, and
+failing preflight when the packaged sandbox helper is missing. Documented the
+approved Autopilot Director architecture for future implementation.
 
 ## 1.9.0 - 2026-08-06
 

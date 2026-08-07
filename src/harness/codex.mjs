@@ -12,22 +12,103 @@ export function resolveCodexBin({
   platform = process.platform,
   exists = existsSync,
 } = {}) {
+  return resolveCodexInstallation({ env, platform, exists }).command;
+}
+
+export function resolveCodexInstallation({
+  env = process.env,
+  platform = process.platform,
+  exists = existsSync,
+} = {}) {
   if (typeof env.CODEX_BIN === "string" && env.CODEX_BIN.trim()) {
-    return env.CODEX_BIN.trim();
+    return {
+      command: env.CODEX_BIN.trim(),
+      source: "override",
+      sandboxHelper: null,
+      sandboxReady: null,
+    };
   }
   if (platform === "win32") {
     const pathJoin = win32Path.join;
-    const candidates = [
-      pathJoin(env.LOCALAPPDATA || "", "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
-      pathJoin(env.USERPROFILE || "", ".codex", "packages", "standalone", "current", "bin", "codex.exe"),
+    const localRoot = pathJoin(env.LOCALAPPDATA || "", "Programs", "OpenAI", "Codex");
+    const standaloneRoot = pathJoin(
+      env.USERPROFILE || "",
+      ".codex",
+      "packages",
+      "standalone",
+      "current",
+    );
+    const packaged = [
+      {
+        source: "local-app",
+        command: pathJoin(localRoot, "bin", "codex.exe"),
+        helpers: [
+          pathJoin(localRoot, "codex-resources", "codex-windows-sandbox-setup.exe"),
+          pathJoin(localRoot, "resources", "codex-windows-sandbox-setup.exe"),
+          pathJoin(localRoot, "bin", "codex-windows-sandbox-setup.exe"),
+        ],
+      },
+      {
+        source: "standalone",
+        command: pathJoin(standaloneRoot, "bin", "codex.exe"),
+        helpers: [
+          pathJoin(standaloneRoot, "codex-resources", "codex-windows-sandbox-setup.exe"),
+          pathJoin(standaloneRoot, "resources", "codex-windows-sandbox-setup.exe"),
+          pathJoin(standaloneRoot, "bin", "codex-windows-sandbox-setup.exe"),
+        ],
+      },
+    ];
+
+    const available = packaged
+      .filter((candidate) => candidate.command && exists(candidate.command))
+      .map((candidate) => ({
+        ...candidate,
+        sandboxHelper: candidate.helpers.find((helper) => exists(helper)) || null,
+      }));
+    const complete = available.find((candidate) => candidate.sandboxHelper);
+    if (complete) {
+      return {
+        command: complete.command,
+        source: complete.source,
+        sandboxHelper: complete.sandboxHelper,
+        sandboxReady: true,
+      };
+    }
+
+    const npmCandidates = [
       pathJoin(env.APPDATA || "", "npm", "codex.cmd"),
       pathJoin(env.APPDATA || "", "npm", "codex.exe"),
     ];
-    for (const candidate of candidates) {
-      if (candidate && exists(candidate)) return candidate;
+    for (const command of npmCandidates) {
+      if (command && exists(command)) {
+        return { command, source: "npm", sandboxHelper: null, sandboxReady: null };
+      }
     }
+
+    if (available[0]) {
+      return {
+        command: available[0].command,
+        source: available[0].source,
+        sandboxHelper: null,
+        sandboxReady: false,
+      };
+    }
+    return {
+      command: "codex.cmd",
+      source: "path",
+      sandboxHelper: null,
+      sandboxReady: null,
+    };
   }
-  return platform === "win32" ? "codex.cmd" : "codex";
+  return { command: "codex", source: "path", sandboxHelper: null, sandboxReady: null };
+}
+
+export function codexWindowsSandboxArgs({
+  platform = process.platform,
+  dangerouslySkipPermissions = false,
+} = {}) {
+  if (platform !== "win32" || dangerouslySkipPermissions) return [];
+  return ["-c", "windows.sandbox_private_desktop=true"];
 }
 
 function sandboxForPermissionMode(permissionMode) {
@@ -80,6 +161,7 @@ function spawnCodexProcess({
 
   // Prompt on stdin via `-` — multiline argv is unreliable on Windows.
   const args = ["exec"];
+  args.push(...codexWindowsSandboxArgs({ dangerouslySkipPermissions }));
   if (resumeSessionId) {
     args.push("resume", resumeSessionId);
   }

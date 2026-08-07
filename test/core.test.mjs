@@ -118,7 +118,7 @@ test("Claude permission modes translate manager policy to native CLI values", as
 
 test("runtime profiles and command adapters distinguish Windows, macOS, and Linux", async () => {
   const { detectRuntimeProfile, runtimePrompt } = await import("../src/runtime.mjs?runtime-core");
-  const { resolveSpawnCommand } = await import("../src/command.mjs?runtime-core");
+  const { resolveSpawnCommand, spawnCommandSync } = await import("../src/command.mjs?runtime-core");
   const windows = detectRuntimeProfile({
     platform: "win32",
     arch: "x64",
@@ -202,6 +202,21 @@ test("runtime profiles and command adapters distinguish Windows, macOS, and Linu
     resolveSpawnCommand("npm", ["--version"], { platform: "darwin" }),
     { command: "npm", args: ["--version"] },
   );
+  let capturedSpawn = null;
+  const spawned = spawnCommandSync("C:\\tools\\worker.ps1", ["arg"], {
+    platform: "win32",
+    env: { SystemRoot: "C:\\Windows" },
+    shell: true,
+    windowsHide: false,
+    spawnImpl: (command, args, options) => {
+      capturedSpawn = { command, args, options };
+      return { status: 0, stdout: "ok", stderr: "" };
+    },
+  });
+  assert.equal(spawned.result.status, 0);
+  assert.equal(capturedSpawn.command, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  assert.equal(capturedSpawn.options.shell, false);
+  assert.equal(capturedSpawn.options.windowsHide, true);
   const { formatDoctor } = await import("../src/doctor.mjs?runtime-core");
   assert.match(
     formatDoctor({
@@ -234,7 +249,11 @@ test("runtime profiles and command adapters distinguish Windows, macOS, and Linu
 
 test("harness discovery recognizes Windows npm shims and explicit overrides", async () => {
   const { resolveClaudeBin } = await import("../src/harness/claude.mjs?discovery-core");
-  const { resolveCodexBin } = await import("../src/harness/codex.mjs?discovery-core");
+  const {
+    codexWindowsSandboxArgs,
+    resolveCodexBin,
+    resolveCodexInstallation,
+  } = await import("../src/harness/codex.mjs?discovery-core");
   const claudeShim = "C:\\Users\\operator\\AppData\\Roaming\\npm\\claude.cmd";
   const codexShim = "C:\\Users\\operator\\AppData\\Roaming\\npm\\codex.cmd";
   const existing = new Set([claudeShim, codexShim]);
@@ -257,6 +276,38 @@ test("harness discovery recognizes Windows npm shims and explicit overrides", as
     platform: "win32",
     exists,
   }), "D:\\tools\\codex.exe");
+
+  const localCodex = "C:\\Users\\operator\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe";
+  const standaloneCodex = "C:\\Users\\operator\\.codex\\packages\\standalone\\current\\bin\\codex.exe";
+  const standaloneHelper = "C:\\Users\\operator\\.codex\\packages\\standalone\\current\\codex-resources\\codex-windows-sandbox-setup.exe";
+  const packaged = new Set([localCodex, standaloneCodex, standaloneHelper]);
+  const complete = resolveCodexInstallation({
+    env,
+    platform: "win32",
+    exists: (candidate) => packaged.has(candidate),
+  });
+  assert.equal(complete.command, standaloneCodex);
+  assert.equal(complete.source, "standalone");
+  assert.equal(complete.sandboxHelper, standaloneHelper);
+  assert.equal(complete.sandboxReady, true);
+
+  const incomplete = resolveCodexInstallation({
+    env,
+    platform: "win32",
+    exists: (candidate) => candidate === localCodex,
+  });
+  assert.equal(incomplete.command, localCodex);
+  assert.equal(incomplete.sandboxReady, false);
+
+  assert.deepEqual(codexWindowsSandboxArgs({ platform: "win32" }), [
+    "-c",
+    "windows.sandbox_private_desktop=true",
+  ]);
+  assert.deepEqual(codexWindowsSandboxArgs({
+    platform: "win32",
+    dangerouslySkipPermissions: true,
+  }), []);
+  assert.deepEqual(codexWindowsSandboxArgs({ platform: "darwin" }), []);
 });
 
 test("harness setup provides platform-specific, machine-readable remediation", async () => {
