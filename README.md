@@ -60,6 +60,21 @@ flowchart LR
 | Approved work should ship without blocking the host chat | All three |
 | A human will handle GitHub after review | 🎛️ Agent Manager only; stop after Delivery Review |
 
+### Planned: Autopilot Director
+
+Autopilot Director is the approved higher-autonomy mode for scheduled or
+continuous operation. It promotes the planning and oversight role normally
+shared by the human operator and Manager agent into a policy-bound Director
+agent. Agent Manager remains the deterministic execution layer beneath it.
+
+The first planned boundary is `pr-only`: select eligible work, plan, run,
+review, push, and open a review-ready pull request without synchronous human
+input. Automatic merge and release require later, narrower policies and
+independent review. This mode is not implemented in the current release.
+
+See the [Autopilot Director plan](docs/AUTOPILOT-DIRECTOR-PLAN.md) for the role
+model, autonomy levels, policy contract, and phased implementation.
+
 ### Worker completion is not delivery completion
 
 Agent Manager fails closed after the lanes finish. A successful coding run now
