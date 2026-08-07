@@ -40,6 +40,54 @@ claude --version
 
 See the [Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started).
 
+#### Detached Claude permissions
+
+`acceptEdits` permits file edits but can still ask before shell commands. A
+detached worker cannot answer an interactive prompt. For unattended Claude
+lanes, select the behavior explicitly on that lane:
+
+```yaml
+lanes:
+  - id: implementation
+    harness: claude
+    permission_mode: auto
+    scope: "src/**"
+    prompt: "Implement and test the scoped change."
+
+  - id: benchmark
+    harness: claude
+    permission_mode: dontAsk
+    setup:
+      timeout_sec: 300
+      commands:
+        - command: npm
+          args: [ci, --no-audit, --no-fund]
+    allowed_tools:
+      - "Bash(node --test *)"
+      - "PowerShell(node --test *)"
+    kind: review
+    scope: "test/**"
+    prompt: "Run the approved benchmark commands and report the results."
+```
+
+Use `auto` for general hands-off implementation. Claude Code applies its safety
+classifier and can still deny actions outside the requested boundary. Use
+`dontAsk` for deterministic CI or benchmark work: only the narrow
+`allowed_tools` rules execute, and everything else is denied instead of
+prompting. Agent Manager rejects unrestricted shell rules and checks that the
+installed Claude CLI advertises the requested mode before launch.
+
+Fresh Git worktrees do not inherit gitignored dependency directories such as
+`node_modules`. When a lane must run tests, declare a deterministic lane
+`setup` command instead of giving the model package-install permission. Agent
+Manager completes setup before starting Claude and fails the lane if setup does
+not pass.
+
+Auto mode availability also depends on the Claude account, provider, model,
+and administrative policy. If Claude rejects it at session startup, choose an
+eligible configuration or use `dontAsk` with a narrow allowlist. Do not use
+`--dangerously-skip-permissions` as a compatibility fallback.
+
 ### Codex CLI
 
 Windows PowerShell:

@@ -357,6 +357,18 @@ remote or legacy claims remain blocking until explicit release. Set
 
 ## Dangerous permissions
 
+Detached Claude lanes should not use `acceptEdits` when their contract requires
+unattended shell commands. Set `lanes[].permission_mode: auto` for
+classifier-guarded general work, or use `dontAsk` with a narrow
+`lanes[].allowed_tools` list for deterministic commands. Lane-level settings
+override the workflow default without changing Codex lanes in the same fleet.
+
+Agent Manager rejects unrestricted `Bash` and `PowerShell` grants, requires an
+allowlist for `dontAsk`, and verifies CLI support before launch. Claude Code
+still owns account, model, provider, and administrative-policy eligibility.
+Use `lanes[].setup.commands` for deterministic worktree preparation such as
+`npm ci`; setup runs before the model and fails closed with captured evidence.
+
 Dangerous permission bypass is disabled by default. Enabling it requires both:
 
 1. `policy.dangerously_skip_permissions: true` in the workflow.

@@ -75,6 +75,56 @@ test("dangerous permission policy needs a separate invocation approval", () => {
   assert.doesNotThrow(() => assertDangerousPermissionApproval(loaded, true));
 });
 
+test("Claude unattended modes are lane-specific and dontAsk requires a narrow allowlist", () => {
+  const automatic = loadWorkflow(workflow("claude-auto", valid({
+    lanes: [{ id: "lane", harness: "claude", permission_mode: "auto", scope: "src/**", prompt: "work" }],
+  })));
+  assert.equal(automatic.lanes[0].permission_mode, "auto");
+  assert.deepEqual(automatic.lanes[0].allowed_tools, []);
+
+  assert.throws(() => loadWorkflow(workflow("claude-dont-ask-empty", valid({
+    lanes: [{ id: "lane", harness: "claude", permission_mode: "dontAsk", scope: "src/**", prompt: "work" }],
+  }))), /allowed_tools is required/);
+
+  const lockedDown = loadWorkflow(workflow("claude-dont-ask", valid({
+    lanes: [{
+      id: "lane",
+      harness: "claude",
+      permission_mode: "dontAsk",
+      allowed_tools: ["Bash(node --test *)", "PowerShell(node --test *)"],
+      setup: {
+        timeout_sec: 300,
+        commands: [{ command: "npm", args: ["ci", "--no-audit", "--no-fund"] }],
+      },
+      scope: "src/**",
+      prompt: "work",
+    }],
+  })));
+  assert.deepEqual(lockedDown.lanes[0].allowed_tools, [
+    "Bash(node --test *)",
+    "PowerShell(node --test *)",
+  ]);
+  assert.deepEqual(lockedDown.lanes[0].setup, {
+    timeout_sec: 300,
+    commands: [{ command: "npm", args: ["ci", "--no-audit", "--no-fund"] }],
+  });
+
+  assert.throws(() => loadWorkflow(workflow("claude-shell-wildcard", valid({
+    lanes: [{
+      id: "lane",
+      harness: "claude",
+      permission_mode: "dontAsk",
+      allowed_tools: ["Bash(*)"],
+      scope: "src/**",
+      prompt: "work",
+    }],
+  }))), /must not grant unrestricted shell execution/);
+
+  assert.throws(() => loadWorkflow(workflow("codex-auto", valid({
+    lanes: [{ id: "lane", harness: "codex", permission_mode: "auto", scope: "src/**", prompt: "work" }],
+  }))), /not supported by codex/);
+});
+
 test("scope checks include committed changes even when commits are allowed", () => {
   const base = currentHead(repo);
   writeFileSync(join(repo, "outside.txt"), "committed outside\n");

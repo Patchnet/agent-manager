@@ -20,7 +20,7 @@ const TOP_LEVEL_KEYS = new Set([
 ]);
 const LANE_KEYS = new Set([
   "id", "harness", "model", "scope", "prompt", "prompt_file", "fake", "depends_on",
-  "kind", "expected_outputs", "allow_no_changes",
+  "kind", "expected_outputs", "allow_no_changes", "permission_mode", "allowed_tools", "setup",
 ]);
 const SCOPE_OVERRIDE_KEYS = new Set(["path", "lanes", "owner", "reason", "access"]);
 const VERIFICATION_KEYS = new Set(["commands", "timeout_sec"]);
@@ -32,7 +32,15 @@ const POLICY_KEYS = new Set([
   "stall_timeout_sec", "poll_interval_ms",
 ]);
 const HARNESSES = new Set(["claude", "codex", "fake"]);
-const PERMISSION_MODES = new Set(["acceptEdits", "readOnly", "read-only", "read_only", "workspace-write"]);
+const PERMISSION_MODES = new Set([
+  "acceptEdits", "auto", "dontAsk", "readOnly", "read-only", "read_only", "workspace-write",
+]);
+const CLAUDE_PERMISSION_MODES = new Set([
+  "acceptEdits", "auto", "dontAsk", "readOnly", "read-only", "read_only", "workspace-write",
+]);
+const CODEX_PERMISSION_MODES = new Set([
+  "acceptEdits", "readOnly", "read-only", "read_only", "workspace-write",
+]);
 const CLAIM_MODES = new Set(["auto", "off", "required"]);
 
 export function loadWorkflow(filePath, {
@@ -277,7 +285,14 @@ function normalizeLane(input, index, repoRoot, harnessDefault, ids, policy) {
     if (!existsSync(promptFile)) throw new Error(`lane ${id}.prompt_file not found: ${promptFile}`);
   }
   const scope = normalizeScope(input.scope, id);
-  const defaultKind = ["readOnly", "read-only", "read_only"].includes(policy.permission_mode)
+  const permissionMode = input.permission_mode || policy.permission_mode;
+  const supportedModes = harness === "claude" ? CLAUDE_PERMISSION_MODES : CODEX_PERMISSION_MODES;
+  if (!supportedModes.has(permissionMode)) {
+    throw new Error(`lane ${id}.permission_mode ${permissionMode} is not supported by ${harness}`);
+  }
+  const allowedTools = normalizeAllowedTools(input.allowed_tools, id, harness, permissionMode);
+  const setup = normalizeVerification(input.setup, `lane ${id}.setup`);
+  const defaultKind = ["readOnly", "read-only", "read_only"].includes(permissionMode)
     ? "review"
     : "implementation";
   const kind = input.kind || defaultKind;
@@ -301,11 +316,39 @@ function normalizeLane(input, index, repoRoot, harnessDefault, ids, policy) {
     scope,
     expected_outputs: expectedOutputs,
     allow_no_changes: kind === "review" || input.allow_no_changes === true,
+    permission_mode: permissionMode,
+    allowed_tools: allowedTools,
+    setup,
     depends_on: dependsOn,
     read_only: [],
     prompt_file: input.prompt_file || undefined,
     _promptFile: promptFile,
   };
+}
+
+function normalizeAllowedTools(input, laneId, harness, permissionMode) {
+  if (input === undefined) {
+    if (harness === "claude" && permissionMode === "dontAsk") {
+      throw new Error(`lane ${laneId}.allowed_tools is required for Claude dontAsk mode`);
+    }
+    return [];
+  }
+  if (harness !== "claude") {
+    throw new Error(`lane ${laneId}.allowed_tools is only supported by the Claude harness`);
+  }
+  if (!Array.isArray(input) || input.length === 0) {
+    throw new Error(`lane ${laneId}.allowed_tools must be a non-empty array`);
+  }
+  return [...new Set(input.map((value) => {
+    if (!isNonEmptyString(value) || value.length > 240 || /[\r\n\0]/.test(value)) {
+      throw new Error(`lane ${laneId}.allowed_tools contains an invalid tool rule`);
+    }
+    const rule = value.trim();
+    if (/^(?:Bash|PowerShell)(?:\(\s*\*?\s*\))?$/i.test(rule)) {
+      throw new Error(`lane ${laneId}.allowed_tools must not grant unrestricted shell execution: ${rule}`);
+    }
+    return rule;
+  }))];
 }
 
 function normalizeExpectedOutputs(input, laneId, scope) {
@@ -534,27 +577,27 @@ function applyScopeOwnership(lanes, overrides) {
   return sequentialOverlaps;
 }
 
-function normalizeVerification(input) {
+function normalizeVerification(input, label = "workflow.verification") {
   if (input === undefined) return { commands: [], timeout_sec: 900 };
-  if (!isMapping(input)) throw new Error("workflow.verification must be a mapping");
-  assertKnownKeys(input, VERIFICATION_KEYS, "workflow.verification");
+  if (!isMapping(input)) throw new Error(`${label} must be a mapping`);
+  assertKnownKeys(input, VERIFICATION_KEYS, label);
   if (!Array.isArray(input.commands) || input.commands.length === 0) {
-    throw new Error("workflow.verification.commands must be a non-empty array");
+    throw new Error(`${label}.commands must be a non-empty array`);
   }
   const commands = input.commands.map((raw, index) => {
     if (!isMapping(raw)) {
-      throw new Error(`workflow.verification.commands[${index}] must be a mapping`);
+      throw new Error(`${label}.commands[${index}] must be a mapping`);
     }
-    assertKnownKeys(raw, VERIFICATION_COMMAND_KEYS, `workflow.verification.commands[${index}]`);
+    assertKnownKeys(raw, VERIFICATION_COMMAND_KEYS, `${label}.commands[${index}]`);
     if (!isNonEmptyString(raw.command) || /[\\/\s\r\n\0]/.test(raw.command)) {
-      throw new Error(`workflow.verification.commands[${index}].command must be a bare executable name`);
+      throw new Error(`${label}.commands[${index}].command must be a bare executable name`);
     }
     if (raw.args !== undefined && !Array.isArray(raw.args)) {
-      throw new Error(`workflow.verification.commands[${index}].args must be an array`);
+      throw new Error(`${label}.commands[${index}].args must be an array`);
     }
     const args = (raw.args || []).map((arg) => {
       if (typeof arg !== "string" || /[\r\n\0]/.test(arg)) {
-        throw new Error(`workflow.verification.commands[${index}].args contains an invalid value`);
+        throw new Error(`${label}.commands[${index}].args contains an invalid value`);
       }
       return arg;
     });
@@ -567,7 +610,7 @@ function normalizeVerification(input) {
       900,
       1,
       86_400,
-      "workflow.verification.timeout_sec",
+      `${label}.timeout_sec`,
     ),
   };
 }

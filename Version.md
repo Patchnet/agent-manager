@@ -1,11 +1,17 @@
 ---
 enabled: true
-current: 1.9.1
+current: 1.10.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.10.0 - 2026-08-07
+
+Added safe unattended Claude lanes with lane-scoped permission modes, narrow
+tool allowlists, deterministic setup, blocker propagation, and faster test and
+CI execution.
 
 ## 1.9.1 - 2026-08-07
 

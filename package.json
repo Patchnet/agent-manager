@@ -1,6 +1,6 @@
 {
     "name": "agent-manager",
-    "version": "1.9.1",
+    "version": "1.10.0",
     "private": false,
     "license": "Apache-2.0",
     "description": "Detached multi-harness CLI supervisor with isolated worktrees and gated delivery",
@@ -11,7 +11,7 @@
     "scripts": {
         "agent-manager": "node ./bin/agent-manager.mjs",
         "start": "node ./bin/agent-manager.mjs",
-        "test": "node --test --test-concurrency=1",
+        "test": "node --test --test-concurrency=4",
         "hygiene": "node ./scripts/public-hygiene.mjs",
         "check:version": "node ./scripts/check-version.mjs"
     },

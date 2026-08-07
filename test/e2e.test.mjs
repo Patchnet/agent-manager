@@ -159,6 +159,28 @@ function baseWorkflow(lanes) {
   };
 }
 
+test("lane setup completes before the worker starts and records evidence", async () => {
+  const runId = "run-test-lane-setup";
+  const workflow = writeWorkflow("lane-setup", baseWorkflow([{
+    id: "setup-writer",
+    scope: "setup.txt",
+    prompt: "write after setup",
+    setup: {
+      timeout_sec: 30,
+      commands: [{ command: "node", args: ["--version"] }],
+    },
+    fake: { write: { path: "setup.txt", content: "ready\n" } },
+  }]));
+
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  const status = await waitForStatus(runId, (item) => item.state === "delivery_review_pending");
+  assert.equal(status.lanes[0].state, "done");
+  assert.equal(status.lanes[0].setup.state, "passed");
+  assert.equal(status.lanes[0].setup.commands[0].exitCode, 0);
+  assert.deepEqual(status.lanes[0].setup.commands[0].command, ["node", "--version"]);
+  assert.equal(readFileSync(join(status.lanes[0].worktree, "setup.txt"), "utf8"), "ready\n");
+});
+
 test("detached run publishes feed events, resumes the exact session, and releases claims", async () => {
   const runId = "run-test-reply";
   const workflow = writeWorkflow("reply", baseWorkflow([

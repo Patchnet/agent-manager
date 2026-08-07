@@ -127,7 +127,8 @@ export async function resumeLane(runId, laneId, messagePath) {
     lane: laneConfig,
     logName: "resume-" + lane.attempt + ".log",
     model: laneConfig.model || workflow.model_default || null,
-    permissionMode: workflow.policy.permission_mode,
+    permissionMode: laneConfig.permission_mode,
+    allowedTools: laneConfig.allowed_tools,
     dangerouslySkipPermissions: !!workflow.policy.dangerously_skip_permissions,
     envAllowlist: workflow.env_allowlist,
     onActivity: (summary) => {
@@ -197,7 +198,7 @@ export async function resumeLane(runId, laneId, messagePath) {
   lane.logPath = result.logPath || lane.logPath;
   lane.sessionId = result.sessionId || handle.getSessionId?.() || lane.sessionId;
   lane.pid = null;
-  const needs = adapter.parseNeedsInput(laneDir, lane.worktree);
+  const needs = adapter.parseNeedsInput(laneDir, lane.worktree) || result.needsInput || null;
   if (runtimeViolation) {
     lane.state = "failed";
     lane.policyViolations = [...new Set([...(lane.policyViolations || []), runtimeViolation])];

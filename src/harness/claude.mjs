@@ -47,6 +47,7 @@ export function spawnClaude({
   prompt,
   laneDir,
   permissionMode = "acceptEdits",
+  allowedTools = [],
   dangerouslySkipPermissions = false,
   onActivity,
   onEvent,
@@ -59,6 +60,7 @@ export function spawnClaude({
     prompt,
     laneDir,
     permissionMode,
+    allowedTools,
     dangerouslySkipPermissions,
     onActivity,
     onEvent,
@@ -79,12 +81,31 @@ export function permissionModeForClaude(permissionMode) {
   return permissionMode || "acceptEdits";
 }
 
+export function claudePermissionArgs({
+  permissionMode = "acceptEdits",
+  allowedTools = [],
+  dangerouslySkipPermissions = false,
+} = {}) {
+  const args = [];
+  if (permissionMode) {
+    args.push("--permission-mode", permissionModeForClaude(permissionMode));
+  }
+  if (allowedTools.length) {
+    args.push("--allowedTools", ...allowedTools);
+  }
+  if (dangerouslySkipPermissions) {
+    args.push("--dangerously-skip-permissions");
+  }
+  return args;
+}
+
 export function resumeClaude({
   sessionId,
   cwd,
   prompt,
   laneDir,
   permissionMode = "acceptEdits",
+  allowedTools = [],
   dangerouslySkipPermissions = false,
   onActivity,
   onEvent,
@@ -100,6 +121,7 @@ export function resumeClaude({
     prompt,
     laneDir,
     permissionMode,
+    allowedTools,
     dangerouslySkipPermissions,
     onActivity,
     onEvent,
@@ -116,6 +138,7 @@ function spawnClaudeProcess({
   prompt,
   laneDir,
   permissionMode,
+  allowedTools = [],
   dangerouslySkipPermissions,
   onActivity,
   onEvent,
@@ -144,14 +167,13 @@ function spawnClaudeProcess({
     "--output-format", "stream-json",
     "--verbose",
   );
-  if (permissionMode) {
-    args.push("--permission-mode", permissionModeForClaude(permissionMode));
-  }
+  args.push(...claudePermissionArgs({
+    permissionMode,
+    allowedTools,
+    dangerouslySkipPermissions,
+  }));
   if (typeof model === "string" && model.trim()) {
     args.push("--model", model.trim());
-  }
-  if (dangerouslySkipPermissions) {
-    args.push("--dangerously-skip-permissions");
   }
 
   const childEnv = env || buildHarnessEnv(envAllowlist);
@@ -170,6 +192,7 @@ function spawnClaudeProcess({
   let lastByteAt = Date.now();
   let buf = "";
   let sawEmptyPrompt = false;
+  let reportedNeedsInput = null;
   let sessionId = resumeSessionId;
 
   const handleChunk = (chunk) => {
@@ -187,6 +210,7 @@ function spawnClaudeProcess({
       try {
         const ev = JSON.parse(line);
         sessionId = parseSessionId(ev) || sessionId;
+        reportedNeedsInput ||= parseResultNeedsInput(ev);
         onEvent?.(ev);
         const summary = summarizeEvent(ev);
         if (summary) {
@@ -226,6 +250,7 @@ function spawnClaudeProcess({
         logPath,
         sessionId,
         emptyPrompt: emptyFail,
+        needsInput: reportedNeedsInput,
       });
     });
     child.on("error", (err) => {
@@ -237,6 +262,7 @@ function spawnClaudeProcess({
         lastActivity: `spawn error: ${err.message}`,
         logPath,
         sessionId,
+        needsInput: reportedNeedsInput,
         error: err,
       });
     });
@@ -268,6 +294,18 @@ export function parseModel(event) {
   if (!event || typeof event !== "object") return null;
   const value = event.model || event.model_id || event.modelId || event.message?.model || null;
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function parseResultNeedsInput(event) {
+  if (event?.type !== "result" || typeof event.result !== "string") return null;
+  const text = event.result.trim();
+  if (!/^\s*(?:\*\*)?BLOCKED\b/i.test(text)) return null;
+  return {
+    type: "blocked",
+    prompt: text.slice(0, 8_000),
+    blocking: true,
+    source: "harness-result",
+  };
 }
 
 function summarizeEvent(ev) {

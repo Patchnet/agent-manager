@@ -106,14 +106,62 @@ test("codex harness is supported and parses thread_id session ids", async () => 
 });
 
 test("Claude permission modes translate manager policy to native CLI values", async () => {
-  const { parseModel, permissionModeForClaude } = await import("../src/harness/claude.mjs?permission-core");
+  const {
+    claudePermissionArgs,
+    parseModel,
+    parseResultNeedsInput,
+    permissionModeForClaude,
+  } = await import("../src/harness/claude.mjs?permission-core");
 
   assert.equal(permissionModeForClaude("readOnly"), "plan");
   assert.equal(permissionModeForClaude("read-only"), "plan");
   assert.equal(permissionModeForClaude("read_only"), "plan");
   assert.equal(permissionModeForClaude("workspace-write"), "acceptEdits");
   assert.equal(permissionModeForClaude("acceptEdits"), "acceptEdits");
+  assert.equal(permissionModeForClaude("auto"), "auto");
+  assert.equal(permissionModeForClaude("dontAsk"), "dontAsk");
+  assert.deepEqual(claudePermissionArgs({
+    permissionMode: "dontAsk",
+    allowedTools: ["Bash(node --test *)", "PowerShell(node --test *)"],
+  }), [
+    "--permission-mode", "dontAsk",
+    "--allowedTools", "Bash(node --test *)", "PowerShell(node --test *)",
+  ]);
   assert.equal(parseModel({ type: "assistant", message: { model: "claude-test" } }), "claude-test");
+  assert.deepEqual(
+    parseResultNeedsInput({ type: "result", result: "**BLOCKED — dependency setup is missing" }),
+    {
+      type: "blocked",
+      prompt: "**BLOCKED — dependency setup is missing",
+      blocking: true,
+      source: "harness-result",
+    },
+  );
+  assert.equal(parseResultNeedsInput({ type: "result", result: "Completed successfully" }), null);
+});
+
+test("Claude unattended permission preflight fails when the installed CLI lacks a requested mode", async () => {
+  const { checkClaudePermissionModes } = await import("../src/preflight.mjs?claude-permission-core");
+  const supported = checkClaudePermissionModes("claude", ["auto", "dontAsk"], {
+    platform: "linux",
+    spawnImpl: () => ({
+      status: 0,
+      stdout: '--permission-mode <mode> (choices: "acceptEdits", "auto", "dontAsk", "plan")',
+      stderr: "",
+    }),
+  });
+  assert.equal(supported.ok, true);
+
+  const unsupported = checkClaudePermissionModes("claude", ["auto"], {
+    platform: "linux",
+    spawnImpl: () => ({
+      status: 0,
+      stdout: '--permission-mode <mode> (choices: "acceptEdits", "plan")',
+      stderr: "",
+    }),
+  });
+  assert.equal(unsupported.ok, false);
+  assert.match(unsupported.error, /does not support permission mode.*auto/);
 });
 
 test("runtime profiles and command adapters distinguish Windows, macOS, and Linux", async () => {

@@ -99,6 +99,14 @@
         "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
         "harness": { "enum": ["claude", "codex", "fake"] },
         "model": { "type": "string", "minLength": 1 },
+        "permission_mode": { "enum": ["acceptEdits", "auto", "dontAsk", "readOnly", "read-only", "read_only", "workspace-write"] },
+        "allowed_tools": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+        },
+        "setup": { "$ref": "#/$defs/verification" },
         "kind": { "enum": ["implementation", "review"] },
         "scope": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }] },
         "expected_outputs": {
@@ -123,7 +131,7 @@
       "properties": {
         "allow_commit": { "type": "boolean" }, "allow_pr": { "type": "boolean" },
         "dangerously_skip_permissions": { "type": "boolean" },
-        "permission_mode": { "enum": ["acceptEdits", "readOnly", "read-only", "read_only", "workspace-write"] },
+        "permission_mode": { "enum": ["acceptEdits", "auto", "dontAsk", "readOnly", "read-only", "read_only", "workspace-write"] },
         "stall_timeout_sec": { "type": "number", "minimum": 5, "maximum": 86400 },
         "poll_interval_ms": { "type": "number", "minimum": 100, "maximum": 60000 }
       }

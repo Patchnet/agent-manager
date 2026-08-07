@@ -129,12 +129,41 @@ planning:
 lanes:
   - id: <lane>
     kind: implementation    # implementation | review
+    permission_mode: auto   # optional lane override; Claude also supports dontAsk
+    allowed_tools:          # optional Claude-only narrow allowlist; required for dontAsk
+      - "Bash(npm test *)"
+    setup:                  # optional deterministic commands before the worker starts
+      timeout_sec: 300
+      commands:
+        - command: npm
+          args: [ci, --no-audit, --no-fund]
     depends_on: []        # optional lane ids that must finish first
     scope: "path/or/glob/**"
     expected_outputs: [path/to/required-file.ts]
     prompt: |
       …task…
 ```
+
+Permission modes are resolved per lane. The workflow-level
+`policy.permission_mode` remains the default. Claude lanes may select `auto`
+for classifier-guarded unattended work or `dontAsk` for a locked-down run that
+executes only `allowed_tools`. Agent Manager requires a non-empty allowlist for
+`dontAsk` and rejects blanket `Bash`, `Bash(*)`, `PowerShell`, and
+`PowerShell(*)` rules. Codex lanes continue to use `readOnly` or
+`workspace-write`; Claude-only modes are rejected during workflow validation.
+
+The Claude CLI preflight verifies that the installed binary advertises every
+requested unattended mode before worktrees or workers start. Account, provider,
+admin-policy, and model eligibility remain enforced by Claude Code when the
+session starts. Do not replace an unavailable mode with dangerous permission
+bypass.
+
+Use `lanes[].setup` when a fresh worktree needs deterministic preparation such
+as dependency installation. Setup commands run directly under Agent Manager,
+before the worker starts, with a bare executable plus argument array, hidden
+windows, bounded timeout, restricted verification environment, and captured
+exit evidence. A failed setup fails the lane before model execution. Do not ask
+the model to work around an unprepared worktree.
 
 Max **5** lanes per run. Active concurrency defaults to three and is bounded by
 `max_concurrency`. Remaining lanes report `queued`; lanes waiting on unfinished

@@ -21,6 +21,32 @@ export function checkCommand(command, args = ["--version"], options = {}) {
   };
 }
 
+export function checkClaudePermissionModes(command, modes, options = {}) {
+  const requested = [...new Set(modes.filter((mode) => ["auto", "dontAsk"].includes(mode)))];
+  if (!requested.length) {
+    return { ok: true, command, invocation: [], version: null, error: null };
+  }
+  const { result, resolved } = spawnCommandSync(command, ["--help"], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+    ...options,
+  });
+  const output = String(result.stdout || "") + "\n" + String(result.stderr || "");
+  const missing = requested.filter((mode) => !new RegExp(`(?:\\"|\\b)${mode}(?:\\"|\\b)`).test(output));
+  return {
+    ok: result.status === 0 && missing.length === 0,
+    command,
+    invocation: [resolved.command, ...resolved.args],
+    version: result.status === 0 ? `permission modes: ${requested.join(", ")}` : null,
+    error: result.status !== 0
+      ? String(result.error?.message || result.stderr || "Claude help unavailable").trim()
+      : missing.length
+        ? `installed Claude CLI does not support permission mode(s): ${missing.join(", ")}`
+        : null,
+  };
+}
+
 export function validateRepository(workflow) {
   const repo = checkCommand("git", ["-C", workflow.repoRoot, "rev-parse", "--is-inside-work-tree"]);
   const base = checkCommand("git", ["-C", workflow.repoRoot, "rev-parse", "--verify", workflow.base_ref + "^{commit}"]);
@@ -48,6 +74,14 @@ export function preflightWorkflow(workflow) {
       const command = name === "claude" ? resolveClaudeBin() : installation.command;
       harnessCommands.set(command, name);
       checks.push(checkCommand(command));
+      if (name === "claude") {
+        checks.push(checkClaudePermissionModes(
+          command,
+          workflow.lanes
+            .filter((lane) => lane.harness === "claude")
+            .map((lane) => lane.permission_mode),
+        ));
+      }
       if (installation?.sandboxReady === false) {
         checks.push({
           ok: false,

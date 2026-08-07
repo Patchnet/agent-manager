@@ -32,6 +32,7 @@ import { buildRunIdentity } from "./identity.mjs";
 import { AGENT_MANAGER_VERSION } from "./version.mjs";
 import { writeReport } from "./report.mjs";
 import { integrateLanes } from "./integrate.mjs";
+import { runVerification } from "./verification.mjs";
 import { mergeDependencyBranches } from "./lane-snapshot.mjs";
 import { assertSafeSlug, runDir } from "./paths.mjs";
 import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
@@ -230,6 +231,9 @@ export async function runWorkflow(workflowPath, {
     harness: lane.harness || workflow.harness_default,
     modelRequested: lane.model || workflow.model_default || null,
     modelObserved: null,
+    permissionMode: lane.permission_mode,
+    allowedTools: [...lane.allowed_tools],
+    setup: { state: lane.setup.commands.length ? "pending" : "not-configured", commands: [] },
     repo: workflow.repo,
     branch: "am/" + runId + "/" + lane.id,
     scope: scopeList(lane.scope).join(", "),
@@ -464,6 +468,17 @@ export async function runWorkflow(workflowPath, {
         laneState.waitingFor = [];
         laneState.queueReason = null;
         laneState.startedAt = new Date().toISOString();
+        laneState.lastActivity = lane.setup.commands.length
+          ? `setup: ${lane.setup.commands[0].command}`
+          : "worktree ready";
+        persistStatus();
+        laneState.setup = runVerification(worktree, lane.setup, {
+          envAllowlist: workflow.env_allowlist,
+        });
+        if (!laneState.setup.passed) {
+          throw new Error(`lane setup failed: ${laneState.setup.error}`);
+        }
+
         laneState.lastActivity = "worktree ready";
 
         const prompt = lanePrompt(lane, workflow) +
@@ -480,7 +495,8 @@ export async function runWorkflow(workflowPath, {
           laneDir,
           lane,
           model: lane.model || workflow.model_default || null,
-          permissionMode: workflow.policy.permission_mode,
+          permissionMode: lane.permission_mode,
+          allowedTools: lane.allowed_tools,
           dangerouslySkipPermissions: !!workflow.policy.dangerously_skip_permissions,
           envAllowlist: workflow.env_allowlist,
           onActivity: (summary) => {
@@ -562,7 +578,7 @@ export async function runWorkflow(workflowPath, {
           result.sessionId || handle.getSessionId?.() || laneState.sessionId;
         laneState.pid = null;
 
-        const needs = adapter.parseNeedsInput(laneDir, worktree);
+        const needs = adapter.parseNeedsInput(laneDir, worktree) || result.needsInput || null;
         if (cancellationRequested(runId) || laneState.state === "cancelled") {
           laneState.state = "cancelled";
         } else if (runtimeViolation) {

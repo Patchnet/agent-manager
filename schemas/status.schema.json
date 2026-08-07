@@ -116,6 +116,9 @@
         "harness": { "type": "string" },
         "modelRequested": { "type": ["string", "null"] },
         "modelObserved": { "type": ["string", "null"] },
+        "permissionMode": { "type": "string" },
+        "allowedTools": { "type": "array", "items": { "type": "string" } },
+        "setup": { "type": "object" },
         "state": { "type": "string" }
       }
     },
