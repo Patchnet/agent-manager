@@ -42,6 +42,15 @@ import {
   syncBrainStatus,
 } from "../src/brain.mjs";
 import {
+  assertGoalsExist,
+  createGoal,
+  getGoal,
+  linkGoalArtifact,
+  listGoalArtifactLinks,
+  listGoals,
+  updateGoal,
+} from "../src/goals.mjs";
+import {
   formatAgentManagerConfig,
   initAgentManagerConfig,
   resolveAgentManagerConfig,
@@ -81,6 +90,11 @@ function usage() {
     "  agent-manager config show [--json]",
     "  agent-manager brain init [--json]",
     "  agent-manager brain status [--repo <path>] [--json]",
+    "  agent-manager goals [--parent <id>|--roots] [--json]",
+    "  agent-manager goal create --title <text> [--id <id>] [options] [--json]",
+    "  agent-manager goal update <id> [options] [--json]",
+    "  agent-manager goal show <id> [--json]",
+    "  agent-manager goal link <id> --type <type> --ref <ref> [options] [--json]",
     "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000]",
     "  agent-manager reply <runId> <laneId> --message <text> [--json]",
     "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--notes <text>]] [--json]",
@@ -243,6 +257,208 @@ function firstPositional(rest, valueFlags = []) {
   return null;
 }
 
+function parseNamedArgs(rest, { values = {}, booleans = {} } = {}) {
+  const parsed = { positionals: [] };
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (Object.hasOwn(booleans, arg)) {
+      parsed[booleans[arg]] = true;
+      continue;
+    }
+    if (Object.hasOwn(values, arg)) {
+      const spec = values[arg];
+      const value = rest[++index];
+      if (value === undefined) throw new Error(`${arg} requires a value`);
+      const items = spec.csv
+        ? value.split(",").map((item) => item.trim()).filter(Boolean)
+        : [value];
+      if (spec.repeat) parsed[spec.key] = [...(parsed[spec.key] || []), ...items];
+      else {
+        if (Object.hasOwn(parsed, spec.key)) throw new Error(`${arg} may be specified only once`);
+        parsed[spec.key] = value;
+      }
+      continue;
+    }
+    if (arg.startsWith("-")) throw new Error(`unknown goal flag: ${arg}`);
+    parsed.positionals.push(arg);
+  }
+  return parsed;
+}
+
+const goalCommonValues = {
+  "--title": { key: "title" },
+  "--lifecycle": { key: "lifecycle" },
+  "--parent": { key: "parentId" },
+  "--parent-id": { key: "parentId" },
+  "--outcome": { key: "outcome" },
+  "--dependency": { key: "dependencies", repeat: true, csv: true },
+  "--depends-on": { key: "dependencies", repeat: true, csv: true },
+  "--dependencies": { key: "dependencies", repeat: true, csv: true },
+  "--success-criterion": { key: "successCriteria", repeat: true },
+  "--success-criteria": { key: "successCriteria", repeat: true, csv: true },
+  "--source-ref": { key: "externalSourceRefs", repeat: true },
+  "--external-source-ref": { key: "externalSourceRefs", repeat: true },
+  "--external-source-refs": { key: "externalSourceRefs", repeat: true, csv: true },
+};
+
+const goalCommonBooleans = {
+  "--json": "json",
+  "--clear-parent": "clearParent",
+  "--clear-outcome": "clearOutcome",
+  "--clear-dependencies": "clearDependencies",
+  "--clear-success-criteria": "clearSuccessCriteria",
+  "--clear-source-refs": "clearSourceRefs",
+};
+
+function goalFields(parsed, { create = false } = {}) {
+  const conflicts = [
+    ["parentId", "clearParent", "parent"],
+    ["outcome", "clearOutcome", "outcome"],
+    ["dependencies", "clearDependencies", "dependencies"],
+    ["successCriteria", "clearSuccessCriteria", "success criteria"],
+    ["externalSourceRefs", "clearSourceRefs", "source refs"],
+  ];
+  for (const [valueKey, clearKey, label] of conflicts) {
+    if (Object.hasOwn(parsed, valueKey) && parsed[clearKey]) {
+      throw new Error(`cannot set and clear ${label} in the same goal update`);
+    }
+  }
+  const fields = {};
+  for (const key of [
+    "title", "lifecycle", "parentId", "dependencies", "outcome", "successCriteria",
+    "externalSourceRefs",
+  ]) {
+    if (Object.hasOwn(parsed, key)) fields[key] = parsed[key];
+  }
+  if (parsed.clearParent) fields.parentId = null;
+  if (parsed.clearOutcome) fields.outcome = null;
+  if (parsed.clearDependencies) fields.dependencies = [];
+  if (parsed.clearSuccessCriteria) fields.successCriteria = [];
+  if (parsed.clearSourceRefs) fields.externalSourceRefs = [];
+  if (create && parsed.id) fields.id = parsed.id;
+  return fields;
+}
+
+function formatGoal(goal) {
+  return [
+    `${goal.id}  ${goal.lifecycle}  ${goal.title}`,
+    `parent: ${goal.parentId || "-"}`,
+    `dependencies: ${goal.dependencies.length ? goal.dependencies.join(", ") : "-"}`,
+    `outcome: ${goal.outcome || "-"}`,
+    `success criteria: ${goal.successCriteria.length ? goal.successCriteria.join(" | ") : "-"}`,
+    `source refs: ${goal.externalSourceRefs.length ? goal.externalSourceRefs.join(", ") : "-"}`,
+  ].join("\n");
+}
+
+async function goalDetail(goalId) {
+  const [goal, children, artifactLinks] = await Promise.all([
+    getGoal(goalId),
+    listGoals({ parentId: goalId }),
+    listGoalArtifactLinks({ goalId }),
+  ]);
+  return {
+    schema: "agent-manager.goal-detail.v1",
+    goal,
+    children,
+    artifactLinks,
+  };
+}
+
+async function runGoalsCommand(rest) {
+  const parsed = parseNamedArgs(rest, {
+    values: { "--parent": { key: "parentId" } },
+    booleans: { "--roots": "roots", "--json": "json" },
+  });
+  if (parsed.positionals.length) throw new Error(`unexpected goals argument: ${parsed.positionals[0]}`);
+  if (parsed.roots && parsed.parentId) throw new Error("goals accepts either --parent or --roots, not both");
+  const goals = await listGoals(parsed.roots
+    ? { parentId: null }
+    : parsed.parentId ? { parentId: parsed.parentId } : {});
+  const payload = {
+    schema: "agent-manager.goals-list.v1",
+    filter: parsed.roots ? { parentId: null } : parsed.parentId ? { parentId: parsed.parentId } : null,
+    goals,
+  };
+  console.log(parsed.json
+    ? JSON.stringify(payload)
+    : goals.length ? goals.map((goal) => `${goal.id}\t${goal.lifecycle}\t${goal.title}`).join("\n") : "no goals");
+}
+
+async function runGoalCommand(rest) {
+  const action = rest[0];
+  if (!action) throw new Error("goal requires create, update, show, inspect, or link");
+  if (action === "create") {
+    const parsed = parseNamedArgs(rest.slice(1), {
+      values: {
+        ...goalCommonValues,
+        "--id": { key: "id" },
+        "--goal-id": { key: "id" },
+      },
+      booleans: { "--json": "json" },
+    });
+    if (parsed.positionals.length) throw new Error(`unexpected goal create argument: ${parsed.positionals[0]}`);
+    const goal = await createGoal(goalFields(parsed, { create: true }));
+    const payload = { schema: "agent-manager.goal-write.v1", operation: "create", goal };
+    console.log(parsed.json ? JSON.stringify(payload) : formatGoal(goal));
+    return;
+  }
+  if (action === "update") {
+    const parsed = parseNamedArgs(rest.slice(1), {
+      values: goalCommonValues,
+      booleans: goalCommonBooleans,
+    });
+    if (parsed.positionals.length !== 1) throw new Error("goal update requires exactly one <id>");
+    const goal = await updateGoal(parsed.positionals[0], goalFields(parsed));
+    const payload = { schema: "agent-manager.goal-write.v1", operation: "update", goal };
+    console.log(parsed.json ? JSON.stringify(payload) : formatGoal(goal));
+    return;
+  }
+  if (action === "show" || action === "inspect") {
+    const parsed = parseNamedArgs(rest.slice(1), { booleans: { "--json": "json" } });
+    if (parsed.positionals.length !== 1) throw new Error(`goal ${action} requires exactly one <id>`);
+    const payload = await goalDetail(parsed.positionals[0]);
+    console.log(parsed.json ? JSON.stringify(payload) : [
+      formatGoal(payload.goal),
+      `children: ${payload.children.length ? payload.children.map((goal) => goal.id).join(", ") : "-"}`,
+      `artifact links: ${payload.artifactLinks.length ? payload.artifactLinks.map((link) => link.id).join(", ") : "-"}`,
+    ].join("\n"));
+    return;
+  }
+  if (action === "link") {
+    const parsed = parseNamedArgs(rest.slice(1), {
+      values: {
+        "--id": { key: "linkId" },
+        "--link-id": { key: "linkId" },
+        "--type": { key: "artifactType" },
+        "--artifact-type": { key: "artifactType" },
+        "--ref": { key: "artifactRef" },
+        "--artifact-ref": { key: "artifactRef" },
+        "--relationship": { key: "relationship" },
+        "--state": { key: "state" },
+        "--label": { key: "label" },
+      },
+      booleans: { "--json": "json" },
+    });
+    if (parsed.positionals.length !== 1) throw new Error("goal link requires exactly one <id>");
+    const link = await linkGoalArtifact({
+      goalId: parsed.positionals[0],
+      ...(parsed.linkId ? { id: parsed.linkId } : {}),
+      artifactType: parsed.artifactType,
+      artifactRef: parsed.artifactRef,
+      ...(parsed.relationship ? { relationship: parsed.relationship } : {}),
+      ...(parsed.state ? { state: parsed.state } : {}),
+      ...(parsed.label ? { label: parsed.label } : {}),
+    });
+    const payload = { schema: "agent-manager.goal-link.v1", operation: "link", link };
+    console.log(parsed.json ? JSON.stringify(payload) : [
+      `${link.id}  ${link.goalId}`,
+      `${link.relationship}: ${link.artifactType}:${link.artifactRef} [${link.state}]`,
+    ].join("\n"));
+    return;
+  }
+  throw new Error(`unknown goal action: ${action}`);
+}
+
 function spawnDetached(childArgs, logPath, envOverrides = {}) {
   const outFd = openSync(logPath, "a", 0o600);
   const errFd = openSync(logPath, "a", 0o600);
@@ -260,11 +476,12 @@ function spawnDetached(childArgs, logPath, envOverrides = {}) {
   return child;
 }
 
-function detachRun(flags) {
+async function detachRun(flags) {
   const workflowPath = resolve(flags.file);
   const workflow = loadWorkflow(workflowPath, { repoOverride: flags.repo });
   assertDangerousPermissionApproval(workflow, flags.dangerous);
   preflightWorkflow(workflow);
+  if (workflow.goal_refs.length) await assertGoalsExist(workflow.goal_refs);
   const runId = assertSafeSlug(flags.runId || newRunId(), "run id");
   const dir = runDir(runId);
   if (existsSync(dir)) throw new Error(`run id already exists: ${runId}`);
@@ -424,7 +641,7 @@ async function main() {
     const flags = parseRunFlags(args.slice(1));
     if (!flags.file) throw new Error("run requires <workflow.yaml>");
     if (!existsSync(resolve(flags.file))) throw new Error("workflow not found: " + resolve(flags.file));
-    if (flags.detach) { detachRun(flags); return; }
+    if (flags.detach) { await detachRun(flags); return; }
     const result = await runWorkflow(resolve(flags.file), {
       runId: flags.runId || undefined,
       repoOverride: flags.repo,
@@ -447,6 +664,7 @@ async function main() {
     assertDangerousPermissionApproval(workflow, args.includes("--allow-dangerous-permissions"));
     validateRepository(workflow);
     const planning = assertPlanningReady(workflow);
+    if (workflow.goal_refs.length) await assertGoalsExist(workflow.goal_refs);
     const payload = {
       schema: "agent-manager.validation.v1",
       ok: true,
@@ -461,6 +679,7 @@ async function main() {
       }) => ({ id, harness, scope, readOnly, dependsOn })),
       scopeOverrides: workflow.scope_overrides,
       verificationCommands: workflow.verification.commands.length,
+      goalRefs: workflow.goal_refs,
       planning,
       delivery: workflow.delivery,
       runtime: workflow.runtime,
@@ -567,6 +786,16 @@ async function main() {
       return;
     }
     throw new Error("brain requires init or status");
+  }
+
+  if (cmd === "goals") {
+    await runGoalsCommand(args.slice(1));
+    return;
+  }
+
+  if (cmd === "goal") {
+    await runGoalCommand(args.slice(1));
+    return;
   }
 
   if (cmd === "monitor") { await runMonitor(firstPositional(args.slice(1), ["--interval"]) || latestRunId(), { intervalMs: Math.max(0.5, Number(flagValue("--interval") || 2)) * 1000 }); return; }

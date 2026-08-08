@@ -16,7 +16,7 @@ const TOP_LEVEL_KEYS = new Set([
   "repo", "lanes", "feed", "target_dev_flow", "harness_default", "model_default",
   "integrate", "policy", "claim_mode", "remote", "base_ref", "env_allowlist",
   "max_concurrency", "scope_overrides", "verification",
-  "planning", "delivery", "title", "repo_shorthand",
+  "planning", "delivery", "title", "repo_shorthand", "goal_refs",
 ]);
 const LANE_KEYS = new Set([
   "id", "harness", "model", "scope", "prompt", "prompt_file", "fake", "depends_on",
@@ -99,6 +99,7 @@ export function loadWorkflow(filePath, {
     "workflow.max_concurrency",
   );
   const verification = normalizeVerification(doc.verification);
+  const goalRefs = normalizeGoalRefs(doc.goal_refs);
   const planning = normalizePlanning(doc.planning, {
     repoRoot,
     contextOverridePath: planningContextOverride,
@@ -140,6 +141,7 @@ export function loadWorkflow(filePath, {
     scope_overrides: scopeOverrides,
     sequential_overlaps: sequentialOverlaps,
     verification,
+    goal_refs: goalRefs,
     planning,
     delivery,
     remote,
@@ -148,6 +150,21 @@ export function loadWorkflow(filePath, {
     feed,
     policy,
   };
+}
+
+function normalizeGoalRefs(input) {
+  if (input === undefined) return [];
+  if (!Array.isArray(input)) throw new Error("workflow.goal_refs must be an array");
+  const refs = input.map((value, index) => {
+    if (typeof value !== "string" || !/^goal-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value) || value.length > 128 || value.includes("..")) {
+      throw new Error(`workflow.goal_refs[${index}] must be a valid local goal ID`);
+    }
+    return value;
+  });
+  if (new Set(refs).size !== refs.length) {
+    throw new Error("workflow.goal_refs must not contain duplicate goal IDs");
+  }
+  return [...refs].sort();
 }
 
 function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDevFlow }) {
@@ -709,8 +726,9 @@ export function lanePrompt(lane, workflow) {
 `.trim();
   const sharedPlanning = planningPrompt(workflow.planning);
   const sharedAwareness = workflow.awareness?.context || "";
+  const goalContext = workflow.goalContext?.context || "";
   const hostRuntime = runtimePrompt(workflow.runtime || detectRuntimeProfile());
-  return `${sharedPlanning}\n\n${sharedAwareness}\n\n${hostRuntime}\n\n## Lane assignment\n${body.trim()}\n\n${policyBlock}\n`;
+  return `${sharedPlanning}\n\n${sharedAwareness}\n\n${goalContext}\n\n${hostRuntime}\n\n## Lane assignment\n${body.trim()}\n\n${policyBlock}\n`;
 }
 
 export function assertDangerousPermissionApproval(workflow, approved = false) {
