@@ -33,6 +33,7 @@ import { formatRuntime } from "../src/runtime.mjs";
 import { deliveryReadiness } from "../src/delivery.mjs";
 import { deriveOperatorCadence } from "../src/cadence.mjs";
 import { fleetUsage, parseFleetArgs, runFleet } from "../src/fleet.mjs";
+import { parseTokensArgs, runTokens, tokensUsage } from "../src/tokens.mjs";
 import { buildRunIdentity } from "../src/identity.mjs";
 import { AGENT_MANAGER_VERSION, currentVersionInfo } from "../src/version.mjs";
 import {
@@ -88,6 +89,7 @@ function usage() {
     "  agent-manager events <runId> [--jsonl]",
     "  agent-manager monitor [runId] [--interval <sec>]",
     "  agent-manager fleet [runId] [--active] [--since 24h] [--stream|--once|--json]",
+    "  agent-manager tokens [--since 7d] [--by day|model|repo|source] [--watch] [--json]",
     "  agent-manager config init [--dev-root <path>] [--runs-root <path>] [--claims-root <path>] [--brain-root <path>]",
     "  agent-manager config show [--json]",
     "  agent-manager brain init [--json]",
@@ -766,6 +768,16 @@ async function main() {
       return;
     }
     await runFleet(options);
+    return;
+  }
+
+  if (cmd === "tokens") {
+    const options = parseTokensArgs(args.slice(1));
+    if (options.help) {
+      console.log(tokensUsage());
+      return;
+    }
+    await runTokens(options);
     return;
   }
 

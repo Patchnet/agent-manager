@@ -1,11 +1,16 @@
 ---
 enabled: true
-current: 1.11.0
+current: 1.12.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.12.0 - 2026-08-08
+
+Added read-only `tokens` telemetry for local Claude Code and Codex session
+usage with cost estimates.
 
 ## 1.11.0 - 2026-08-08
 

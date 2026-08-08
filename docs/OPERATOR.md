@@ -172,6 +172,23 @@ notice; quit and restart Fleet to load the new viewer. Restarting `fleet` or
 continue on their original engine version. Stop an existing `watch-signal`
 process before starting its replacement to avoid duplicate notifications.
 
+## Track token usage
+
+```bash
+agent-manager tokens
+agent-manager tokens --since 24h --by repo
+agent-manager tokens --watch
+agent-manager tokens --json
+```
+
+`tokens` is the read-only token telemetry page. It parses harness session logs
+already on the machine (Claude Code under `~/.claude/projects`, Codex under
+`~/.codex/sessions`), aggregates token usage by day, model, repository, and
+source, and prices it from the static table in `src/token-usage.mjs`. Nothing
+is uploaded; models missing from the pricing table are counted but flagged as
+unpriced instead of guessed. `--since` controls the window (`7d` default,
+`all` for everything); `--watch` redraws on an interval for a side terminal.
+
 `status.json` is authoritative. `events.jsonl` and `watch-signal` are notification sources, not alternate state stores. A `blocked` run is resumable and is not terminal.
 
 Inspect the sanitized return state with

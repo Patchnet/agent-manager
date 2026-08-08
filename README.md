@@ -498,6 +498,29 @@ refresh, and `q` to quit. Colors, progress animation, transition flashes, and
 the alternate screen are enabled for interactive terminals; pipes receive a
 stable one-shot view automatically.
 
+### Track token usage in a terminal
+
+The tokens telemetry page reads harness session logs already on the machine —
+Claude Code (`~/.claude/projects`) and Codex (`~/.codex/sessions`) — and
+renders local token usage and estimated cost by day, model, repository, and
+source. It is read-only: nothing is uploaded, and no log content beyond
+usage, model, and working-directory metadata is retained.
+
+```bash
+agent-manager tokens
+agent-manager tokens --since 24h --by repo
+agent-manager tokens --since all --limit 30
+agent-manager tokens --watch --interval 120
+agent-manager tokens --json
+```
+
+Costs come from the static rate table in `src/token-usage.mjs` (USD per
+million tokens, including cache read/write rates). Messages from models
+missing from that table are counted but excluded from cost and flagged on the
+board. Override log locations with `--claude-root` / `--codex-root` or the
+`AGENT_MANAGER_CLAUDE_LOGS_ROOT` / `AGENT_MANAGER_CODEX_LOGS_ROOT`
+environment variables.
+
 Fleet displays its own runtime version and the engine version recorded by each
 new run. `agent-manager version` reports the running version, the version now on
 disk, and whether the current process needs a restart. If Agent Manager is
@@ -765,6 +788,8 @@ agent-manager status [runId] [--json]
 agent-manager monitor [runId]
 agent-manager fleet [runId] [--active] [--since 24h] [--repo <name>]
   [--stream | --once | --json] [--no-color] [--no-effects]
+agent-manager tokens [--since 7d] [--by day|model|repo|source] [--limit <n>]
+  [--watch [--interval <sec>]] [--json] [--no-color]
 agent-manager events <runId> --jsonl
 agent-manager watch-signal <runId>
 agent-manager reply <runId> <laneId> --message <text>
