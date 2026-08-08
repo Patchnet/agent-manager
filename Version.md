@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.13.0
+current: 1.14.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.14.0 - 2026-08-08
+
+Added the Autopilot Director Phase 1 foundation (schemas, fail-closed CLI, single-repo lease, dry-run cycle), pluggable token usage providers, a portable-install sweep, and docs closeout.
 
 ## 1.13.0 - 2026-08-08
 
