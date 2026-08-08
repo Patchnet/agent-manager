@@ -238,7 +238,7 @@ export function buildDailyHeatmap(byDay, { now = Date.now(), maxWeeks = HEATMAP_
 
 const HEAT_LEVEL_CHARS = [" ·", "░░", "▒▒", "▓▓", "██"];
 // 256-color green ramp; level 0 renders as a dim dot.
-const HEAT_LEVEL_COLORS = ["[38;5;238m", "[38;5;22m", "[38;5;28m", "[38;5;40m", "[38;5;46m"];
+const HEAT_LEVEL_COLORS = ["\u001b[38;5;238m", "\u001b[38;5;22m", "\u001b[38;5;28m", "\u001b[38;5;40m", "\u001b[38;5;46m"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WEEKDAY_LABELS = ["Mon", "", "Wed", "", "Fri", "", ""];
 
