@@ -417,6 +417,14 @@ Agent Manager is also not a terminal multiplexer, hosted dashboard, or automatic
 merge service. Its `fleet` command is a local, read-only terminal watcher over
 the same run telemetry used by `status` and `monitor`.
 
+Agent Manager does maintain a separate coordination brain. Before claims or
+worktrees are created, the supervisor writes a `run_intent` to an embedded
+MAADB project in explicit `feed` mode. The brain has no Git repository. It
+blocks overlapping active edit scopes, exposes non-overlapping related runs,
+and records overlapping pending-delivery runs as dependencies in the frozen
+lane context. Run telemetry remains in `AGENT_MANAGER_RUNS_ROOT`; semantic
+coordination remains in `AGENT_MANAGER_BRAIN_ROOT`.
+
 ## Requirements
 
 - Node.js 24 or later
@@ -431,9 +439,11 @@ cd agent-manager
 npm ci
 npm link
 agent-manager --version
+agent-manager config init --dev-root /path/to/your/dev
+agent-manager config show
 agent-manager version
 agent-manager doctor
-agent-manager fleet
+agent-manager-fleet
 ```
 
 You can also replace `agent-manager` in the examples with `node bin/agent-manager.mjs`.
@@ -460,12 +470,26 @@ Launch one self-contained CLI view from any terminal. It discovers runs under
 mount a web app or modify orchestration state.
 
 ```bash
-agent-manager fleet
+agent-manager-fleet
 agent-manager fleet --active
 agent-manager fleet --stream
 agent-manager fleet --once --no-color
 agent-manager fleet --json
+agent-manager fleet --runs-root /path/to/another/runs-root
 ```
+
+`agent-manager-fleet` is a dedicated executable alias for `agent-manager fleet`.
+An npm global install or `npm link` creates the correct shell command on macOS,
+Linux, and Windows, so the launch location does not control telemetry discovery.
+Fleet prints the resolved telemetry root and its source in the header and in
+JSON output.
+
+For a double-click launcher, the package includes
+`launchers/Agent Manager Fleet.command` for macOS and
+`launchers/Agent Manager Fleet.cmd` for Windows. Copy the appropriate file to a
+convenient location. On macOS, run `chmod +x "Agent Manager Fleet.command"`
+once after copying it. Both launchers call the globally installed
+`agent-manager-fleet` executable and therefore use the same user configuration.
 
 The live view shows plans or tickets, repositories, run states, lane progress,
 worker summaries, elapsed time, blockers, and recent transitions. Use arrow
@@ -822,11 +846,30 @@ does not create GitHub Releases.
 
 ## Configuration
 
+Agent Manager reads optional user-owned configuration from
+`~/.agent-manager/config.env` (on Windows,
+`%USERPROFILE%\.agent-manager\config.env`). The file is outside the npm package,
+so upgrades do not overwrite it. Initialize it once from the directory that
+contains your repositories, or provide an explicit development root:
+
+```bash
+agent-manager config init --dev-root /path/to/your/dev
+agent-manager config show
+```
+
+Use `--runs-root`, `--claims-root`, and `--brain-root` with `config init` to choose other
+locations. `config init` refuses to replace an existing file unless `--force`
+is supplied. Resolution order is command-line override, process environment,
+user config, then the built-in default. Relative paths in a manually edited
+user config are resolved from the config file's directory.
+
 | Variable | Default | Purpose |
 |---|---|---|
+| `AGENT_MANAGER_CONFIG` | `~/.agent-manager/config.env` | Optional user configuration file |
 | `AGENT_MANAGER_DEV_ROOT` | current directory | Root used for simple relative repository names |
 | `AGENT_MANAGER_RUNS_ROOT` | `~/.agent-manager/runs` | Private status, prompts, replies, logs, events, and worktrees |
 | `AGENT_MANAGER_CLAIMS_ROOT` | `~/.agent-manager/claims` | Bundled advisory claim registry |
+| `AGENT_MANAGER_BRAIN_ROOT` | `~/.agent-manager/brain` | Git-free MAADB run-intent and cross-run awareness project |
 | `AGENT_MANAGER_CLAIM_BIN` | bundled `tools/claim.mjs` | Optional external claim implementation |
 | `AGENT_MANAGER_ENV_ALLOWLIST` | empty | Extra comma-separated variables passed to workers |
 | `AGENT_MANAGER_ALLOW_DANGEROUS_PERMISSIONS` | unset | Invocation-level dangerous-mode confirmation |
@@ -836,6 +879,21 @@ registry but treats registry failure as advisory; `required` fails closed.
 Required admission is all-or-nothing. Leases renew while the supervisor is
 active, and an expired claim is recovered only after its recorded local
 supervisor process is confirmed inactive.
+
+Initialize or inspect the awareness plane directly:
+
+```bash
+agent-manager brain init
+agent-manager brain status
+agent-manager brain status --repo /path/to/repo --json
+```
+
+Repository identity prefers a normalized Git remote, so two local checkouts of
+the same repository coordinate under one key. A repository without a remote
+falls back to its canonical local path and therefore coordinates only on that
+machine. Point every Agent Manager installation at the same durable
+`AGENT_MANAGER_BRAIN_ROOT` when cross-machine awareness is required. The shared
+filesystem must provide reliable exclusive-create and SQLite locking semantics.
 
 ## Security and privacy
 

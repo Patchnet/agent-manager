@@ -36,6 +36,17 @@ import { fleetUsage, parseFleetArgs, runFleet } from "../src/fleet.mjs";
 import { buildRunIdentity } from "../src/identity.mjs";
 import { AGENT_MANAGER_VERSION, currentVersionInfo } from "../src/version.mjs";
 import {
+  ensureBrain,
+  formatBrainIntents,
+  listBrainIntents,
+  syncBrainStatus,
+} from "../src/brain.mjs";
+import {
+  formatAgentManagerConfig,
+  initAgentManagerConfig,
+  resolveAgentManagerConfig,
+} from "../src/config.mjs";
+import {
   dispatchMasterReturn,
   masterReturnSummary,
   readMasterReturn,
@@ -66,6 +77,10 @@ function usage() {
     "  agent-manager events <runId> [--jsonl]",
     "  agent-manager monitor [runId] [--interval <sec>]",
     "  agent-manager fleet [runId] [--active] [--since 24h] [--stream|--once|--json]",
+    "  agent-manager config init [--dev-root <path>] [--runs-root <path>] [--claims-root <path>] [--brain-root <path>]",
+    "  agent-manager config show [--json]",
+    "  agent-manager brain init [--json]",
+    "  agent-manager brain status [--repo <path>] [--json]",
     "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000]",
     "  agent-manager reply <runId> <laneId> --message <text> [--json]",
     "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--notes <text>]] [--json]",
@@ -508,6 +523,52 @@ async function main() {
     return;
   }
 
+  if (cmd === "config") {
+    const action = args[1];
+    const configPath = flagValue("--config");
+    if (action === "init") {
+      const result = initAgentManagerConfig({
+        configPath: configPath || undefined,
+        devRoot: flagValue("--dev-root") || undefined,
+        runsRoot: flagValue("--runs-root") || undefined,
+        claimsRoot: flagValue("--claims-root") || undefined,
+        brainRoot: flagValue("--brain-root") || undefined,
+        force: args.includes("--force"),
+      });
+      const resolved = resolveAgentManagerConfig({ configPath: result.path });
+      console.log(args.includes("--json")
+        ? JSON.stringify(resolved)
+        : `created: ${result.path}\n${formatAgentManagerConfig(resolved)}`);
+      return;
+    }
+    if (action === "show") {
+      const resolved = resolveAgentManagerConfig({ configPath: configPath || undefined });
+      console.log(args.includes("--json") ? JSON.stringify(resolved) : formatAgentManagerConfig(resolved));
+      return;
+    }
+    throw new Error("config requires init or show");
+  }
+
+  if (cmd === "brain") {
+    const action = args[1];
+    if (action === "init") {
+      const result = await ensureBrain();
+      console.log(args.includes("--json") ? JSON.stringify(result) : [
+        `brain: ${result.root}`,
+        `schema version: ${result.schemaVersion}`,
+        `history mode: ${result.historyMode}`,
+      ].join("\n"));
+      return;
+    }
+    if (action === "status") {
+      const repo = flagValue("--repo");
+      const intents = await listBrainIntents({ repoRoot: repo ? resolve(repo) : null });
+      console.log(args.includes("--json") ? JSON.stringify(intents) : formatBrainIntents(intents));
+      return;
+    }
+    throw new Error("brain requires init or status");
+  }
+
   if (cmd === "monitor") { await runMonitor(firstPositional(args.slice(1), ["--interval"]) || latestRunId(), { intervalMs: Math.max(0.5, Number(flagValue("--interval") || 2)) * 1000 }); return; }
   if (cmd === "watch-signal") { await runWatchSignal(firstPositional(args.slice(1), ["--heartbeat-sec", "--poll-ms"]) || latestRunId(), { heartbeatSec: Math.max(5, Number(flagValue("--heartbeat-sec") || 180)), pollMs: Math.max(200, Number(flagValue("--poll-ms") || 2000)) }); return; }
 
@@ -549,6 +610,13 @@ async function main() {
       reviewer: flagValue("--reviewer"),
       notes: flagValue("--notes"),
     });
+    if (flagValue("--verdict")) {
+      const reviewedStatus = readStatus(runId);
+      await syncBrainStatus(reviewedStatus).catch((error) => {
+        reviewedStatus.awareness.lastError = String(error?.message || error);
+        writeStatus(runId, reviewedStatus);
+      });
+    }
     console.log(args.includes("--json") ? JSON.stringify(result) : result.markdown);
     return;
   }
@@ -610,7 +678,7 @@ async function main() {
     console.log(formatStatus(cleanupRun(args[1], { keepLogs: args.includes("--keep-logs") })));
     return;
   }
-  if (cmd === "integrate") { if (!args[1]) throw new Error("integrate requires <runId>"); const status = integrateRun(args[1]); console.log(args.includes("--json") ? JSON.stringify(status) : formatStatus(status)); return; }
+  if (cmd === "integrate") { if (!args[1]) throw new Error("integrate requires <runId>"); const status = await integrateRun(args[1]); console.log(args.includes("--json") ? JSON.stringify(status) : formatStatus(status)); return; }
 
   if (cmd === "install") {
     if (args[1] !== "cursor") throw new Error("install currently supports: cursor");

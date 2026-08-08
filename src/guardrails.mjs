@@ -111,17 +111,19 @@ export function createPolicyEventInspector(policy = {}) {
  */
 export function isForbiddenGitMutation(command) {
   if (typeof command !== "string" || !/\bgit(?:\.exe)?\b/i.test(command)) return false;
-  // Split on common shell separators so `git log && git tag -a` is checked per segment.
-  const segments = String(command).split(/(?:&&|\|\||[;&|\n])/);
-  for (const segment of segments) {
-    if (segmentHasForbiddenGit(segment)) return true;
+  for (const candidate of commandCandidates(command)) {
+    // Split only on unquoted shell separators. Search patterns and script
+    // arguments may legitimately contain text such as `git commit|git push`.
+    for (const segment of splitShellSegments(candidate)) {
+      if (segmentHasForbiddenGit(segment)) return true;
+    }
   }
   return false;
 }
 
 function segmentHasForbiddenGit(segment) {
-  const match = segment.match(
-    /\bgit(?:\.exe)?(?:\s+-C\s+\S+)*(?:\s+-c\s+\S+=\S+)*\s+([a-z0-9][-a-z0-9]*)\b/i,
+  const match = segment.trim().match(
+    /^(?:(?:&|call)\s+)?(?:(?:"(?:[^"]*[\\/])?git(?:\.exe)?"|'(?:[^']*[\\/])?git(?:\.exe)?')|(?:\S*[\\/])?git(?:\.exe)?)(?:\s+-C\s+(?:"[^"]*"|'[^']*'|\S+))*(?:\s+-c\s+\S+=\S+)*\s+([a-z0-9][-a-z0-9]*)\b([\s\S]*)$/i,
   );
   if (!match) return false;
   const sub = match[1].toLowerCase();
@@ -130,16 +132,11 @@ function segmentHasForbiddenGit(segment) {
   }
   // `git merge` mutates; `git merge-base` / `git merge-tree` do not (different subcommands).
   if (sub === "merge") return true;
-  if (sub === "tag") return isMutatingGitTag(segment);
+  if (sub === "tag") return isMutatingGitTag(match[2] || "");
   return false;
 }
 
-function isMutatingGitTag(segment) {
-  const afterMatch = segment.match(
-    /\bgit(?:\.exe)?(?:\s+-C\s+\S+)*(?:\s+-c\s+\S+=\S+)*\s+tag\b([\s\S]*)/i,
-  );
-  if (!afterMatch) return false;
-  const rest = afterMatch[1] || "";
+function isMutatingGitTag(rest) {
   // Explicit read-only query forms (the false-positive that killed Wave 3 lanes).
   if (
     /(?:^|\s)--(?:contains|list|points-at|merged|no-merged|sort|format|color|column|ignore-case)\b/i.test(
@@ -163,6 +160,80 @@ function isMutatingGitTag(segment) {
     .replace(/(?:^|\s)--?[a-z][\w-]*/gi, " ")
     .trim();
   return positional.length > 0;
+}
+
+function commandCandidates(command) {
+  const candidates = [String(command)];
+  const seen = new Set(candidates);
+  for (let i = 0; i < candidates.length; i++) {
+    const payload = unwrapShellPayload(candidates[i]);
+    if (payload && !seen.has(payload)) {
+      seen.add(payload);
+      candidates.push(payload);
+    }
+  }
+  return candidates;
+}
+
+function unwrapShellPayload(command) {
+  const wrappers = [
+    /\b(?:powershell|pwsh)(?:\.exe)?["']?(?:\s+-[^\s]+)*\s+-(?:Command|c)\s+([\s\S]+)$/i,
+    /\bcmd(?:\.exe)?["']?(?:\s+\/[^\s]+)*\s+\/c\s+([\s\S]+)$/i,
+    /\b(?:bash|sh|zsh)(?:\.exe)?["']?(?:\s+-[^\s]+)*\s+-[^\s]*c\s+([\s\S]+)$/i,
+  ];
+  for (const pattern of wrappers) {
+    const match = String(command).match(pattern);
+    if (match) return stripOuterQuotes(match[1].trim());
+  }
+  return null;
+}
+
+function stripOuterQuotes(value) {
+  if (value.length < 2) return value;
+  const quote = value[0];
+  if ((quote === "'" || quote === '"') && value[value.length - 1] === quote) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function splitShellSegments(command) {
+  const segments = [];
+  let start = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" || char === "`") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    const pair = command.slice(i, i + 2);
+    if (pair === "&&" || pair === "||") {
+      segments.push(command.slice(start, i));
+      start = i + 2;
+      i++;
+      continue;
+    }
+    if (char === ";" || char === "|" || char === "\n") {
+      segments.push(command.slice(start, i));
+      start = i + 1;
+    }
+  }
+  segments.push(command.slice(start));
+  return segments;
 }
 
 function parseScope(scope) {

@@ -145,7 +145,7 @@ Gate presentation.
 ```bash
 agent-manager status <runId> --json
 agent-manager monitor <runId>
-agent-manager fleet
+agent-manager-fleet
 agent-manager fleet --active
 agent-manager fleet --stream
 agent-manager events <runId> --jsonl
@@ -157,6 +157,12 @@ terminal it redraws with lane progress, worker updates, blockers, transitions,
 and keyboard focus. Use `--stream` for an append-only event feed or `--once`
 for logs and scripts. It reads the run directory directly and does not need a
 mounted service.
+
+The Fleet header always identifies the resolved runs root and whether it came
+from a command-line override, process environment, user config, or the built-in
+default. Use `agent-manager config show` to inspect all resolved paths. Use
+`agent-manager fleet --runs-root <path>` for a one-time alternate view without
+changing the active shell or user config.
 
 The Fleet header shows the viewer runtime version. Selected run details show
 the Agent Manager engine version captured when that run started. If installed
@@ -342,6 +348,25 @@ does not kill an unverified stale PID. Cleanup refuses every incomplete
 delivery state. Stale cleanup removes only overall-terminal runs.
 
 ## Claims
+
+Every new run first performs MAADB brain admission. This happens before the
+advisory claim registry and before any target-repository worktree is created.
+An unexpired active run with an overlapping scope blocks admission. Active
+non-overlapping runs are included as related work, while overlapping runs in
+Delivery Review, Ship Gate, shipping, or release-pending states are included as
+delivery dependencies and do not hold an edit lease.
+
+```bash
+agent-manager brain init
+agent-manager brain status --repo /path/to/repo
+```
+
+The packaged brain defaults to `~/.agent-manager/brain` and explicitly uses
+MAADB `feed` history, so it writes durable Markdown and an index without
+initializing or mutating Git. Edit leases renew with the supervisor heartbeat;
+an expired editing intent is marked abandoned during the next atomic admission.
+For cross-machine coordination, configure the same durable brain root on every
+host. Local telemetry roots may remain separate.
 
 Workflow claim modes:
 

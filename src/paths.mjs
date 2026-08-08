@@ -1,20 +1,26 @@
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { cwd } from "node:process";
 import { fileURLToPath } from "node:url";
+import { resolveAgentManagerConfig } from "./config.mjs";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const PATH_CONFIG = resolveAgentManagerConfig();
 
 /** Workspace root used to resolve `workflow.repo` as a sibling folder. */
-export const DEV_ROOT = process.env.AGENT_MANAGER_DEV_ROOT || cwd();
+export const DEV_ROOT = PATH_CONFIG.values.AGENT_MANAGER_DEV_ROOT;
 
 /** Run telemetry root (`status.json`, lane logs, heartbeats). */
-export const RUNS_ROOT =
-  process.env.AGENT_MANAGER_RUNS_ROOT || join(homedir(), ".agent-manager", "runs");
+export const RUNS_ROOT = PATH_CONFIG.values.AGENT_MANAGER_RUNS_ROOT;
+export const RUNS_ROOT_SOURCE = PATH_CONFIG.sources.AGENT_MANAGER_RUNS_ROOT;
+
+/** Advisory claim registry root. */
+export const CLAIMS_ROOT = PATH_CONFIG.values.AGENT_MANAGER_CLAIMS_ROOT;
+
+/** MAADB-backed semantic awareness root. */
+export const BRAIN_ROOT = PATH_CONFIG.values.AGENT_MANAGER_BRAIN_ROOT;
 
 /** Claims CLI — bundled by default; override for a shared fleet registry. */
 export const CLAIM_BIN =
-  process.env.AGENT_MANAGER_CLAIM_BIN || join(PACKAGE_ROOT, "tools", "claim.mjs");
+  PATH_CONFIG.values.AGENT_MANAGER_CLAIM_BIN || join(PACKAGE_ROOT, "tools", "claim.mjs");
 
 export function runDir(runId) {
   return containedPath(RUNS_ROOT, assertSafeSlug(runId, "run id"), "run directory");

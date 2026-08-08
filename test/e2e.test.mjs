@@ -69,6 +69,7 @@ const env = {
   ...process.env,
   AGENT_MANAGER_DEV_ROOT: root,
   AGENT_MANAGER_RUNS_ROOT: runsRoot,
+  AGENT_MANAGER_BRAIN_ROOT: join(root, ".brain"),
   AGENT_MANAGER_CLAIM_BIN: claimScript,
   AGENT_MANAGER_TEST_MODE: "1",
   CLAIM_LOG: claimLog,
@@ -179,6 +180,10 @@ test("lane setup completes before the worker starts and records evidence", async
   assert.equal(status.lanes[0].setup.commands[0].exitCode, 0);
   assert.deepEqual(status.lanes[0].setup.commands[0].command, ["node", "--version"]);
   assert.equal(readFileSync(join(status.lanes[0].worktree, "setup.txt"), "utf8"), "ready\n");
+  assert.equal(status.awareness.state, "pending_delivery");
+  assert.equal(status.awareness.phase, "delivery");
+  assert.equal(status.awareness.historyMode, "feed");
+  assert.equal(existsSync(status.awareness.contextSnapshot), true);
 });
 
 test("detached run publishes feed events, resumes the exact session, and releases claims", async () => {

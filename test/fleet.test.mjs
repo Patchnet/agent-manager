@@ -76,7 +76,8 @@ test("fleet options parse durations, filters, and output modes", () => {
 
   const options = parseFleetArgs([
     "run-one", "--active", "--since", "2h", "--repo", "fixture-repo",
-    "--limit", "7", "--interval", "0.5", "--no-color", "--no-effects",
+    "--limit", "7", "--interval", "0.5", "--runs-root", runsRoot,
+    "--no-color", "--no-effects",
   ]);
   assert.equal(options.runId, "run-one");
   assert.equal(options.activeOnly, true);
@@ -84,6 +85,7 @@ test("fleet options parse durations, filters, and output modes", () => {
   assert.equal(options.repo, "fixture-repo");
   assert.equal(options.limit, 7);
   assert.equal(options.intervalMs, 500);
+  assert.equal(options.runsRoot, runsRoot);
   assert.equal(options.color, false);
   assert.equal(options.effects, false);
   assert.throws(() => parseFleetArgs(["--stream", "--json"]), /cannot be combined/);
@@ -127,6 +129,7 @@ test("fleet snapshot and board show tickets, lane progress, narrative, and trans
     now: () => Date.parse("2026-08-04T12:06:00.000Z"),
   });
   assert.equal(snapshot.counts.active, 1);
+  assert.deepEqual(snapshot.telemetry, { runsRoot, source: "caller" });
   assert.match(snapshot.viewer.runtimeVersion, /^\d+\.\d+\.\d+/);
   assert.equal(snapshot.runs[0].ticket, "ticket-session-authority");
   assert.equal(snapshot.runs[0].agentManagerVersion, "1.8.1");
@@ -136,6 +139,7 @@ test("fleet snapshot and board show tickets, lane progress, narrative, and trans
 
   const board = formatFleetBoard(snapshot, { width: 130, color: false, frame: 1 });
   assert.match(board, /AGENT MANAGER/);
+  assert.match(board, new RegExp(`Telemetry: ${runsRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\[caller\\]`));
   assert.match(board, /v\d+\.\d+\.\d+ · FLEET/);
   assert.match(board, /ticket-session-authority/);
   assert.match(board, /\[AM 12345678\] fixture · Session authority/);

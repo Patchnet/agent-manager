@@ -12,6 +12,7 @@
     "lanes": { "type": "array", "items": { "$ref": "status.schema.json#/$defs/laneStatus" } },
     "ship": { "type": ["object", "null"] },
     "delivery": { "type": ["object", "null"] },
+    "awareness": { "type": ["object", "null"] },
     "cadence": { "$ref": "operator-cadence.schema.json" }
   }
 }

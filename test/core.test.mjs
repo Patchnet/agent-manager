@@ -429,6 +429,8 @@ test("allow_commit=false blocks mutators but allows read-only git tag/show/log",
     "git merge-base main HEAD",
     "git -C C:/tmp/wt tag --contains abc123",
     "git show HEAD && git tag --contains HEAD",
+    "rg -n -i \"git commit|git push\" README.md docs",
+    '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command \'rg -n -i "every write|git.commit|git commit|git-commit|Git is" README.md docs\'',
   ];
   for (const command of allowed) {
     assert.equal(isForbiddenGitMutation(command), false, "should allow: " + command);
@@ -449,6 +451,8 @@ test("allow_commit=false blocks mutators but allows read-only git tag/show/log",
     "git rebase main",
     "git cherry-pick abc",
     "git log -1 && git tag -a v9 -m x",
+    '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command \'git commit -m nope\'',
+    "powershell.exe -Command 'rg pattern README.md; git push origin main'",
   ];
   for (const command of blocked) {
     assert.equal(isForbiddenGitMutation(command), true, "should block: " + command);

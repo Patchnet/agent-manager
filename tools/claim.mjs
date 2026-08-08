@@ -19,12 +19,11 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, hostname, userInfo } from "node:os";
+import { hostname, userInfo } from "node:os";
 import { basename, join } from "node:path";
+import { CLAIMS_ROOT } from "../src/paths.mjs";
 
-const ROOT =
-  process.env.AGENT_MANAGER_CLAIMS_ROOT ||
-  join(homedir(), ".agent-manager", "claims");
+const ROOT = CLAIMS_ROOT;
 const DEFAULT_TTL_HOURS = 24;
 
 const args = process.argv.slice(2);

@@ -71,6 +71,15 @@ export function writeStatus(runId, status) {
               })),
             }
           : null,
+        awareness: payload.awareness
+          ? {
+              state: payload.awareness.state,
+              repoKey: payload.awareness.repoKey || null,
+              relatedRuns: payload.awareness.activeRelated?.length || 0,
+              deliveryDependencies: payload.awareness.deliveryDependencies?.length || 0,
+              lastError: payload.awareness.lastError || null,
+            }
+          : null,
         cadence: deriveOperatorCadence(payload),
       });
     }
@@ -143,6 +152,7 @@ export function formatStatus(status) {
     `started=${status.startedAt || "-"}  ended=${status.endedAt || "-"}  initialDirty=${status.initialRepo?.dirty ? "yes" : "no"}`,
     `planning=${status.planning?.state || "legacy/unrecorded"}  plan=${status.planning?.planRef || "-"}`,
     `reviewedBase=${status.planning?.reviewedBaseSha || "-"}  contextSha256=${status.planning?.contextDigest || "-"}`,
+    `awareness=${status.awareness?.state || "legacy/unrecorded"}  repoKey=${status.awareness?.repoKey || "-"}  related=${status.awareness?.activeRelated?.length || 0}  deliveryDeps=${status.awareness?.deliveryDependencies?.length || 0}`,
     `topology=${status.topology?.fullySerialized ? "serialized" : "parallel"}  effectiveParallelism=${status.topology?.effectiveParallelism || "-"}`,
     "",
   ];
@@ -201,6 +211,7 @@ export function formatStatus(status) {
     lines.push("");
   }
   if (status.feed?.lastError) lines.push(`feed warning: ${status.feed.lastError}`);
+  if (status.awareness?.lastError) lines.push(`awareness warning: ${status.awareness.lastError}`);
   return lines.join("\n");
 }
 

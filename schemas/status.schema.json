@@ -43,6 +43,7 @@
         "attestations": { "type": "object" }
       }
     },
+    "awareness": { "$ref": "#/$defs/awareness" },
     "delivery": {
       "type": "object",
       "required": ["schema", "mode", "state", "review", "targets", "release"],
@@ -85,6 +86,34 @@
     }
   },
   "$defs": {
+    "awareness": {
+      "type": "object",
+      "required": ["schema", "state"],
+      "properties": {
+        "schema": { "const": "agent-manager.awareness.v1" },
+        "state": { "enum": ["pending", "admitted", "running", "needs_input", "pending_delivery", "shipping", "reviewed", "merged", "released", "rejected", "failed", "cancelled", "abandoned", "blocked"] },
+        "phase": { "enum": ["editing", "delivery", "terminal"] },
+        "historyMode": { "const": "feed" },
+        "brainRoot": { "type": "string" },
+        "intentId": { "type": "string" },
+        "runId": { "type": "string" },
+        "repoKey": { "type": "string" },
+        "repoLabel": { "type": "string" },
+        "repoIdentitySource": { "enum": ["remote", "path"] },
+        "scopes": { "type": "array", "items": { "type": "string" } },
+        "activeRelated": { "type": "array" },
+        "deliveryDependencies": { "type": "array" },
+        "admittedAt": { "type": "string", "format": "date-time" },
+        "heartbeatAt": { "type": "string", "format": "date-time" },
+        "leaseExpiresAt": { "type": "string", "format": "date-time" },
+        "context": { "type": "string" },
+        "contextDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "contextSnapshot": { "type": "string" },
+        "code": { "type": "string" },
+        "conflicts": { "type": "array" },
+        "lastError": { "type": "string" }
+      }
+    },
     "runIdentity": {
       "type": "object",
       "additionalProperties": false,

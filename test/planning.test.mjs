@@ -74,6 +74,8 @@ test("planning evidence validates the immutable base and prefixes every lane pro
   assert.match(prompt, /## Lane assignment/);
   assert.match(prompt, /## Host runtime \(automatic; authoritative\)/);
   assert.match(prompt, new RegExp(loaded.runtime.hostPlatform));
+  loaded.awareness = { context: "## Agent Manager cross-run awareness\n- Related run: run-example" };
+  assert.match(lanePrompt(loaded.lanes[0], loaded), /Related run: run-example/);
 });
 
 test("planning accepts inline private context without creating repository files", () => {

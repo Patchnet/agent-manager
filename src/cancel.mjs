@@ -7,6 +7,7 @@ import { removeWorktree } from "./worktree.mjs";
 import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
 import { writeReport } from "./report.mjs";
 import { writePrivateFile } from "./fs-safe.mjs";
+import { syncBrainStatus } from "./brain.mjs";
 
 export async function cancelRun(runId, { removeWorktrees = false } = {}) {
   const status = readStatus(runId);
@@ -43,6 +44,9 @@ export async function cancelRun(runId, { removeWorktrees = false } = {}) {
   status.state = "cancelled";
   if (status.delivery) status.delivery.state = "cancelled";
   status.endedAt = cancelledAt;
+  await syncBrainStatus(status).catch((error) => {
+    if (status.awareness) status.awareness.lastError = String(error?.message || error);
+  });
   writeStatus(runId, status);
 
   const publisher = createFeedPublisher(status.feed || {});

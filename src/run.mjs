@@ -37,6 +37,7 @@ import { mergeDependencyBranches } from "./lane-snapshot.mjs";
 import { assertSafeSlug, runDir } from "./paths.mjs";
 import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
+import { admitRun, syncBrainStatus } from "./brain.mjs";
 import { assertPlanningReady } from "./planning.mjs";
 import { validateLaneCompletion } from "./completion.mjs";
 import {
@@ -287,6 +288,7 @@ export async function runWorkflow(workflowPath, {
     baseRef: workflow.base_ref,
     baseCommit: immutableBaseCommit,
     planning: { ...planning, contextSnapshot: planningContextSnapshot },
+    awareness: { schema: "agent-manager.awareness.v1", state: "pending" },
     scopeOverrides: workflow.scope_overrides,
     sequentialOverlaps: workflow.sequential_overlaps,
     supervisor: { pid: process.pid, startedAt, kind: "run" },
@@ -328,18 +330,6 @@ export async function runWorkflow(workflowPath, {
     pendingFeed.push(task);
     return task;
   };
-  await emit("run_started", {
-    workflow: workflow.absPath,
-    laneCount: laneStates.length,
-    maxConcurrency: workflow.max_concurrency,
-    planning: {
-      planRef: planning.planRef,
-      contextDigest: planning.contextDigest,
-      reviewedBaseSha: planning.reviewedBaseSha,
-    },
-    runtime,
-  });
-
   const activeHandles = new Map();
   const createdWorktrees = [];
   const handleSupervisorSignal = (signal) => {
@@ -360,12 +350,53 @@ export async function runWorkflow(workflowPath, {
     status.state = "cancelled";
     status.endedAt = at;
     persistStatus();
+    void syncBrainStatus(status).catch((error) => {
+      status.awareness.lastError = String(error?.message || error);
+      persistStatus();
+    });
   };
   process.once("SIGINT", handleSupervisorSignal);
   process.once("SIGTERM", handleSupervisorSignal);
 
   let claimRenewal = null;
   try {
+    const admitted = await admitRun({
+      runId,
+      repoRoot: workflow.repoRoot,
+      remote: workflow.remote,
+      title: identity.subject,
+      lanes: workflow.lanes,
+      planRef: planning.planRef,
+      managerHarness: identity.manager?.harness,
+      baseCommit: immutableBaseCommit,
+    });
+    const { context: awarenessContext, ...awarenessStatus } = admitted;
+    const awarenessContextSnapshot = join(dir, "awareness-context.md");
+    writePrivateFile(awarenessContextSnapshot, awarenessContext + "\n", "utf8");
+    workflow.awareness = { context: awarenessContext };
+    status.awareness = {
+      ...awarenessStatus,
+      contextSnapshot: awarenessContextSnapshot,
+    };
+    persistStatus();
+    await emit("run_started", {
+      workflow: workflow.absPath,
+      laneCount: laneStates.length,
+      maxConcurrency: workflow.max_concurrency,
+      planning: {
+        planRef: planning.planRef,
+        contextDigest: planning.contextDigest,
+        reviewedBaseSha: planning.reviewedBaseSha,
+      },
+      awareness: {
+        repoKey: status.awareness.repoKey,
+        relatedRuns: status.awareness.activeRelated.length,
+        deliveryDependencies: status.awareness.deliveryDependencies.length,
+        contextDigest: status.awareness.contextDigest,
+      },
+      runtime,
+    });
+
     const admission = claimLanes({
       repo: workflow.repo,
       group: runId,
@@ -389,6 +420,7 @@ export async function runWorkflow(workflowPath, {
               error: result.error,
             };
     }
+    await syncBrainStatus(status);
     persistStatus();
 
     claimRenewal = setInterval(() => {
@@ -405,6 +437,10 @@ export async function runWorkflow(workflowPath, {
         }
       }
       persistStatus();
+      void syncBrainStatus(status).catch((error) => {
+        status.awareness.lastError = String(error?.message || error);
+        persistStatus();
+      });
     }, CLAIM_RENEW_INTERVAL_MS);
     claimRenewal.unref?.();
 
@@ -719,11 +755,13 @@ export async function runWorkflow(workflowPath, {
     if (cancellationRequested(runId)) {
       const cancelled = readStatus(runId) || status;
       for (const lane of cancelled.lanes || []) releaseLaneClaim(cancelled, lane);
-      const saved = writeStatus(runId, {
+      const saved = {
         ...cancelled,
         state: "cancelled",
         endedAt: cancelled.endedAt || new Date().toISOString(),
-      });
+      };
+      await syncBrainStatus(saved);
+      writeStatus(runId, saved);
       writeReport(runId, saved);
       return { runId, status: saved, dir };
     }
@@ -752,6 +790,7 @@ export async function runWorkflow(workflowPath, {
       };
       status.endedAt = new Date().toISOString();
     }
+    await syncBrainStatus(status);
     persistStatus();
     const reportPath = writeReport(runId, status);
     if (status.state === "delivery_review_pending") {
@@ -783,22 +822,51 @@ export async function runWorkflow(workflowPath, {
   } catch (error) {
     if (cancellationRequested(runId)) {
       const cancelled = readStatus(runId);
+      if (cancelled?.awareness?.intentId) {
+        await syncBrainStatus(cancelled).catch(() => null);
+      }
       return { runId, status: cancelled || status, dir };
     }
-    status.state = "failed";
+    const admissionConflict = error?.code === "RUN_INTENT_CONFLICT";
+    status.state = admissionConflict ? "blocked" : "failed";
     status.error = String(error?.message || error);
-    status.endedAt = new Date().toISOString();
+    status.endedAt = admissionConflict ? null : new Date().toISOString();
+    if (admissionConflict) {
+      status.awareness = {
+        ...status.awareness,
+        state: "blocked",
+        code: error.code,
+        conflicts: error.conflicts,
+        lastError: status.error,
+      };
+    }
     for (const lane of laneStates) {
       if (["queued", "dependency-waiting", "running"].includes(lane.state)) {
-        lane.state = "failed";
+        lane.state = admissionConflict ? "blocked" : "failed";
         lane.lastActivity = status.error;
         lane.endedAt = status.endedAt;
+        if (admissionConflict) {
+          lane.needsInput = {
+            type: "coordination_conflict",
+            prompt: status.error,
+            blocking: true,
+          };
+        }
       }
       releaseLaneClaim(status, lane);
     }
+    if (status.awareness?.intentId) {
+      await syncBrainStatus(status).catch((brainError) => {
+        status.awareness.lastError = String(brainError?.message || brainError);
+      });
+    }
     persistStatus();
     writeReport(runId, status);
-    await emit("run_failed", { endedAt: status.endedAt, error: status.error });
+    await emit(admissionConflict ? "needs_input" : "run_failed", {
+      endedAt: status.endedAt,
+      error: status.error,
+      ...(admissionConflict ? { laneId: null, prompt: status.error } : {}),
+    });
     await Promise.allSettled(pendingFeed);
     persistStatus();
     writeReport(runId, status);
@@ -816,6 +884,7 @@ export async function runWorkflow(workflowPath, {
         // Best effort.
       }
     }
+    if (admissionConflict) return { runId, status, dir };
     throw error;
   } finally {
     if (claimRenewal) clearInterval(claimRenewal);

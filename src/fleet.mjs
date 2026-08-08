@@ -7,9 +7,9 @@ import {
   readdirSync,
   statSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import readline from "node:readline";
-import { RUNS_ROOT } from "./paths.mjs";
+import { RUNS_ROOT, RUNS_ROOT_SOURCE } from "./paths.mjs";
 import { isTerminalState } from "./status.mjs";
 import { currentVersionInfo } from "./version.mjs";
 
@@ -32,6 +32,7 @@ export function fleetUsage() {
     "  --active             show active and attention-needed runs only",
     "  --since <duration>   include recent terminal runs (default: 24h)",
     "  --repo <name>        filter by repository",
+    "  --runs-root <path>   override the configured telemetry root",
     "  --limit <n>          maximum runs on screen (default: 12)",
     "  --interval <sec>     telemetry refresh interval (default: 1)",
     "  --stream             append state and worker updates instead of redrawing",
@@ -67,6 +68,7 @@ export function parseFleetArgs(argv = []) {
     activeOnly: false,
     sinceMs: DEFAULT_SINCE_MS,
     repo: null,
+    runsRoot: null,
     limit: DEFAULT_LIMIT,
     eventLimit: DEFAULT_EVENT_LIMIT,
     intervalMs: DEFAULT_INTERVAL_MS,
@@ -88,6 +90,7 @@ export function parseFleetArgs(argv = []) {
     if (arg === "--active") options.activeOnly = true;
     else if (arg === "--since") options.sinceMs = parseDuration(nextValue());
     else if (arg === "--repo") options.repo = nextValue();
+    else if (arg === "--runs-root") options.runsRoot = resolve(nextValue());
     else if (arg === "--limit") options.limit = positiveInteger(nextValue(), "--limit");
     else if (arg === "--interval") {
       const seconds = Number(nextValue());
@@ -407,11 +410,13 @@ function laneModel(lane) {
   return lane.modelRequested ? `${lane.modelRequested} · unverified` : "default · unverified";
 }
 
-export function buildFleetSnapshot(options = {}, {
-  runsRoot = RUNS_ROOT,
-  now = () => Date.now(),
-  version = currentVersionInfo(),
-} = {}) {
+export function buildFleetSnapshot(options = {}, dependencies = {}) {
+  const runsRoot = options.runsRoot || dependencies.runsRoot || RUNS_ROOT;
+  const runsRootSource = options.runsRoot
+    ? "command-line"
+    : dependencies.runsRootSource || (dependencies.runsRoot ? "caller" : RUNS_ROOT_SOURCE);
+  const now = dependencies.now || (() => Date.now());
+  const version = dependencies.version || currentVersionInfo();
   const config = {
     runId: null,
     activeOnly: false,
@@ -474,6 +479,10 @@ export function buildFleetSnapshot(options = {}, {
   return {
     schema: "agent-manager.fleet.v1",
     viewer: version,
+    telemetry: {
+      runsRoot: resolve(runsRoot),
+      source: runsRootSource,
+    },
     at: new Date(currentTime).toISOString(),
     counts: {
       visible: runs.length,
@@ -645,6 +654,9 @@ export function formatFleetBoard(snapshot, {
   const frameIcon = snapshot.counts.active ? SPINNER[frame % SPINNER.length] : "◆";
   const viewerVersion = snapshot.viewer?.runtimeVersion || "unknown";
   lines.push(`${style(color, pulseCode, frameIcon)} ${style(color, "bold", title)} ${style(color, "gray", `v${viewerVersion} · FLEET`)}  ${badges}`);
+  if (snapshot.telemetry?.runsRoot) {
+    lines.push(style(color, "gray", `Telemetry: ${snapshot.telemetry.runsRoot} [${snapshot.telemetry.source || "unknown"}]`));
+  }
   if (snapshot.viewer?.restartRequired) {
     lines.push(style(color, "bgYellow", "black", "bold", ` UPDATE INSTALLED v${snapshot.viewer.installedVersion} · press q, then restart Fleet `));
   }
@@ -654,7 +666,7 @@ export function formatFleetBoard(snapshot, {
     lines.push("");
     lines.push(style(color, "yellow", "  No runs match the current filters."));
     lines.push("");
-    lines.push(style(color, "gray", "  Waiting for telemetry under $AGENT_MANAGER_RUNS_ROOT…"));
+    lines.push(style(color, "gray", `  Waiting for telemetry under ${snapshot.telemetry?.runsRoot || "$AGENT_MANAGER_RUNS_ROOT"}…`));
     return lines.join("\n");
   }
 
@@ -853,7 +865,8 @@ export function formatFleetStreamEvent(event, { color = false } = {}) {
 }
 
 export async function runFleet(options = {}, {
-  runsRoot = RUNS_ROOT,
+  runsRoot = null,
+  runsRootSource = null,
   output = process.stdout,
   input = process.stdin,
   now = () => Date.now(),
@@ -875,7 +888,15 @@ export async function runFleet(options = {}, {
     ...options,
   };
   const isTty = Boolean(output.isTTY);
-  const takeSnapshot = () => buildFleetSnapshot(config, { runsRoot, now });
+  const effectiveRunsRoot = config.runsRoot || runsRoot || RUNS_ROOT;
+  const effectiveRunsRootSource = config.runsRoot
+    ? "command-line"
+    : runsRootSource || (runsRoot ? "caller" : RUNS_ROOT_SOURCE);
+  const takeSnapshot = () => buildFleetSnapshot(config, {
+    runsRoot: effectiveRunsRoot,
+    runsRootSource: effectiveRunsRootSource,
+    now,
+  });
   const writeLine = (value) => output.write(String(value) + "\n");
 
   if (config.once || (!isTty && !config.stream)) {
@@ -900,10 +921,18 @@ export async function runFleet(options = {}, {
     return previous;
   }
 
-  return runInteractiveFleet(config, { runsRoot, output, input, now, sleep, maxTicks });
+  return runInteractiveFleet(config, {
+    runsRoot: effectiveRunsRoot,
+    runsRootSource: effectiveRunsRootSource,
+    output,
+    input,
+    now,
+    sleep,
+    maxTicks,
+  });
 }
 
-async function runInteractiveFleet(config, { runsRoot, output, input, now, sleep, maxTicks }) {
+async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, input, now, sleep, maxTicks }) {
   let stopped = false;
   let forceRefresh = true;
   let selectedRunId = config.runId || null;
@@ -962,7 +991,7 @@ async function runInteractiveFleet(config, { runsRoot, output, input, now, sleep
       const time = now();
       if (forceRefresh || !snapshot || time >= nextRefreshAt) {
         previousSnapshot = snapshot;
-        snapshot = buildFleetSnapshot({ ...config, activeOnly }, { runsRoot, now: () => time });
+        snapshot = buildFleetSnapshot({ ...config, activeOnly }, { runsRoot, runsRootSource, now: () => time });
         refreshSelection();
         nextRefreshAt = time + config.intervalMs;
         forceRefresh = false;

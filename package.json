@@ -6,7 +6,8 @@
     "description": "Detached multi-harness CLI supervisor with isolated worktrees and gated delivery",
     "type": "module",
     "bin": {
-        "agent-manager": "./bin/agent-manager.mjs"
+        "agent-manager": "./bin/agent-manager.mjs",
+        "agent-manager-fleet": "./bin/agent-manager-fleet.mjs"
     },
     "scripts": {
         "agent-manager": "node ./bin/agent-manager.mjs",
@@ -19,6 +20,7 @@
         "node": ">=24"
     },
     "dependencies": {
+        "@maadb/core": "0.14.0",
         "yaml": "^2.8.0"
     },
     "repository": {
@@ -31,6 +33,7 @@
         "tools/",
         "skills/",
         "integrations/",
+        "launchers/",
         "schemas/",
         "docs/",
         "examples/",

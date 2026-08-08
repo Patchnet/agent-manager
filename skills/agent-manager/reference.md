@@ -28,11 +28,19 @@ still come from Master reading `status.json` on each wake
 
 | Variable | Default | Role |
 |---|---|---|
+| `AGENT_MANAGER_CONFIG` | `~/.agent-manager/config.env` | Optional stable user configuration |
 | `AGENT_MANAGER_DEV_ROOT` | `cwd` | Parent of target `repo` folders |
 | `AGENT_MANAGER_RUNS_ROOT` | `~/.agent-manager/runs` | Telemetry + worktrees |
 | `AGENT_MANAGER_CLAIMS_ROOT` | `~/.agent-manager/claims` | Claim JSON registry |
+| `AGENT_MANAGER_BRAIN_ROOT` | `~/.agent-manager/brain` | Git-free MAADB awareness plane |
 | `AGENT_MANAGER_CLAIM_BIN` | `<pkg>/tools/claim.mjs` | Claims CLI |
 | `AGENT_MANAGER_ENV_ALLOWLIST` | empty | Extra worker environment names |
+
+Initialize stable user paths with `agent-manager config init --dev-root <path>`
+and inspect the effective values with `agent-manager config show`. Process
+environment variables override user config, so existing launch automation
+remains compatible. The user config is outside the installed package and is not
+replaced by updates.
 
 Workers also receive automatically generated, non-secret runtime variables:
 `AGENT_MANAGER_HOST_PLATFORM`, `AGENT_MANAGER_HOST_OS`,
@@ -58,7 +66,7 @@ node bin/agent-manager.mjs watch-signal <runId> --heartbeat-sec 180
 node bin/agent-manager.mjs monitor <runId> [--interval 2]
 # live lane/delivery board; exits on reviewed/merged/released/rejected/failed/cancelled
 
-node bin/agent-manager.mjs fleet [runId] [--active | --stream | --once]
+agent-manager-fleet [runId] [--active | --stream | --once]
 # live multi-run board; interactive focus, blockers, transitions, and worker summaries
 ```
 
@@ -70,7 +78,8 @@ single-run cooking view (`status --watch` aliases it). `fleet` is the read-only
 multi-run view and can emit an append-only stream or one-shot JSON for scripts.
 
 `fleet` and `monitor` may be restarted while runs are active. Fleet shows its
-viewer runtime version and each run's recorded engine version. A live viewer
+resolved telemetry root and source, viewer runtime version, and each run's
+recorded engine version. A live viewer
 detects when its installed package version changes and shows a quit/restart
 notice without contacting the network or writing telemetry. `watch-signal` is
 a notification process; stop the old watcher before replacing it so the host
@@ -346,6 +355,13 @@ pending.
 ## Coordination lifecycle
 
 - `run --detach --json` returns one launch object and exits immediately.
+- Before claims or worktrees, atomic MAADB admission records the canonical
+  repository, complete lane scope set, plan reference, edit lease, and frozen
+  cross-run context. Overlapping active edits stop; pending delivery becomes a
+  dependency.
+- The packaged brain always requests MAADB `feed` mode and never initializes
+  Git. Use one shared durable brain root for cross-machine coordination; shared
+  runs roots are not required.
 - Agent Feed publishing is HTTP-based and fail-soft. Lifecycle event bodies include
   `runId`, repo, lane/session identifiers, state, and terminal details.
 - Each adapter implements `start`, `resume`, `cancel`,

@@ -16,6 +16,7 @@ import { writeReport } from "./report.mjs";
 import { readStatus, writeStatus } from "./status.mjs";
 import { resolveSpawnCommand, spawnCommandSync } from "./command.mjs";
 import { detectRuntimeProfile } from "./runtime.mjs";
+import { syncBrainStatus } from "./brain.mjs";
 import {
   assertAcceptedReview,
   expectedMergeShas,
@@ -293,9 +294,10 @@ export async function runShip(runId, handoff, dependencies = {}) {
   status.ship.needsInput = null;
   status.ship.error = null;
   status.ship.lastActivity = "validating ship handoff";
-  status = save(id, status);
 
   try {
+    await syncBrainStatus(status);
+    status = save(id, status);
     preflight(handoff, exec);
     assertNotCancelled(id);
     if (handoff.flow === "formal") {
@@ -334,6 +336,10 @@ export async function runShip(runId, handoff, dependencies = {}) {
       });
     }
     status = save(id, status);
+    await syncBrainStatus(status).catch((error) => {
+      status.awareness.lastError = String(error?.message || error);
+      status = save(id, status);
+    });
     writeShipSummary(id, status);
     return status;
   } catch (error) {
@@ -377,6 +383,10 @@ export async function runShip(runId, handoff, dependencies = {}) {
       }
     }
     status = save(id, status);
+    await syncBrainStatus(status).catch((brainError) => {
+      status.awareness.lastError = String(brainError?.message || brainError);
+      status = save(id, status);
+    });
     writeShipSummary(id, status);
     if (!(error instanceof ShipBlockedError) && !(error instanceof ShipCancelledError)) {
       throw error;

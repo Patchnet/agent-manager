@@ -708,8 +708,9 @@ export function lanePrompt(lane, workflow) {
 - Prefer finishing a thin slice over expanding scope.
 `.trim();
   const sharedPlanning = planningPrompt(workflow.planning);
+  const sharedAwareness = workflow.awareness?.context || "";
   const hostRuntime = runtimePrompt(workflow.runtime || detectRuntimeProfile());
-  return `${sharedPlanning}\n\n${hostRuntime}\n\n## Lane assignment\n${body.trim()}\n\n${policyBlock}\n`;
+  return `${sharedPlanning}\n\n${sharedAwareness}\n\n${hostRuntime}\n\n## Lane assignment\n${body.trim()}\n\n${policyBlock}\n`;
 }
 
 export function assertDangerousPermissionApproval(workflow, approved = false) {

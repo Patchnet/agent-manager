@@ -6,14 +6,18 @@ import { writeReport } from "./report.mjs";
 import { readStatus, writeStatus } from "./status.mjs";
 import { loadWorkflow } from "./workflow.mjs";
 import { markWorkersComplete } from "./delivery.mjs";
+import { syncBrainStatus } from "./brain.mjs";
 
-export function integrateRun(runId) {
+export async function integrateRun(runId) {
   const status = readStatus(runId);
   if (!status) throw new Error("no status for " + runId);
   if (["running", "shipping", "cancelled", "ship_gate_pending", "reviewed", "merged", "released"].includes(status.state)) {
     throw new Error("run must finish successfully before integration");
   }
-  if (status.integrate?.state === "ready") return status;
+  if (status.integrate?.state === "ready") {
+    await syncBrainStatus(status);
+    return writeStatus(runId, status);
+  }
   if (!(status.lanes || []).length || !status.lanes.every((lane) => lane.state === "done")) {
     throw new Error("all lanes must be done before integration");
   }
@@ -41,6 +45,7 @@ export function integrateRun(runId) {
   }
   if (status.state === "workers_done") markWorkersComplete(status);
   else if (status.state !== "blocked") status.endedAt ||= new Date().toISOString();
+  await syncBrainStatus(status);
   const saved = writeStatus(runId, status);
   writeReport(runId, saved);
   return saved;
