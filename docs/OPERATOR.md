@@ -152,11 +152,16 @@ agent-manager events <runId> --jsonl
 agent-manager watch-signal <runId> --heartbeat-sec 180
 ```
 
-`fleet` is the read-only side-terminal view across runs. In an interactive
-terminal it redraws with lane progress, worker updates, blockers, transitions,
-and keyboard focus. Use `--stream` for an append-only event feed or `--once`
-for logs and scripts. It reads the run directory directly and does not need a
-mounted service.
+`fleet` is the read-only side-terminal operations board. In an interactive
+terminal it has four tabs — **Runs**, **Goals**, **Core**, and **Tokens** —
+switched with `1`/`2`/`3`/`4`, `f`/`g`/`c`/`t`, or `Tab`. The Runs tab redraws
+lane progress, worker updates, blockers, transitions, and keyboard focus. Goals
+shows the local goal tree. Core shows the knowledge-store overview and graph
+endpoints (goals ↔ runs ↔ artifacts) without exposing internal storage names.
+Tokens shows local harness usage/cost. Use `--view core` (or `goals` / `tokens`)
+to start on a tab.
+Use `--stream` for an append-only event feed or `--once` for logs and scripts.
+It reads telemetry and the brain directly and does not need a mounted service.
 
 The Fleet header always identifies the resolved runs root and whether it came
 from a command-line override, process environment, user config, or the built-in

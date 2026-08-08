@@ -1,11 +1,17 @@
 ---
 enabled: true
-current: 1.12.0
+current: 1.13.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.13.0 - 2026-08-08
+
+Added a tabbed Fleet operations board (Runs, Goals, Core, Tokens) with cached
+tab switches, a Core knowledge-graph view, and skill Step 0 conversational
+goal setup before lane launch.
 
 ## 1.12.0 - 2026-08-08
 

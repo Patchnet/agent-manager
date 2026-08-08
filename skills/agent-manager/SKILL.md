@@ -118,10 +118,39 @@ parent that contains the `agent-manager` folder).
 
 ## Operator flow (Master Dev)
 
+### Step 0 — Conversational goal setup (default for new waves)
+
+When the operator says they want to use Agent Manager / fire up lanes / dump a
+work list for a repo, **do not jump straight to `run`**. Walk the conversation:
+
+1. Confirm **repo** and the **wave outcome** in one sentence.
+2. Ask for (or accept) a dump of outcomes — prefer a few child goals, not a
+   dozen micro-tasks. Default: one parent goal per repo wave.
+3. Create or update the local goal graph before planning lanes:
+
+```bash
+agent-manager goal create --title "<wave title>" --lifecycle active
+agent-manager goal create --title "<child outcome>" --parent <parent-id> --lifecycle planned
+agent-manager goals --roots
+```
+
+4. Tell the operator they can watch progress in the Fleet terminal tabs:
+
+```bash
+agent-manager-fleet
+# Live tabs: 1 Runs · 2 Goals · 3 Tokens · Tab to cycle
+```
+
+5. Only then plan lanes / workflow. Put `goal_refs` on the workflow so runs
+   attach to the graph. Skip Step 0 only when the operator explicitly points at
+   an existing goal id or says “no goals, just run”.
+
+### Steps 1+ — Plan, detach, supervise
+
 1. **Check in and plan** - review the authoritative work source, target-repo
    instructions, relevant code, base commit, lane scopes, and shared context.
    Complete `workflow.planning`; `validate` and `run` fail closed if it is
-   missing, incomplete, or stale.
+   missing, incomplete, or stale. Include `goal_refs` from Step 0.
 2. **Run detached** — `agent-manager run <workflow> --detach`. Read `runId` /
    `telemetry` from stdout (exits immediately). **Do not** await a non-detach run.
    Codex and Claude Code launches automatically capture the originating thread
@@ -131,9 +160,9 @@ parent that contains the `agent-manager` folder).
    change this host return route. Do not print private IDs into boards.
 3. **Report** immediately with **Run board** template ([reporting.md](./reporting.md)).
 4. **Arm watch-signal** (mandatory) — see **Watch loop** below. Optionally tell
-   the operator they can open `fleet` (all runs) or `monitor <runId>` (one run)
-   in a side terminal. `fleet` is observational and does not replace the
-   required chat reporting templates.
+   the operator they can open `fleet` (all runs; tabs for Goals/Tokens) or
+   `monitor <runId>` (one run) in a side terminal. `fleet` is observational and
+   does not replace the required chat reporting templates.
 5. On each wake: Heartbeat / Run board / Escalation / Run outcome per templates.
 6. **Escalate** any `blocked` / `needsInput` with the **Escalation** template.
 7. **On `delivery_review_pending`:** post **Run outcome**, then immediately

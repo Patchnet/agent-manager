@@ -482,7 +482,10 @@ agent-manager fleet --runs-root /path/to/another/runs-root
 An npm global install or `npm link` creates the correct shell command on macOS,
 Linux, and Windows, so the launch location does not control telemetry discovery.
 Fleet prints the resolved telemetry root and its source in the header and in
-JSON output.
+JSON output. In an interactive terminal, Fleet is a tabbed board — **Runs**, **Goals**,
+**Core**, and **Tokens** (`1`/`2`/`3`/`4` or `Tab`). Core is the knowledge-graph
+overview (store counts + goal/run/artifact endpoints). Standalone
+`agent-manager tokens` remains available for scripts and one-shot boards.
 
 For a double-click launcher, the package includes
 `launchers/Agent Manager Fleet.command` for macOS and

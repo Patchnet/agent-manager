@@ -9,9 +9,16 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import readline from "node:readline";
-import { RUNS_ROOT, RUNS_ROOT_SOURCE } from "./paths.mjs";
+import { BRAIN_ROOT, BRAIN_ROOT_SOURCE, RUNS_ROOT, RUNS_ROOT_SOURCE } from "./paths.mjs";
 import { isTerminalState } from "./status.mjs";
 import { currentVersionInfo } from "./version.mjs";
+import {
+  buildGoalsSnapshot,
+  enrichSelectedGoal,
+  formatGoalsBoard,
+} from "./goals-board.mjs";
+import { buildCoreSnapshot, formatCoreBoard } from "./core-board.mjs";
+import { buildTokensSnapshot, formatTokensBoard } from "./tokens.mjs";
 
 const DEFAULT_INTERVAL_MS = 1_000;
 const DEFAULT_SINCE_MS = 24 * 60 * 60 * 1_000;
@@ -21,9 +28,11 @@ const LOG_TAIL_BYTES = 256 * 1_024;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ANSI_RE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
+export const FLEET_VIEWS = Object.freeze(["runs", "goals", "core", "tokens"]);
+
 export function fleetUsage() {
   return [
-    "agent-manager fleet - live terminal fleet watcher",
+    "agent-manager fleet - live terminal operations board",
     "",
     "Usage:",
     "  agent-manager fleet [runId] [options]",
@@ -35,6 +44,7 @@ export function fleetUsage() {
     "  --runs-root <path>   override the configured telemetry root",
     "  --limit <n>          maximum runs on screen (default: 12)",
     "  --interval <sec>     telemetry refresh interval (default: 1)",
+    "  --view <name>        start on runs | goals | core | tokens (default: runs)",
     "  --stream             append state and worker updates instead of redrawing",
     "  --once               print one snapshot and exit",
     "  --json               print one machine-readable snapshot and exit",
@@ -42,8 +52,37 @@ export function fleetUsage() {
     "  --no-effects         disable animation and alternate-screen rendering",
     "  -h, --help           show this help",
     "",
-    "Live keys: ↑/↓ or j/k select · a active filter · r refresh · q quit",
+    "Live tabs: 1/f Runs · 2/g Goals · 3/c Core · 4/t Tokens · Tab cycle",
+    "Live keys: ↑/↓ or j/k select · a active filter (Runs) · r refresh · q quit",
   ].join("\n");
+}
+
+export function formatViewerTabBar(activeView = "runs", { color = false, width = 120 } = {}) {
+  const labels = [
+    { id: "runs", key: "1", label: "Runs" },
+    { id: "goals", key: "2", label: "Goals" },
+    { id: "core", key: "3", label: "Core" },
+    { id: "tokens", key: "4", label: "Tokens" },
+  ];
+  const parts = labels.map((tab) => {
+    const selected = tab.id === activeView;
+    const text = `${tab.key}:${tab.label}`;
+    return selected
+      ? style(color, "bold", "bgCyan", "black", ` ${text} `)
+      : style(color, "gray", ` ${text} `);
+  });
+  const hint = style(color, "gray", "Tab cycle · q quit");
+  const bar = `${parts.join(style(color, "dim", "│"))}  ${hint}`;
+  const rule = style(color, "gray", "─".repeat(Math.max(72, (width || 120) - 2)));
+  return `${bar}\n${rule}`;
+}
+
+function normalizeFleetView(value) {
+  const view = String(value || "runs").trim().toLowerCase();
+  if (!FLEET_VIEWS.includes(view)) {
+    throw new Error(`--view must be one of: ${FLEET_VIEWS.join(", ")}`);
+  }
+  return view;
 }
 
 export function parseDuration(value) {
@@ -72,6 +111,7 @@ export function parseFleetArgs(argv = []) {
     limit: DEFAULT_LIMIT,
     eventLimit: DEFAULT_EVENT_LIMIT,
     intervalMs: DEFAULT_INTERVAL_MS,
+    view: "runs",
     stream: false,
     once: false,
     json: false,
@@ -98,7 +138,8 @@ export function parseFleetArgs(argv = []) {
         throw new Error("--interval must be at least 0.2 seconds");
       }
       options.intervalMs = Math.round(seconds * 1_000);
-    } else if (arg === "--stream") options.stream = true;
+    } else if (arg === "--view") options.view = normalizeFleetView(nextValue());
+    else if (arg === "--stream") options.stream = true;
     else if (arg === "--once") options.once = true;
     else if (arg === "--json") {
       options.json = true;
@@ -512,6 +553,7 @@ const COLORS = {
   gray: "\u001b[90m",
   white: "\u001b[97m",
   bgYellow: "\u001b[43m",
+  bgCyan: "\u001b[46m",
   black: "\u001b[30m",
 };
 
@@ -933,47 +975,236 @@ export async function runFleet(options = {}, {
 }
 
 async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, input, now, sleep, maxTicks }) {
+  const VIEW_TTL_MS = {
+    runs: Math.max(250, config.intervalMs || DEFAULT_INTERVAL_MS),
+    goals: 10_000,
+    core: 10_000,
+    tokens: 30_000,
+  };
   let stopped = false;
-  let forceRefresh = true;
+  let needsPaint = true;
   let selectedRunId = config.runId || null;
-  let selectedIndex = 0;
+  let selectedRunIndex = 0;
+  let selectedGoalId = null;
+  let selectedGoalIndex = 0;
+  let goalProgressGoalId = null;
   let activeOnly = config.activeOnly;
-  let snapshot = null;
-  let previousSnapshot = null;
-  let nextRefreshAt = 0;
+  let view = normalizeFleetView(config.view || "runs");
+  let runsSnapshot = null;
+  let previousRunsSnapshot = null;
+  let goalsSnapshot = null;
+  let goalProgress = null;
+  let coreSnapshot = null;
+  let tokensSnapshot = null;
+  let tokensLoading = false;
+  const cacheAt = { runs: 0, goals: 0, core: 0, tokens: 0 };
+  const forceReload = { runs: true, goals: true, core: true, tokens: true };
   let frame = 0;
   let ticks = 0;
   const effects = config.effects && Boolean(output.isTTY);
   const color = config.color && Boolean(output.isTTY);
   const interactive = Boolean(input.isTTY && typeof input.setRawMode === "function");
   const writeRaw = (value) => output.write(String(value));
+  const width = () => output.columns || 120;
 
-  const refreshSelection = () => {
-    if (!snapshot?.runs.length) {
+  const refreshRunSelection = () => {
+    if (!runsSnapshot?.runs.length) {
       selectedRunId = null;
-      selectedIndex = 0;
+      selectedRunIndex = 0;
       return;
     }
-    const existing = snapshot.runs.findIndex((run) => run.runId === selectedRunId);
-    if (existing >= 0) selectedIndex = existing;
-    else selectedIndex = Math.min(selectedIndex, snapshot.runs.length - 1);
-    selectedRunId = snapshot.runs[selectedIndex]?.runId || null;
+    const existing = runsSnapshot.runs.findIndex((run) => run.runId === selectedRunId);
+    if (existing >= 0) selectedRunIndex = existing;
+    else selectedRunIndex = Math.min(selectedRunIndex, runsSnapshot.runs.length - 1);
+    selectedRunId = runsSnapshot.runs[selectedRunIndex]?.runId || null;
+  };
+
+  const syncGoalSelection = () => {
+    if (!goalsSnapshot?.rows.length) {
+      selectedGoalId = null;
+      selectedGoalIndex = 0;
+      return;
+    }
+    const existing = goalsSnapshot.rows.findIndex((row) => row.goal.id === selectedGoalId);
+    if (existing >= 0) selectedGoalIndex = existing;
+    else selectedGoalIndex = Math.min(selectedGoalIndex, goalsSnapshot.rows.length - 1);
+    selectedGoalId = goalsSnapshot.rows[selectedGoalIndex]?.goal.id || null;
+  };
+
+  const setView = (nextView) => {
+    const resolved = normalizeFleetView(nextView);
+    if (resolved === view) return;
+    view = resolved;
+    needsPaint = true;
   };
 
   const keypress = (_text, key = {}) => {
-    if (key.ctrl && key.name === "c" || key.name === "q") stopped = true;
-    else if (["down", "j"].includes(key.name) && snapshot?.runs.length) {
-      selectedIndex = Math.min(snapshot.runs.length - 1, selectedIndex + 1);
-      selectedRunId = snapshot.runs[selectedIndex].runId;
-    } else if (["up", "k"].includes(key.name) && snapshot?.runs.length) {
-      selectedIndex = Math.max(0, selectedIndex - 1);
-      selectedRunId = snapshot.runs[selectedIndex].runId;
-    } else if (key.name === "a") {
-      activeOnly = !activeOnly;
-      forceRefresh = true;
-    } else if (key.name === "r") forceRefresh = true;
+    if (key.ctrl && key.name === "c" || key.name === "q") {
+      stopped = true;
+      return;
+    }
+    if (key.name === "tab") {
+      const index = FLEET_VIEWS.indexOf(view);
+      setView(FLEET_VIEWS[(index + 1) % FLEET_VIEWS.length]);
+      return;
+    }
+    if (key.name === "1" || key.name === "f") { setView("runs"); return; }
+    if (key.name === "2" || key.name === "g") { setView("goals"); return; }
+    if (key.name === "3" || key.name === "c") { setView("core"); return; }
+    if (key.name === "4" || key.name === "t") { setView("tokens"); return; }
+    if (key.name === "r") {
+      forceReload[view] = true;
+      needsPaint = true;
+      return;
+    }
+    if (view === "runs") {
+      if (["down", "j"].includes(key.name) && runsSnapshot?.runs.length) {
+        selectedRunIndex = Math.min(runsSnapshot.runs.length - 1, selectedRunIndex + 1);
+        selectedRunId = runsSnapshot.runs[selectedRunIndex].runId;
+        needsPaint = true;
+      } else if (["up", "k"].includes(key.name) && runsSnapshot?.runs.length) {
+        selectedRunIndex = Math.max(0, selectedRunIndex - 1);
+        selectedRunId = runsSnapshot.runs[selectedRunIndex].runId;
+        needsPaint = true;
+      } else if (key.name === "a") {
+        activeOnly = !activeOnly;
+        forceReload.runs = true;
+        needsPaint = true;
+      }
+      return;
+    }
+    if (view === "goals") {
+      if (["down", "j"].includes(key.name) && goalsSnapshot?.rows.length) {
+        selectedGoalIndex = Math.min(goalsSnapshot.rows.length - 1, selectedGoalIndex + 1);
+        selectedGoalId = goalsSnapshot.rows[selectedGoalIndex].goal.id;
+        needsPaint = true;
+      } else if (["up", "k"].includes(key.name) && goalsSnapshot?.rows.length) {
+        selectedGoalIndex = Math.max(0, selectedGoalIndex - 1);
+        selectedGoalId = goalsSnapshot.rows[selectedGoalIndex].goal.id;
+        needsPaint = true;
+      }
+    }
   };
   const stop = () => { stopped = true; };
+
+  const interruptibleSleep = async (ms) => {
+    const step = 40;
+    let left = Math.max(0, ms);
+    while (left > 0 && !stopped && !needsPaint && !forceReload[view]) {
+      const slice = Math.min(step, left);
+      await sleep(slice);
+      left -= slice;
+    }
+  };
+
+  const ensureViewData = async (time) => {
+    const ttl = VIEW_TTL_MS[view] || 1_000;
+    const listStale = forceReload[view] || !cacheAt[view] || (time - cacheAt[view]) >= ttl;
+    let changed = false;
+
+    if (view === "runs") {
+      if (!listStale) return false;
+      previousRunsSnapshot = runsSnapshot;
+      runsSnapshot = buildFleetSnapshot({ ...config, activeOnly }, { runsRoot, runsRootSource, now: () => time });
+      refreshRunSelection();
+      cacheAt.runs = time;
+      forceReload.runs = false;
+      return true;
+    }
+
+    if (view === "goals") {
+      if (listStale) {
+        goalsSnapshot = await buildGoalsSnapshot({
+          root: BRAIN_ROOT,
+          rootSource: BRAIN_ROOT_SOURCE,
+          limit: config.limit,
+        });
+        cacheAt.goals = time;
+        forceReload.goals = false;
+        changed = true;
+      }
+      syncGoalSelection();
+      if (selectedGoalId && selectedGoalId !== goalProgressGoalId) {
+        goalProgress = await enrichSelectedGoal(selectedGoalId, { root: BRAIN_ROOT });
+        goalProgressGoalId = selectedGoalId;
+        changed = true;
+      } else if (!selectedGoalId && goalProgressGoalId) {
+        goalProgress = null;
+        goalProgressGoalId = null;
+        changed = true;
+      }
+      return changed;
+    }
+
+    if (view === "core") {
+      if (!listStale) return false;
+      coreSnapshot = await buildCoreSnapshot({
+        root: BRAIN_ROOT,
+        rootSource: BRAIN_ROOT_SOURCE,
+        limit: config.limit,
+      });
+      cacheAt.core = time;
+      forceReload.core = false;
+      return true;
+    }
+
+    if (!listStale) return false;
+    // Tokens: first open can be slow; UI already showed a loading frame.
+    if (!tokensSnapshot) tokensLoading = true;
+    tokensSnapshot = buildTokensSnapshot({
+      sinceMs: 7 * 24 * 60 * 60 * 1_000,
+      now: time,
+    });
+    tokensLoading = false;
+    cacheAt.tokens = time;
+    forceReload.tokens = false;
+    return true;
+  };
+
+  const paint = () => {
+    const tabBar = formatViewerTabBar(view, { color, width: width() });
+    let board = "";
+    if (view === "runs") {
+      board = runsSnapshot
+        ? formatFleetBoard(runsSnapshot, {
+          width: width(),
+          frame,
+          color,
+          effects,
+          selectedRunId,
+          previousSnapshot: previousRunsSnapshot,
+          interactive,
+          activeOnly,
+        })
+        : style(color, "gray", "  Loading runs…");
+    } else if (view === "goals") {
+      board = goalsSnapshot
+        ? formatGoalsBoard(goalsSnapshot, {
+          width: width(),
+          color,
+          selectedGoalId,
+          progress: goalProgress,
+        })
+        : style(color, "gray", "  Loading goals…");
+    } else if (view === "core") {
+      board = coreSnapshot
+        ? formatCoreBoard(coreSnapshot, { width: width(), color })
+        : style(color, "gray", "  Loading core knowledge graph…");
+    } else if (tokensSnapshot) {
+      board = formatTokensBoard(tokensSnapshot, {
+        color,
+        limit: config.limit,
+      });
+      if (tokensLoading) {
+        board = `${style(color, "yellow", "  Refreshing token usage…")}\n${board}`;
+      }
+    } else {
+      board = style(color, "yellow", "  Loading token usage (first open can take a few seconds)…");
+    }
+    writeRaw(`\u001b[H\u001b[2J${tabBar}\n${board}`);
+    frame += 1;
+    needsPaint = false;
+  };
 
   try {
     if (effects) writeRaw("\u001b[?1049h\u001b[?25l");
@@ -989,28 +1220,23 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
     while (!stopped && ticks < maxTicks) {
       ticks += 1;
       const time = now();
-      if (forceRefresh || !snapshot || time >= nextRefreshAt) {
-        previousSnapshot = snapshot;
-        snapshot = buildFleetSnapshot({ ...config, activeOnly }, { runsRoot, runsRootSource, now: () => time });
-        refreshSelection();
-        nextRefreshAt = time + config.intervalMs;
-        forceRefresh = false;
+      const activeView = view;
+
+      // Paint cached tab immediately on switch; refresh heavy data afterward.
+      if (needsPaint) paint();
+
+      const hadWork = await ensureViewData(time);
+      if (stopped) break;
+      if (view !== activeView) {
+        needsPaint = true;
+        continue;
       }
-      const board = formatFleetBoard(snapshot, {
-        width: output.columns || 120,
-        frame,
-        color,
-        effects,
-        selectedRunId,
-        previousSnapshot,
-        interactive,
-        activeOnly,
-      });
-      writeRaw(`\u001b[H\u001b[2J${board}`);
-      frame += 1;
-      await sleep(effects ? 120 : config.intervalMs);
+      if (hadWork || needsPaint) paint();
+
+      const sleepMs = view === "runs" && effects ? 120 : 250;
+      await interruptibleSleep(sleepMs);
     }
-    return snapshot;
+    return runsSnapshot;
   } finally {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);

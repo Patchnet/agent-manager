@@ -17,6 +17,7 @@ export const CLAIMS_ROOT = PATH_CONFIG.values.AGENT_MANAGER_CLAIMS_ROOT;
 
 /** MAADB-backed semantic awareness root. */
 export const BRAIN_ROOT = PATH_CONFIG.values.AGENT_MANAGER_BRAIN_ROOT;
+export const BRAIN_ROOT_SOURCE = PATH_CONFIG.sources.AGENT_MANAGER_BRAIN_ROOT;
 
 /** Claims CLI — bundled by default; override for a shared fleet registry. */
 export const CLAIM_BIN =

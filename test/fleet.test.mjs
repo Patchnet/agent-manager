@@ -13,11 +13,16 @@ const {
   describeCommand,
   diffFleetSnapshots,
   formatFleetBoard,
+  formatViewerTabBar,
   parseDuration,
   parseFleetArgs,
   parseHarnessLog,
   runFleet,
 } = await import("../src/fleet.mjs?fleet-test");
+const {
+  buildGoalsSnapshot,
+  formatGoalsBoard,
+} = await import("../src/goals-board.mjs?goals-board-test");
 
 test.after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -88,7 +93,48 @@ test("fleet options parse durations, filters, and output modes", () => {
   assert.equal(options.runsRoot, runsRoot);
   assert.equal(options.color, false);
   assert.equal(options.effects, false);
+  assert.equal(options.view, "runs");
+  assert.equal(parseFleetArgs(["--view", "goals"]).view, "goals");
+  assert.equal(parseFleetArgs(["--view", "core"]).view, "core");
+  assert.equal(parseFleetArgs(["--view", "tokens"]).view, "tokens");
+  assert.throws(() => parseFleetArgs(["--view", "dashboard"]), /--view/);
   assert.throws(() => parseFleetArgs(["--stream", "--json"]), /cannot be combined/);
+});
+
+test("fleet tab bar highlights the active view", () => {
+  const bar = formatViewerTabBar("core", { color: false });
+  assert.match(bar, /2:Goals/);
+  assert.match(bar, /1:Runs/);
+  assert.match(bar, /3:Core/);
+  assert.match(bar, /4:Tokens/);
+  assert.match(bar, /Tab cycle/);
+});
+
+test("goals board empty state guides first-time setup", async () => {
+  const brainRoot = join(root, "empty-brain");
+  mkdirSync(brainRoot, { recursive: true });
+  const snapshot = await buildGoalsSnapshot({ root: brainRoot, rootSource: "test", limit: 12 });
+  assert.equal(snapshot.counts.total, 0);
+  const board = formatGoalsBoard(snapshot, { color: false });
+  assert.match(board, /No goals yet/);
+  assert.match(board, /Use agent-manager for/);
+});
+
+test("core board shows store counts and endpoint guidance", async () => {
+  const {
+    buildCoreSnapshot,
+    formatCoreBoard,
+  } = await import("../src/core-board.mjs?core-board-test");
+  const brainRoot = join(root, "empty-core-brain");
+  mkdirSync(brainRoot, { recursive: true });
+  const snapshot = await buildCoreSnapshot({ root: brainRoot, rootSource: "test", limit: 8 });
+  assert.equal(snapshot.counts.goals, 0);
+  assert.equal(snapshot.counts.intents, 0);
+  const board = formatCoreBoard(snapshot, { color: false });
+  assert.match(board, /CORE/);
+  assert.match(board, /GRAPH ENDPOINTS/);
+  assert.match(board, /Knowledge root/);
+  assert.match(board, /No linked endpoints yet/);
 });
 
 test("harness log parsing keeps worker narrative separate from command activity", () => {

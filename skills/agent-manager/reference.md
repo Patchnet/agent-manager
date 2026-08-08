@@ -66,7 +66,7 @@ node bin/agent-manager.mjs watch-signal <runId> --heartbeat-sec 180
 node bin/agent-manager.mjs monitor <runId> [--interval 2]
 # live lane/delivery board; exits on reviewed/merged/released/rejected/failed/cancelled
 
-agent-manager-fleet [runId] [--active | --stream | --once]
+agent-manager-fleet [runId] [--active | --stream | --once | --view runs|goals|core|tokens]
 # live multi-run board; interactive focus, blockers, transitions, and worker summaries
 ```
 
