@@ -39,6 +39,7 @@ export function writeStatus(runId, status) {
         at: payload.updatedAt,
         runId,
         state: payload.state,
+        goalRefs: payload.goalRefs || [],
         runtime: payload.runtime || null,
         lanes: (payload.lanes || []).map((lane) => ({
           id: lane.id,
@@ -152,6 +153,7 @@ export function formatStatus(status) {
     `started=${status.startedAt || "-"}  ended=${status.endedAt || "-"}  initialDirty=${status.initialRepo?.dirty ? "yes" : "no"}`,
     `planning=${status.planning?.state || "legacy/unrecorded"}  plan=${status.planning?.planRef || "-"}`,
     `reviewedBase=${status.planning?.reviewedBaseSha || "-"}  contextSha256=${status.planning?.contextDigest || "-"}`,
+    `goalRefs=${status.goalRefs?.length ? status.goalRefs.join(",") : "-"}  goalContextSha256=${status.goals?.contextDigest || "-"}`,
     `awareness=${status.awareness?.state || "legacy/unrecorded"}  repoKey=${status.awareness?.repoKey || "-"}  related=${status.awareness?.activeRelated?.length || 0}  deliveryDeps=${status.awareness?.deliveryDependencies?.length || 0}`,
     `topology=${status.topology?.fullySerialized ? "serialized" : "parallel"}  effectiveParallelism=${status.topology?.effectiveParallelism || "-"}`,
     "",

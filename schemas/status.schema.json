@@ -43,6 +43,23 @@
         "attestations": { "type": "object" }
       }
     },
+    "goalRefs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^goal-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$" }
+    },
+    "goals": {
+      "type": "object",
+      "required": ["schema", "refs", "goals", "artifactLinks", "contextDigest", "contextSnapshot"],
+      "properties": {
+        "schema": { "const": "agent-manager.run-goals.v1" },
+        "refs": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "goals": { "type": "array", "items": { "type": "object" } },
+        "artifactLinks": { "type": "array", "items": { "type": "object" } },
+        "contextDigest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "contextSnapshot": { "type": ["string", "null"] }
+      }
+    },
     "awareness": { "$ref": "#/$defs/awareness" },
     "delivery": {
       "type": "object",

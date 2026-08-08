@@ -160,6 +160,73 @@ function baseWorkflow(lanes) {
   };
 }
 
+test("goal references fail closed and freeze goal-tree context into admitted runs", async () => {
+  await runCli([
+    "goal", "create", "--id", "goal-e2e-parent", "--title", "E2E parent",
+    "--outcome", "The run carries its durable goal context.", "--json",
+  ]);
+  await runCli([
+    "goal", "create", "--id", "goal-e2e-child", "--title", "E2E child",
+    "--parent", "goal-e2e-parent", "--json",
+  ]);
+  await runCli([
+    "goal", "link", "goal-e2e-child", "--type", "plan", "--ref", "plan:e2e-public",
+    "--relationship", "supports", "--state", "active", "--json",
+  ]);
+
+  const missingRunId = "run-test-missing-goal";
+  const missingWorkflow = writeWorkflow("missing-goal", {
+    ...baseWorkflow([{
+      id: "missing-goal-writer",
+      scope: "missing-goal.txt",
+      prompt: "must not start",
+      fake: { write: { path: "missing-goal.txt", content: "unexpected\n" } },
+    }]),
+    goal_refs: ["goal-not-local"],
+  });
+  await assert.rejects(
+    runCli(["run", missingWorkflow, "--detach", "--json", "--run-id", missingRunId]),
+    /local goals not found/,
+  );
+  assert.equal(existsSync(join(runsRoot, missingRunId)), false);
+
+  const runId = "run-test-goal-context";
+  const workflow = writeWorkflow("goal-context", {
+    ...baseWorkflow([{
+      id: "goal-writer",
+      scope: "goal-context.txt",
+      prompt: "write with goal context",
+      fake: { write: { path: "goal-context.txt", content: "goal context\n" } },
+    }]),
+    goal_refs: ["goal-e2e-parent"],
+  });
+  const validation = JSON.parse((await runCli(["validate", workflow, "--json"])).stdout);
+  assert.deepEqual(validation.goalRefs, ["goal-e2e-parent"]);
+
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  const status = await waitForStatus(runId, (item) => item.state === "delivery_review_pending");
+  assert.deepEqual(status.goalRefs, ["goal-e2e-parent"]);
+  assert.deepEqual(status.goals.refs, ["goal-e2e-parent"]);
+  assert.deepEqual(status.goals.goals.map((goal) => goal.id), ["goal-e2e-child", "goal-e2e-parent"]);
+  assert.equal(status.goals.artifactLinks[0].artifactRef, "plan:e2e-public");
+  assert.match(status.goals.contextDigest, /^[0-9a-f]{64}$/);
+  assert.equal(existsSync(status.goals.contextSnapshot), true);
+  const prompt = readFileSync(join(runsRoot, runId, "goal-writer", "prompt.md"), "utf8");
+  assert.match(prompt, /## Agent Manager goal context/);
+  assert.match(prompt, /goal-e2e-child/);
+  assert.match(prompt, /plan:e2e-public/);
+  const report = readFileSync(join(runsRoot, runId, "report.md"), "utf8");
+  assert.match(report, /## Goal context/);
+  assert.match(report, /goal-e2e-parent/);
+  const statusEvents = readFileSync(join(runsRoot, runId, "events.jsonl"), "utf8")
+    .trim().split(/\r?\n/).map((line) => JSON.parse(line));
+  assert.ok(statusEvents.some((event) => event.goalRefs?.includes("goal-e2e-parent")));
+
+  const intents = JSON.parse((await runCli(["brain", "status", "--repo", repo, "--json"])).stdout);
+  const intent = intents.find((item) => item.runId === runId);
+  assert.deepEqual(intent.goalRefs, ["goal-e2e-parent"]);
+});
+
 test("lane setup completes before the worker starts and records evidence", async () => {
   const runId = "run-test-lane-setup";
   const workflow = writeWorkflow("lane-setup", baseWorkflow([{

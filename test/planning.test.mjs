@@ -48,13 +48,14 @@ function planning(overrides = {}) {
   };
 }
 
-function workflow(name, planningValue, laneOverrides = {}) {
+function workflow(name, planningValue, laneOverrides = {}, workflowOverrides = {}) {
   if (arguments.length < 2) planningValue = planning();
   const path = join(root, `${name}.json`);
   const doc = {
     repo: "repo",
     planning: planningValue,
     lanes: [{ id: "one", scope: "README.md", prompt: "Do the lane work.", ...laneOverrides }],
+    ...workflowOverrides,
   };
   if (planningValue === undefined) delete doc.planning;
   writeFileSync(path, JSON.stringify(doc, null, 2));
@@ -76,6 +77,28 @@ test("planning evidence validates the immutable base and prefixes every lane pro
   assert.match(prompt, new RegExp(loaded.runtime.hostPlatform));
   loaded.awareness = { context: "## Agent Manager cross-run awareness\n- Related run: run-example" };
   assert.match(lanePrompt(loaded.lanes[0], loaded), /Related run: run-example/);
+  loaded.goalContext = { context: "## Agent Manager goal context\n    {\"refs\":[\"goal-example\"]}" };
+  assert.match(lanePrompt(loaded.lanes[0], loaded), /goal-example/);
+});
+
+test("workflow normalizes optional goal references and preserves legacy omission", () => {
+  assert.deepEqual(workflow("legacy-goals").goal_refs, []);
+  const loaded = workflow("goal-refs", planning(), {}, {
+    goal_refs: ["goal-zeta", "goal-alpha"],
+  });
+  assert.deepEqual(loaded.goal_refs, ["goal-alpha", "goal-zeta"]);
+  assert.throws(
+    () => workflow("goal-refs-type", planning(), {}, { goal_refs: "goal-alpha" }),
+    /goal_refs must be an array/,
+  );
+  assert.throws(
+    () => workflow("goal-refs-duplicate", planning(), {}, { goal_refs: ["goal-alpha", "goal-alpha"] }),
+    /must not contain duplicate/,
+  );
+  assert.throws(
+    () => workflow("goal-refs-invalid", planning(), {}, { goal_refs: ["not-a-goal"] }),
+    /valid local goal ID/,
+  );
 });
 
 test("planning accepts inline private context without creating repository files", () => {
