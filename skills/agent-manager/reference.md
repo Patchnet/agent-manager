@@ -42,6 +42,10 @@ environment variables override user config, so existing launch automation
 remains compatible. The user config is outside the installed package and is not
 replaced by updates.
 
+Director dry-cycle state defaults below the runs root at
+`$AGENT_MANAGER_RUNS_ROOT/director`. Override it per invocation with
+`director cycle --state-dir <path>`; no operator-specific path is required.
+
 Workers also receive automatically generated, non-secret runtime variables:
 `AGENT_MANAGER_HOST_PLATFORM`, `AGENT_MANAGER_HOST_OS`,
 `AGENT_MANAGER_HOST_ARCH`, `AGENT_MANAGER_HOST_SHELL`,
@@ -56,6 +60,23 @@ node bin/agent-manager.mjs run <workflow.yaml> --detach
 Prints `runId`, `pid`, `telemetry`, `supervisorLog` and exits. The supervisor
 continues writing `status.json` under the runs root. Never await a
 non-detach `run` from a Master Dev chat turn.
+
+## Director Phase 1 commands
+
+```bash
+agent-manager director validate --policy <policy.yaml> [--repo <path>] [--json]
+agent-manager director cycle --policy <policy.yaml> --items <fixtures.yaml> --dry-run [--json]
+```
+
+The foundation accepts JSON or YAML policy and local source fixtures. Policy
+validation is strict and supports only `pr-only`. A dry cycle leases one
+canonical repository, deterministically selects eligible work, quarantines
+policy violations, persists `DISCOVER -> TRIAGE -> PLAN -> VALIDATE -> CLOSE`,
+and releases the lease. Replaying the same normalized policy and fixtures uses
+the prior cycle record. This command does not launch Agent Manager workers or
+perform commit, push, PR, merge, tag, or release actions. Full policy and source
+shapes are in `docs/DIRECTOR.md`; machine contracts are in
+`schemas/director-*.schema.json`.
 
 ## Watch-signal + terminal watchers
 

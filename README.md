@@ -60,20 +60,37 @@ flowchart LR
 | Approved work should ship without blocking the host chat | All three |
 | A human will handle GitHub after review | 🎛️ Agent Manager only; stop after Delivery Review |
 
-### Planned: Autopilot Director
+### Autopilot Director (Phase 1 foundation)
 
 Autopilot Director is the approved higher-autonomy mode for scheduled or
 continuous operation. It promotes the planning and oversight role normally
 shared by the human operator and Manager agent into a policy-bound Director
 agent. Agent Manager remains the deterministic execution layer beneath it.
 
-The first planned boundary is `pr-only`: select eligible work, plan, run,
-review, push, and open a review-ready pull request without synchronous human
-input. Automatic merge and release require later, narrower policies and
-independent review. This mode is not implemented in the current release.
+The autonomy boundary is `pr-only`: select eligible work, plan, run, review,
+push, and open a review-ready pull request without synchronous human input.
+Automatic merge and release require later, narrower policies and independent
+review.
 
-See the [Autopilot Director plan](docs/AUTOPILOT-DIRECTOR-PLAN.md) for the role
-model, autonomy levels, policy contract, and phased implementation.
+The **Phase 1 foundation ships in this release**: versioned policy,
+source-item, cycle, and state schemas; strict fail-closed policy validation;
+a Director identity (harness, model, reasoning) configured separately from
+workers; single-repository leasing; and a deterministic, replay-safe dry cycle.
+
+```bash
+agent-manager director validate --policy ./director-policy.yaml
+agent-manager director cycle --policy ./director-policy.yaml \
+  --items ./director-items.yaml --dry-run
+```
+
+`--dry-run` is mandatory today. The cycle triages work and persists evidence;
+it does not start workers, commit, push, open a pull request, merge, tag,
+release, or bypass harness permissions. Policies that request `merge`, `tag`,
+`release`, or any non-`pr-only` mode fail validation.
+
+See [DIRECTOR.md](docs/DIRECTOR.md) for the policy and fixture formats and
+[the Director plan](docs/AUTOPILOT-DIRECTOR-PLAN.md) for the role model,
+autonomy levels, and remaining phases.
 
 ### Worker completion is not delivery completion
 
@@ -503,8 +520,7 @@ stable one-shot view automatically.
 
 ### Track token usage in a terminal
 
-The tokens telemetry page reads harness session logs already on the machine —
-Claude Code (`~/.claude/projects`) and Codex (`~/.codex/sessions`) — and
+The tokens telemetry page reads harness session logs already on the machine and
 renders local token usage and estimated cost by day, model, repository, and
 source. It is read-only: nothing is uploaded, and no log content beyond
 usage, model, and working-directory metadata is retained.
@@ -515,14 +531,32 @@ agent-manager tokens --since 24h --by repo
 agent-manager tokens --since all --limit 30
 agent-manager tokens --watch --interval 120
 agent-manager tokens --json
+agent-manager tokens --list-providers
 ```
 
-Costs come from the static rate table in `src/token-usage.mjs` (USD per
-million tokens, including cache read/write rates). Messages from models
-missing from that table are counted but excluded from cost and flagged on the
-board. Override log locations with `--claude-root` / `--codex-root` or the
-`AGENT_MANAGER_CLAUDE_LOGS_ROOT` / `AGENT_MANAGER_CODEX_LOGS_ROOT`
-environment variables.
+Each log format is a **provider**. Three ship with the CLI: `claude` (Claude
+Code, `~/.claude/projects`), `codex` (Codex CLI, `~/.codex/sessions`), and
+`jsonl` (generic JSONL usage events, opt-in). Any other harness that can write
+JSONL becomes a source without code:
+
+```bash
+export AGENT_MANAGER_TOKEN_PROVIDERS="gemini=$HOME/logs/gemini"
+```
+
+A format needing a real parser can be added in-process with
+`registerTokenProvider({ id, label, read })`. `--list-providers` prints every
+provider, the root it resolved to, and whether that root came from a flag, an
+environment variable, or the default — start there when a source reads
+`not found`. Override roots per run with `--provider-root <id>=<dir>` (or the
+`--claude-root` / `--codex-root` aliases), and limit a run with
+`--providers claude,codex`.
+
+Costs come from the rate table in `src/token-usage.mjs` (USD per million
+tokens, including cache read/write rates). Models missing from that table are
+counted but excluded from cost and flagged on the board rather than guessed;
+add rates by pointing `AGENT_MANAGER_TOKEN_PRICING` at a JSON file. See the
+[operator guide](docs/OPERATOR.md#token-providers) for the event schema,
+provider precedence, and pricing-file format.
 
 Fleet displays its own runtime version and the engine version recorded by each
 new run. `agent-manager version` reports the running version, the version now on
@@ -901,6 +935,19 @@ user config are resolved from the config file's directory.
 | `AGENT_MANAGER_CLAIM_BIN` | bundled `tools/claim.mjs` | Optional external claim implementation |
 | `AGENT_MANAGER_ENV_ALLOWLIST` | empty | Extra comma-separated variables passed to workers |
 | `AGENT_MANAGER_ALLOW_DANGEROUS_PERMISSIONS` | unset | Invocation-level dangerous-mode confirmation |
+| `AGENT_MANAGER_CLAUDE_LOGS_ROOT` | `~/.claude/projects` | Claude Code logs root for `tokens` |
+| `AGENT_MANAGER_CODEX_LOGS_ROOT` | `~/.codex/sessions` | Codex CLI logs root for `tokens` |
+| `AGENT_MANAGER_TOKEN_LOGS_ROOT` | `~/.agent-manager/token-logs` | Generic JSONL usage logs root (opt-in) |
+| `AGENT_MANAGER_TOKEN_PROVIDERS` | empty | Extra JSONL token providers: `<id>=<dir>;<id>=<dir>` |
+| `AGENT_MANAGER_TOKEN_PRICING` | unset | JSON file of additional model rates |
+
+**Every variable in this table is optional.** The core CLI runs from a fresh
+clone with no configuration: paths fall back to the defaults above, and
+`agent-manager doctor` reports what resolved and from where. Configuration is
+only needed to place roots outside the home directory, to read harness logs
+from non-default locations, or to add token providers and pricing. `gh` is
+required only for the detached shipping phase, not for planning, running lanes,
+or Delivery Review.
 
 Workflow claim modes are `auto`, `off`, and `required`. `auto` uses the bundled
 registry but treats registry failure as advisory; `required` fails closed.

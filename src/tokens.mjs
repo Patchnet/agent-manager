@@ -1,10 +1,17 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { aggregateUsage, collectTokenUsage, usageTotals } from "./token-usage.mjs";
+import {
+  aggregateUsage,
+  collectTokenUsage,
+  listTokenProviders,
+  resolveProviderRoot,
+  usageTotals,
+} from "./token-usage.mjs";
 import { currentVersionInfo } from "./version.mjs";
 
-// Tokens telemetry page — renders local harness token usage (Claude Code and
-// Codex session logs) as a fleet-style terminal board. Read-only; nothing is
-// uploaded anywhere.
+// Tokens telemetry page — renders local harness token usage as a fleet-style
+// terminal board. Sources come from the pluggable providers in
+// token-usage.mjs. Read-only; nothing is uploaded anywhere.
 
 const DEFAULT_SINCE_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_LIMIT = 12;
@@ -14,23 +21,34 @@ export function tokensUsage() {
   return [
     "agent-manager tokens - local token usage telemetry",
     "",
-    "Reads harness session logs on this machine (Claude Code, Codex),",
-    "aggregates token usage, and prices it from a static rate table.",
+    "Reads harness session logs on this machine through pluggable providers",
+    "(built in: claude, codex, jsonl), aggregates token usage, and prices it",
+    "from a rate table.",
     "",
     "Usage:",
     "  agent-manager tokens [options]",
     "",
     "Options:",
-    "  --since <duration>   usage window (default: 7d; also 30m, 24h, all)",
-    "  --by <grouping>      extra table: day | model | repo | source (default: summary)",
-    "  --limit <n>          maximum rows per table (default: 12)",
-    "  --watch              redraw on an interval instead of printing once",
-    "  --interval <sec>     watch refresh interval (default: 60)",
-    "  --claude-root <dir>  override the Claude Code logs root",
-    "  --codex-root <dir>   override the Codex logs root",
-    "  --json               print a machine-readable snapshot and exit",
-    "  --no-color           disable ANSI colors",
-    "  -h, --help           show this help",
+    "  --since <duration>       usage window (default: 7d; also 30m, 24h, all)",
+    "  --by <grouping>          extra table: day | model | repo | source (default: summary)",
+    "  --limit <n>              maximum rows per table (default: 12)",
+    "  --watch                  redraw on an interval instead of printing once",
+    "  --interval <sec>         watch refresh interval (default: 60)",
+    "  --providers <ids>        comma-separated providers to read (default: all)",
+    "  --provider-root <id=dir> override one provider's logs root (repeatable)",
+    "  --claude-root <dir>      alias for --provider-root claude=<dir>",
+    "  --codex-root <dir>       alias for --provider-root codex=<dir>",
+    "  --list-providers         print the resolved provider table and exit",
+    "  --json                   print a machine-readable snapshot and exit",
+    "  --no-color               disable ANSI colors",
+    "  -h, --help               show this help",
+    "",
+    "Environment:",
+    "  AGENT_MANAGER_CLAUDE_LOGS_ROOT  Claude Code logs root",
+    "  AGENT_MANAGER_CODEX_LOGS_ROOT   Codex logs root",
+    "  AGENT_MANAGER_TOKEN_LOGS_ROOT   generic JSONL logs root",
+    "  AGENT_MANAGER_TOKEN_PROVIDERS   extra JSONL providers: \"gemini=/path;my-agent=/path\"",
+    "  AGENT_MANAGER_TOKEN_PRICING     JSON file of extra model pricing rows",
   ].join("\n");
 }
 
@@ -49,8 +67,9 @@ export function parseTokensArgs(argv = []) {
     limit: DEFAULT_LIMIT,
     watch: false,
     intervalMs: DEFAULT_INTERVAL_MS,
-    claudeRoot: null,
-    codexRoot: null,
+    providerRoots: {},
+    providers: null,
+    listProviders: false,
     json: false,
     color: process.env.NO_COLOR === undefined,
     help: false,
@@ -78,8 +97,18 @@ export function parseTokensArgs(argv = []) {
       const seconds = Number(nextValue());
       if (!Number.isFinite(seconds) || seconds < 5) throw new Error("--interval must be at least 5 seconds");
       options.intervalMs = Math.round(seconds * 1_000);
-    } else if (arg === "--claude-root") options.claudeRoot = resolve(nextValue());
-    else if (arg === "--codex-root") options.codexRoot = resolve(nextValue());
+    } else if (arg === "--claude-root") options.providerRoots.claude = resolve(nextValue());
+    else if (arg === "--codex-root") options.providerRoots.codex = resolve(nextValue());
+    else if (arg === "--provider-root") {
+      const spec = nextValue();
+      const at = spec.indexOf("=");
+      if (at < 1) throw new Error("--provider-root looks like <provider>=<dir>");
+      options.providerRoots[spec.slice(0, at).trim()] = resolve(spec.slice(at + 1).trim());
+    } else if (arg === "--providers") {
+      const ids = nextValue().split(",").map((id) => id.trim()).filter(Boolean);
+      if (!ids.length) throw new Error("--providers needs at least one provider id");
+      options.providers = ids;
+    } else if (arg === "--list-providers") options.listProviders = true;
     else if (arg === "--json") options.json = true;
     else if (arg === "--no-color") options.color = false;
     else if (arg === "-h" || arg === "--help") options.help = true;
@@ -89,18 +118,30 @@ export function parseTokensArgs(argv = []) {
   return options;
 }
 
+// Root overrides are keyed by provider id. `claudeRoot` / `codexRoot` remain
+// accepted for callers written against the two-source version.
+export function providerRootOverrides(options = {}) {
+  const roots = { ...(options.providerRoots || {}) };
+  if (options.claudeRoot) roots.claude = options.claudeRoot;
+  if (options.codexRoot) roots.codex = options.codexRoot;
+  return roots;
+}
+
 export function buildTokensSnapshot(options = {}) {
   const now = options.now ?? Date.now();
   const collectOptions = { sinceMs: options.sinceMs ?? DEFAULT_SINCE_MS, now };
-  if (options.claudeRoot) collectOptions.claudeRoot = options.claudeRoot;
-  if (options.codexRoot) collectOptions.codexRoot = options.codexRoot;
-  const { records, sources } = collectTokenUsage(collectOptions);
+  const roots = providerRootOverrides(options);
+  if (Object.keys(roots).length) collectOptions.roots = roots;
+  if (options.providers?.length) collectOptions.providers = options.providers;
+  if (options.env) collectOptions.env = options.env;
+  const { records, sources, warnings } = collectTokenUsage(collectOptions);
   return {
     schema: "agent-manager.tokens.v1",
     viewer: currentVersionInfo(),
     at: new Date(now).toISOString(),
     sinceMs: collectOptions.sinceMs,
     sources,
+    warnings,
     totals: usageTotals(records),
     byDay: aggregateUsage(records, { by: "day" }),
     byModel: aggregateUsage(records, { by: "model" }),
@@ -197,7 +238,7 @@ export function buildDailyHeatmap(byDay, { now = Date.now(), maxWeeks = HEATMAP_
 
 const HEAT_LEVEL_CHARS = [" ·", "░░", "▒▒", "▓▓", "██"];
 // 256-color green ramp; level 0 renders as a dim dot.
-const HEAT_LEVEL_COLORS = ["\u001b[38;5;238m", "\u001b[38;5;22m", "\u001b[38;5;28m", "\u001b[38;5;40m", "\u001b[38;5;46m"];
+const HEAT_LEVEL_COLORS = ["[38;5;238m", "[38;5;22m", "[38;5;28m", "[38;5;40m", "[38;5;46m"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WEEKDAY_LABELS = ["Mon", "", "Wed", "", "Fri", "", ""];
 
@@ -289,11 +330,15 @@ export function formatTokensBoard(snapshot, { color = false, limit = DEFAULT_LIM
   const lines = [];
   const version = snapshot.viewer?.runtimeVersion || "unknown";
   lines.push(`${style(color, "bold", "◆ AGENT MANAGER")} ${style(color, "gray", `v${version} · TOKENS`)}  ${style(color, "brightCyan", formatWindow(snapshot.sinceMs))} ${style(color, "gray", `· as of ${snapshot.at}`)}`);
+  // Opt-in providers stay off the board until their root exists, so an unused
+  // extension point never reads as a misconfiguration.
   for (const source of snapshot.sources) {
-    const status = source.available
-      ? `${source.records} messages`
-      : "not found";
-    lines.push(style(color, source.available ? "gray" : "yellow", `  ${pad(source.name, 7)} ${source.root} [${status}]`));
+    if (source.optional && !source.available) continue;
+    const status = source.available ? `${source.records} messages` : "not found";
+    lines.push(style(color, source.available ? "gray" : "yellow", `  ${pad(source.label || source.name, 14)} ${source.root} [${status}]`));
+  }
+  for (const warning of snapshot.warnings || []) {
+    lines.push(style(color, "yellow", `  ! ${warning}`));
   }
   lines.push(style(color, "gray", "─".repeat(88)));
   const totals = snapshot.totals;
@@ -306,7 +351,7 @@ export function formatTokensBoard(snapshot, { color = false, limit = DEFAULT_LIM
     style(color, "green", `est ${formatCost(totals.cost)}`),
   ].join("  "));
   if (totals.unpriced) {
-    lines.push(style(color, "yellow", `  * ${totals.unpriced} messages from unpriced models excluded from cost — extend PRICING in src/token-usage.mjs`));
+    lines.push(style(color, "yellow", `  * ${totals.unpriced} messages from unpriced models excluded from cost — add rates via AGENT_MANAGER_TOKEN_PRICING`));
   }
   const heatmap = buildDailyHeatmap(snapshot.byDay, { now: Date.parse(snapshot.at) });
   if (heatmap) {
@@ -330,7 +375,67 @@ export function formatTokensBoard(snapshot, { color = false, limit = DEFAULT_LIM
   return lines.join("\n");
 }
 
+// `--list-providers`: what would be read, where from, and whether it resolves.
+// The origin column is the answer to "why is this provider pointing there".
+export function buildProvidersSnapshot(options = {}) {
+  const env = options.env || process.env;
+  const roots = providerRootOverrides(options);
+  const warnings = [];
+  const wanted = options.providers?.length ? new Set(options.providers) : null;
+  const providers = listTokenProviders({ env, warnings }).map((provider) => {
+    const root = resolveProviderRoot(provider, { roots, env });
+    let origin = "default";
+    if (roots[provider.id]) origin = "flag";
+    else if (provider.envVar && env?.[provider.envVar]) origin = `env:${provider.envVar}`;
+    else if (!provider.defaultRoot) origin = "unset";
+    return {
+      id: provider.id,
+      label: provider.label,
+      format: provider.format,
+      optional: provider.optional,
+      selected: !wanted || wanted.has(provider.id),
+      root: root || "(not configured)",
+      origin,
+      available: Boolean(root) && existsSync(root),
+    };
+  });
+  for (const id of wanted || []) {
+    if (!providers.some((provider) => provider.id === id)) warnings.push(`unknown token provider: ${id}`);
+  }
+  return { schema: "agent-manager.token-providers.v1", providers, warnings };
+}
+
+export function formatProvidersTable(snapshot, { color = false } = {}) {
+  const lines = [style(color, "bold", "TOKEN PROVIDERS")];
+  lines.push(style(color, "gray", `  ${[
+    pad("ID", 14),
+    pad("FORMAT", 12),
+    pad("ORIGIN", 34),
+    pad("ROOT", 48),
+    pad("STATE", 14),
+  ].join(" ")}`));
+  for (const provider of snapshot.providers) {
+    const state = [provider.available ? "found" : "not found"];
+    if (!provider.selected) state.push("skipped");
+    lines.push(`  ${[
+      pad(provider.id, 14),
+      pad(provider.format, 12),
+      pad(provider.origin, 34),
+      pad(provider.root, 48),
+      pad(state.join("/"), 14),
+    ].join(" ")}`);
+  }
+  for (const warning of snapshot.warnings) lines.push(style(color, "yellow", `  ! ${warning}`));
+  lines.push(style(color, "dim", "  add providers with AGENT_MANAGER_TOKEN_PROVIDERS=\"<id>=<dir>;…\" or registerTokenProvider()"));
+  return lines.join("\n");
+}
+
 export async function runTokens(options) {
+  if (options.listProviders) {
+    const snapshot = buildProvidersSnapshot(options);
+    console.log(options.json ? JSON.stringify(snapshot) : formatProvidersTable(snapshot, { color: options.color }));
+    return;
+  }
   const render = () => {
     const snapshot = buildTokensSnapshot(options);
     if (options.json) {

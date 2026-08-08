@@ -7,23 +7,46 @@ import { join } from "node:path";
 const root = mkdtempSync(join(tmpdir(), "agent-manager-tokens-"));
 const claudeRoot = join(root, "claude-projects");
 const codexRoot = join(root, "codex-sessions");
+const jsonlRoot = join(root, "jsonl-usage");
+const missingRoot = join(root, "not-a-directory");
 mkdirSync(join(claudeRoot, "C--dev-example"), { recursive: true });
 mkdirSync(join(codexRoot, "2026", "08", "07"), { recursive: true });
+mkdirSync(join(jsonlRoot, "nested"), { recursive: true });
+
+// Pin every provider that reads process.env to a fixture path so the suite
+// never touches the developer's real harness logs.
+process.env.AGENT_MANAGER_CLAUDE_LOGS_ROOT = claudeRoot;
+process.env.AGENT_MANAGER_CODEX_LOGS_ROOT = codexRoot;
+process.env.AGENT_MANAGER_TOKEN_LOGS_ROOT = missingRoot;
+delete process.env.AGENT_MANAGER_TOKEN_PROVIDERS;
+delete process.env.AGENT_MANAGER_TOKEN_PRICING;
 
 const {
   aggregateUsage,
   collectTokenUsage,
   costForRecord,
+  defineJsonlTokenProvider,
+  defineTokenProvider,
+  listTokenProviders,
+  parseProviderSpecs,
   pricingFor,
   readClaudeUsage,
   readCodexUsage,
+  readJsonlUsage,
+  registerModelPricing,
+  registerTokenProvider,
+  resetModelPricing,
+  resetTokenProviders,
+  resolveProviderRoot,
   usageTotals,
 } = await import("../src/token-usage.mjs?tokens-test");
 const {
   buildDailyHeatmap,
+  buildProvidersSnapshot,
   buildTokensSnapshot,
   formatCost,
   formatHeatmap,
+  formatProvidersTable,
   formatTokenCount,
   formatTokensBoard,
   parseTokensArgs,
@@ -34,10 +57,15 @@ test.after(() => rmSync(root, { recursive: true, force: true }));
 
 const NOW = Date.parse("2026-08-07T12:00:00.000Z");
 
+// Forward slashes on purpose: path.basename treats "/" as a separator on both
+// win32 and posix, so the BY REPO column resolves to "example" on either
+// platform. A backslash-only fixture would only group correctly on Windows.
+const FIXTURE_CWD = "/repos/example";
+
 function claudeLine(overrides = {}) {
   return JSON.stringify({
     type: "assistant",
-    cwd: "C:\\dev\\example",
+    cwd: FIXTURE_CWD,
     sessionId: "sess-fixture",
     timestamp: "2026-08-07T10:00:00.000Z",
     requestId: "req_1",
@@ -61,12 +89,12 @@ function codexLines() {
     JSON.stringify({
       timestamp: "2026-08-07T09:00:00.000Z",
       type: "session_meta",
-      payload: { session_id: "codex-fixture", cwd: "C:\\dev\\example", model_provider: "openai" },
+      payload: { session_id: "codex-fixture", cwd: FIXTURE_CWD, model_provider: "openai" },
     }),
     JSON.stringify({
       timestamp: "2026-08-07T09:00:01.000Z",
       type: "turn_context",
-      payload: { model: "gpt-5.6", cwd: "C:\\dev\\example" },
+      payload: { model: "gpt-5.6", cwd: FIXTURE_CWD },
     }),
     JSON.stringify({
       timestamp: "2026-08-07T09:00:30.000Z",
@@ -96,6 +124,32 @@ writeFileSync(join(claudeRoot, "C--dev-example", "session.jsonl"), [
 ].join("\n"));
 
 writeFileSync(join(codexRoot, "2026", "08", "07", "rollout-fixture.jsonl"), codexLines());
+
+// Generic JSONL fixture: one Anthropic-shaped event, one OpenAI-shaped event,
+// plus lines that must be dropped (no timestamp, no usage).
+writeFileSync(join(jsonlRoot, "nested", "usage.jsonl"), [
+  JSON.stringify({
+    timestamp: "2026-08-07T11:00:00.000Z",
+    model: "claude-haiku-4-5",
+    cwd: FIXTURE_CWD,
+    sessionId: "jsonl-fixture",
+    usage: {
+      input_tokens: 20,
+      output_tokens: 30,
+      cache_read_input_tokens: 40,
+      cache_creation: { ephemeral_5m_input_tokens: 10, ephemeral_1h_input_tokens: 40 },
+      cache_creation_input_tokens: 50,
+    },
+  }),
+  JSON.stringify({
+    created: Math.floor(Date.parse("2026-08-07T08:00:00.000Z") / 1_000),
+    model: "gpt-5.6",
+    usage: { prompt_tokens: 1_000, completion_tokens: 100, prompt_tokens_details: { cached_tokens: 900 } },
+  }),
+  JSON.stringify({ model: "claude-opus-5", usage: { input_tokens: 5, output_tokens: 5 } }),
+  JSON.stringify({ timestamp: "2026-08-07T11:30:00.000Z", model: "claude-opus-5" }),
+  "not-json",
+].join("\n"));
 
 test("pricingFor matches model families and rejects unknowns", () => {
   assert.equal(pricingFor("claude-opus-5").family, "claude-opus");
@@ -148,15 +202,204 @@ test("readCodexUsage attributes model from turn_context and separates cached inp
 });
 
 test("collectTokenUsage merges sources and reports availability", () => {
-  const { records, sources } = collectTokenUsage({ sinceMs: Infinity, now: NOW, claudeRoot, codexRoot });
+  const { records, sources, warnings } = collectTokenUsage({ sinceMs: Infinity, now: NOW, claudeRoot, codexRoot });
   assert.equal(records.length, 4);
-  assert.deepEqual(sources.map((source) => [source.name, source.available, source.records]), [
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(sources.map((source) => [source.id, source.available, source.records]), [
     ["claude", true, 3],
     ["codex", true, 1],
+    ["jsonl", false, 0],
   ]);
   const missing = collectTokenUsage({ sinceMs: Infinity, now: NOW, claudeRoot: join(root, "nope"), codexRoot });
   assert.equal(missing.sources[0].available, false);
   assert.equal(missing.sources[0].records, 0);
+});
+
+test("collectTokenUsage restricts to requested providers and warns on unknown ids", () => {
+  const { records, sources, warnings } = collectTokenUsage({
+    sinceMs: Infinity,
+    now: NOW,
+    providers: ["codex", "nope"],
+    roots: { codex: codexRoot },
+  });
+  assert.deepEqual(sources.map((source) => source.id), ["codex"]);
+  assert.equal(records.length, 1);
+  assert.deepEqual(warnings, ["unknown token provider: nope"]);
+});
+
+test("readJsonlUsage normalizes anthropic-style and openai-style events", () => {
+  const records = readJsonlUsage({ root: jsonlRoot, sinceMs: Infinity, now: NOW });
+  assert.equal(records.length, 2, "undated and usage-free lines are dropped");
+
+  const anthropic = records.find((record) => record.model === "claude-haiku-4-5");
+  assert.equal(anthropic.source, "jsonl");
+  assert.equal(anthropic.sessionId, "jsonl-fixture");
+  assert.equal(anthropic.input, 20, "input_tokens already excludes cache reads");
+  assert.equal(anthropic.cacheRead, 40);
+  assert.equal(anthropic.cacheWrite, 50);
+  assert.equal(anthropic.cacheWrite1h, 40);
+
+  const openai = records.find((record) => record.model === "gpt-5.6");
+  assert.equal(openai.input, 100, "prompt_tokens includes cached tokens, so subtract them");
+  assert.equal(openai.cacheRead, 900);
+  assert.equal(openai.output, 100);
+  assert.equal(openai.ts, Date.parse("2026-08-07T08:00:00.000Z"), "unix seconds are scaled to ms");
+
+  const windowed = readJsonlUsage({ root: jsonlRoot, sinceMs: 2 * 3_600_000, now: NOW });
+  assert.equal(windowed.length, 1, "08:00 event falls outside a 2h window ending at noon");
+  assert.deepEqual(readJsonlUsage({ root: missingRoot, sinceMs: Infinity, now: NOW }), []);
+});
+
+test("jsonl provider is opt-in and reads its root once configured", () => {
+  const { records, sources } = collectTokenUsage({
+    sinceMs: Infinity,
+    now: NOW,
+    providers: ["jsonl"],
+    roots: { jsonl: jsonlRoot },
+  });
+  assert.equal(records.length, 2);
+  assert.equal(sources[0].optional, true);
+  assert.equal(sources[0].format, "jsonl");
+  assert.equal(sources[0].available, true);
+});
+
+test("defineTokenProvider validates ids and readers", () => {
+  assert.throws(() => defineTokenProvider({ id: "Bad Id", read: () => [] }), /kebab-case/);
+  assert.throws(() => defineTokenProvider({ id: "ok" }), /read\(/);
+  const provider = defineJsonlTokenProvider({ id: "gemini", label: "Gemini CLI", defaultRoot: jsonlRoot });
+  assert.equal(provider.format, "jsonl");
+  assert.equal(provider.read({ root: jsonlRoot, sinceMs: Infinity, now: NOW })[0].source, "gemini");
+});
+
+test("registerTokenProvider adds a custom parser until it is reset", () => {
+  try {
+    registerTokenProvider({
+      id: "mock",
+      label: "Mock Harness",
+      read: ({ root: readRoot }) => [{
+        ts: NOW,
+        source: "mock",
+        model: "claude-sonnet-5",
+        cwd: readRoot,
+        sessionId: "mock-1",
+        input: 10,
+        output: 20,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cacheWrite5m: null,
+        cacheWrite1h: null,
+      }],
+    });
+    assert.ok(listTokenProviders().some((provider) => provider.id === "mock"));
+    const { records, sources } = collectTokenUsage({
+      sinceMs: Infinity,
+      now: NOW,
+      providers: ["mock"],
+      roots: { mock: root },
+    });
+    assert.equal(records.length, 1);
+    assert.equal(records[0].source, "mock");
+    assert.equal(sources[0].label, "Mock Harness");
+  } finally {
+    resetTokenProviders();
+  }
+  assert.ok(!listTokenProviders().some((provider) => provider.id === "mock"));
+});
+
+test("a throwing provider is reported as a warning instead of crashing the board", () => {
+  try {
+    registerTokenProvider({
+      id: "broken",
+      read: () => {
+        throw new Error("log format changed");
+      },
+    });
+    const { records, warnings } = collectTokenUsage({
+      sinceMs: Infinity,
+      now: NOW,
+      providers: ["broken"],
+      roots: { broken: root },
+    });
+    assert.deepEqual(records, []);
+    assert.deepEqual(warnings, ["broken: log format changed"]);
+  } finally {
+    resetTokenProviders();
+  }
+});
+
+test("parseProviderSpecs accepts list and JSON forms and rejects junk", () => {
+  assert.deepEqual(parseProviderSpecs("gemini=/logs/gemini;my-agent=C:\\logs\\mine"), [
+    { id: "gemini", root: "/logs/gemini", label: null },
+    { id: "my-agent", root: "C:\\logs\\mine", label: null },
+  ]);
+  assert.deepEqual(parseProviderSpecs('{"gemini":{"root":"/logs","label":"Gemini CLI"}}'), [
+    { id: "gemini", root: "/logs", label: "Gemini CLI" },
+  ]);
+  assert.deepEqual(parseProviderSpecs(""), []);
+  assert.deepEqual(parseProviderSpecs(undefined), []);
+  assert.throws(() => parseProviderSpecs("gemini"), /<id>=<path>/);
+  assert.throws(() => parseProviderSpecs("{oops"), /invalid JSON/);
+});
+
+test("AGENT_MANAGER_TOKEN_PROVIDERS declares extra providers without code", () => {
+  const env = { AGENT_MANAGER_TOKEN_PROVIDERS: `gemini=${jsonlRoot}` };
+  const providers = listTokenProviders({ env });
+  assert.ok(providers.some((provider) => provider.id === "gemini"));
+
+  const { records, sources } = collectTokenUsage({ sinceMs: Infinity, now: NOW, env, providers: ["gemini"] });
+  assert.equal(records.length, 2);
+  assert.equal(records[0].source, "gemini");
+  assert.equal(sources[0].root, jsonlRoot);
+
+  const warned = collectTokenUsage({
+    sinceMs: Infinity,
+    now: NOW,
+    env: { AGENT_MANAGER_TOKEN_PROVIDERS: "oops" },
+    providers: ["claude"],
+    roots: { claude: claudeRoot },
+  });
+  assert.match(warned.warnings[0], /<id>=<path>/);
+  assert.equal(warned.records.length, 3, "a bad spec does not stop the healthy providers");
+});
+
+test("resolveProviderRoot prefers an override, then the env var, then the default", () => {
+  const provider = defineJsonlTokenProvider({ id: "gemini", envVar: "GEMINI_LOGS", defaultRoot: "/default" });
+  const env = { GEMINI_LOGS: "/from-env" };
+  assert.equal(resolveProviderRoot(provider, { roots: { gemini: "/override" }, env }), "/override");
+  assert.equal(resolveProviderRoot(provider, { env }), "/from-env");
+  assert.equal(resolveProviderRoot(provider, { env: {} }), "/default");
+  assert.equal(resolveProviderRoot(defineJsonlTokenProvider({ id: "bare" }), { env: {} }), null);
+});
+
+test("registerModelPricing and a pricing file price otherwise unknown models", () => {
+  const record = { model: "gemini-3-pro", input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 };
+  assert.equal(costForRecord(record), null);
+  try {
+    registerModelPricing({ family: "gemini-3", test: "^gemini-3", inputPerM: 2, outputPerM: 12 });
+    assert.equal(pricingFor("gemini-3-pro").family, "gemini-3");
+    assert.equal(costForRecord(record), 14);
+  } finally {
+    resetModelPricing();
+  }
+  assert.equal(costForRecord(record), null, "reset restores the built-in table");
+
+  const pricingPath = join(root, "pricing.json");
+  writeFileSync(pricingPath, JSON.stringify({ models: [{ family: "gemini-3", inputPerM: 1, outputPerM: 10 }] }));
+  const env = { AGENT_MANAGER_TOKEN_PRICING: pricingPath };
+  try {
+    assert.equal(costForRecord(record, { env }), 11, "family is used as the model prefix when no test is given");
+    assert.equal(costForRecord(record), null, "process env is untouched");
+
+    const brokenPath = join(root, "pricing-broken.json");
+    writeFileSync(brokenPath, "{ not json");
+    assert.equal(
+      costForRecord(record, { env: { AGENT_MANAGER_TOKEN_PRICING: brokenPath } }),
+      null,
+      "a malformed pricing file is ignored, not fatal",
+    );
+  } finally {
+    resetModelPricing();
+  }
 });
 
 test("aggregateUsage groups by day, model, repo, and source", () => {
@@ -202,6 +445,64 @@ test("parseTokensDuration and parseTokensArgs validate options", () => {
   assert.throws(() => parseTokensArgs(["--by", "banana"]), /--by/);
   assert.throws(() => parseTokensArgs(["--json", "--watch"]), /cannot be combined/);
   assert.throws(() => parseTokensArgs(["--frobnicate"]), /unknown tokens option/);
+});
+
+test("parseTokensArgs collects provider roots and provider filters", () => {
+  const options = parseTokensArgs([
+    "--provider-root", `gemini=${jsonlRoot}`,
+    "--claude-root", claudeRoot,
+    "--providers", "claude, gemini",
+    "--list-providers",
+  ]);
+  assert.equal(options.providerRoots.gemini, jsonlRoot);
+  assert.equal(options.providerRoots.claude, claudeRoot);
+  assert.deepEqual(options.providers, ["claude", "gemini"]);
+  assert.equal(options.listProviders, true);
+
+  assert.throws(() => parseTokensArgs(["--provider-root", "gemini"]), /<provider>=<dir>/);
+  assert.throws(() => parseTokensArgs(["--providers", " , "]), /at least one provider id/);
+});
+
+test("buildProvidersSnapshot reports where each provider root came from", () => {
+  const snapshot = buildProvidersSnapshot({
+    env: { AGENT_MANAGER_CODEX_LOGS_ROOT: codexRoot, AGENT_MANAGER_TOKEN_PROVIDERS: `gemini=${jsonlRoot}` },
+    providerRoots: { claude: claudeRoot },
+    providers: ["claude", "gemini", "ghost"],
+  });
+  const byId = Object.fromEntries(snapshot.providers.map((provider) => [provider.id, provider]));
+  assert.equal(byId.claude.origin, "flag");
+  assert.equal(byId.claude.available, true);
+  assert.equal(byId.codex.origin, "env:AGENT_MANAGER_CODEX_LOGS_ROOT");
+  assert.equal(byId.codex.selected, false, "not requested via --providers");
+  assert.equal(byId.jsonl.origin, "default");
+  assert.equal(byId.gemini.root, jsonlRoot);
+  assert.deepEqual(snapshot.warnings, ["unknown token provider: ghost"]);
+
+  const table = formatProvidersTable(snapshot, { color: false });
+  assert.match(table, /TOKEN PROVIDERS/);
+  assert.match(table, /gemini/);
+  assert.match(table, /! unknown token provider: ghost/);
+});
+
+test("board hides unconfigured opt-in providers and surfaces warnings", () => {
+  const hidden = formatTokensBoard(
+    buildTokensSnapshot({ sinceMs: Infinity, now: NOW, claudeRoot, codexRoot }),
+    { color: false, limit: 12 },
+  );
+  assert.match(hidden, /Claude Code/);
+  assert.doesNotMatch(hidden, /Generic JSONL/, "opt-in provider stays off the board until its root exists");
+
+  const shown = formatTokensBoard(
+    buildTokensSnapshot({ sinceMs: Infinity, now: NOW, providerRoots: { claude: claudeRoot, codex: codexRoot, jsonl: jsonlRoot } }),
+    { color: false, limit: 12 },
+  );
+  assert.match(shown, /Generic JSONL/);
+
+  const warned = formatTokensBoard(
+    buildTokensSnapshot({ sinceMs: Infinity, now: NOW, providers: ["claude", "ghost"], providerRoots: { claude: claudeRoot } }),
+    { color: false, limit: 12 },
+  );
+  assert.match(warned, /! unknown token provider: ghost/);
 });
 
 test("buildTokensSnapshot and formatTokensBoard render a stable board", () => {

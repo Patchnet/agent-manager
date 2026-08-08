@@ -111,10 +111,22 @@ agent-manager review <runId> --pass 1 --verdict accept --reviewer master-dev
 agent-manager next-action <runId> --json
 agent-manager delivery-ready <runId> --require released
 agent-manager ship <runId> --approve through-pr|all --detach
+agent-manager director validate --policy <director-policy.yaml>
+agent-manager director cycle --policy <director-policy.yaml> --items <fixtures.yaml> --dry-run
 ```
 
 Example: `examples/two-lane-smoke.yaml` (set `AGENT_MANAGER_DEV_ROOT` to the
 parent that contains the `agent-manager` folder).
+
+### Director Phase 1 foundation
+
+Director policy and scheduler exercises use the same CLI but do not replace the
+normal Master Dev flow. Validate the standing policy first, then use an explicit
+fixture-backed `--dry-run`. The current Director cycle records separate
+Director harness/model/reasoning identity, takes one repository lease, triages
+items, and persists lifecycle/idempotency evidence. It does not start workers
+or invoke Ship Gate. Only `pr-only` policies validate; merge, tag, release, and
+dangerous-permission actions fail closed. See `docs/DIRECTOR.md`.
 
 ## Operator flow (Master Dev)
 
@@ -138,7 +150,7 @@ agent-manager goals --roots
 
 ```bash
 agent-manager-fleet
-# Live tabs: 1 Runs · 2 Goals · 3 Tokens · Tab to cycle
+# Live tabs: 1 Runs · 2 Goals · 3 Core · 4 Tokens · Tab to cycle
 ```
 
 5. Only then plan lanes / workflow. Put `goal_refs` on the workflow so runs
@@ -160,7 +172,7 @@ agent-manager-fleet
    change this host return route. Do not print private IDs into boards.
 3. **Report** immediately with **Run board** template ([reporting.md](./reporting.md)).
 4. **Arm watch-signal** (mandatory) — see **Watch loop** below. Optionally tell
-   the operator they can open `fleet` (all runs; tabs for Goals/Tokens) or
+   the operator they can open `fleet` (all runs; tabs for Goals/Core/Tokens) or
    `monitor <runId>` (one run) in a side terminal. `fleet` is observational and
    does not replace the required chat reporting templates.
 5. On each wake: Heartbeat / Run board / Escalation / Run outcome per templates.

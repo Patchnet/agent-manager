@@ -1,6 +1,16 @@
 # Autopilot Director plan
 
-Status: Approved architecture; not implemented
+Status: Approved architecture; Phase 1 foundation implemented
+
+The first shipped foundation includes versioned policy, source-item, cycle, and
+persisted-state schemas; strict `pr-only` policy validation; separate Director
+harness/model/reasoning identity; a deterministic fixture-backed dry cycle;
+single-repository leasing; replay-safe persisted evidence; and the
+`agent-manager director` CLI. See [DIRECTOR.md](./DIRECTOR.md).
+
+Worker launch, automated Delivery Review, and policy-authorized pull-request
+shipping remain later Phase 1 increments. The current cycle requires
+`--dry-run` and performs no outward action.
 
 ## Decision
 

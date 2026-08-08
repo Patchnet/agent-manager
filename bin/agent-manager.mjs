@@ -65,6 +65,10 @@ import {
   resolveMasterReturn,
   writeMasterReturn,
 } from "../src/master-return.mjs";
+import {
+  loadDirectorPolicy,
+  runDirectorCycle,
+} from "../src/director/index.mjs";
 
 const selfPath = fileURLToPath(import.meta.url);
 const args = process.argv.slice(2);
@@ -92,6 +96,9 @@ function usage() {
     "  agent-manager tokens [--since 7d] [--by day|model|repo|source] [--watch] [--json]",
     "  agent-manager config init [--dev-root <path>] [--runs-root <path>] [--claims-root <path>] [--brain-root <path>]",
     "  agent-manager config show [--json]",
+    "  agent-manager director validate --policy <file> [--repo <path>] [--json]",
+    "  agent-manager director cycle --policy <file> --items <file> --dry-run [options] [--json]",
+    "    options: --repo <path> --state-dir <path> --cycle-id <id>",
     "  agent-manager brain init [--json]",
     "  agent-manager brain status [--repo <path>] [--json]",
     "  agent-manager goals [--parent <id>|--roots] [--json]",
@@ -236,6 +243,47 @@ function parseRunFlags(rest) {
     } else if (arg.startsWith("-")) throw new Error("unknown run flag: " + arg);
     else if (flags.file) throw new Error("unexpected argument: " + arg);
     else flags.file = arg;
+  }
+  return flags;
+}
+
+function parseDirectorFlags(rest) {
+  let action = rest[0] || null;
+  const flags = {
+    action,
+    policy: null,
+    items: null,
+    repo: null,
+    stateDir: null,
+    cycleId: null,
+    dryRun: false,
+    json: false,
+  };
+  if (action === "dry-cycle") {
+    action = "cycle";
+    flags.action = action;
+    flags.dryRun = true;
+  }
+  const valued = new Map([
+    ["--policy", "policy"],
+    ["--items", "items"],
+    ["--repo", "repo"],
+    ["--state-dir", "stateDir"],
+    ["--cycle-id", "cycleId"],
+  ]);
+  for (let index = 1; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === "--dry-run") flags.dryRun = true;
+    else if (arg === "--json") flags.json = true;
+    else if (valued.has(arg)) {
+      const value = rest[++index];
+      if (!value) throw new Error(`${arg} requires a value`);
+      flags[valued.get(arg)] = value;
+    } else if (arg.startsWith("-")) {
+      throw new Error(`unknown director flag: ${arg}`);
+    } else {
+      throw new Error(`unexpected director argument: ${arg}`);
+    }
   }
   return flags;
 }
@@ -665,6 +713,53 @@ function detachShip(flags) {
 async function main() {
   if (cmd === "--version" || cmd === "-v") { console.log(AGENT_MANAGER_VERSION); return; }
   if (!cmd || cmd === "-h" || cmd === "--help") { usage(); process.exitCode = cmd ? 0 : 1; return; }
+
+  if (cmd === "director") {
+    const flags = parseDirectorFlags(args.slice(1));
+    if (flags.action === "validate") {
+      const policy = loadDirectorPolicy(flags.policy, { repoOverride: flags.repo });
+      const payload = {
+        schema: "agent-manager.director-policy-validation.v1",
+        ok: true,
+        policy: policy.absPath,
+        policyDigest: policy.digest,
+        repository: policy.repoRoot,
+        mode: policy.autopilot.mode,
+        director: policy.director,
+      };
+      console.log(flags.json ? JSON.stringify(payload) : [
+        `valid: ${payload.policy}`,
+        `repository: ${payload.repository}`,
+        `mode: ${payload.mode}`,
+        `director: ${payload.director.harness}/${payload.director.model} (${payload.director.reasoning})`,
+        `policy digest: ${payload.policyDigest}`,
+      ].join("\n"));
+      return;
+    }
+    if (flags.action === "cycle") {
+      const result = await runDirectorCycle({
+        policyPath: flags.policy,
+        itemsPath: flags.items,
+        repoOverride: flags.repo,
+        stateRoot: flags.stateDir || undefined,
+        cycleId: flags.cycleId,
+        dryRun: flags.dryRun,
+      });
+      console.log(flags.json ? JSON.stringify(result) : [
+        `cycle: ${result.cycleId}`,
+        `status: ${result.status}${result.replayed ? " (replayed)" : ""}`,
+        `repository: ${result.repository}`,
+        `director: ${result.director.harness}/${result.director.model} (${result.director.reasoning})`,
+        `selected: ${result.selected.length}`,
+        `quarantined: ${result.quarantined.length}`,
+        `skipped: ${result.skipped.length}`,
+        `state: ${result.statePath}`,
+        "execution: dry-run only; no workers or shipping actions started",
+      ].join("\n"));
+      return;
+    }
+    throw new Error("director requires validate or cycle");
+  }
 
   if (cmd === "run") {
     const flags = parseRunFlags(args.slice(1));

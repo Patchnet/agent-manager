@@ -184,15 +184,83 @@ agent-manager tokens
 agent-manager tokens --since 24h --by repo
 agent-manager tokens --watch
 agent-manager tokens --json
+agent-manager tokens --list-providers
 ```
 
 `tokens` is the read-only token telemetry page. It parses harness session logs
-already on the machine (Claude Code under `~/.claude/projects`, Codex under
-`~/.codex/sessions`), aggregates token usage by day, model, repository, and
-source, and prices it from the static table in `src/token-usage.mjs`. Nothing
-is uploaded; models missing from the pricing table are counted but flagged as
+already on the machine, aggregates token usage by day, model, repository, and
+source, and prices it from the rate table in `src/token-usage.mjs`. Nothing is
+uploaded; models missing from the pricing table are counted but flagged as
 unpriced instead of guessed. `--since` controls the window (`7d` default,
 `all` for everything); `--watch` redraws on an interval for a side terminal.
+
+### Token providers
+
+Each log format is a **provider**: an id, a logs root, and a reader. Three ship
+with the CLI.
+
+| Provider | Format | Default root | Root override |
+|---|---|---|---|
+| `claude` | Claude Code session logs | `~/.claude/projects` | `AGENT_MANAGER_CLAUDE_LOGS_ROOT` · `--claude-root` |
+| `codex` | Codex CLI rollouts | `~/.codex/sessions` | `AGENT_MANAGER_CODEX_LOGS_ROOT` · `--codex-root` |
+| `jsonl` | Generic JSONL usage events | `~/.agent-manager/token-logs` | `AGENT_MANAGER_TOKEN_LOGS_ROOT` · `--provider-root jsonl=<dir>` |
+
+`jsonl` is opt-in: it stays off the board until its root exists, so an unused
+extension point never reads as a broken source. `agent-manager tokens
+--list-providers` prints every provider, the root it resolved to, and where
+that root came from (flag, env var, or default) — start there when a source
+reads `not found`. `--providers claude,codex` limits a run to specific ids.
+
+**Adding a harness.** Any tool that can write JSONL usage events gets a source
+without code. Point `AGENT_MANAGER_TOKEN_PROVIDERS` at one or more
+`<id>=<directory>` pairs, separated by `;`:
+
+```powershell
+$env:AGENT_MANAGER_TOKEN_PROVIDERS = "gemini=C:/logs/gemini;my-agent=C:/logs/my-agent"
+```
+
+```bash
+export AGENT_MANAGER_TOKEN_PROVIDERS="gemini=$HOME/logs/gemini;my-agent=$HOME/logs/my-agent"
+```
+
+A JSON object works too when a label matters:
+`{"gemini":{"root":"/logs/gemini","label":"Gemini CLI"}}`. Each declared
+provider reports under its own id, so `--by source` separates them.
+
+Every `*.jsonl` file under the root is read (nested folders included), one
+usage event per line. A line needs a timestamp and at least one non-zero token
+count; anything else is skipped. Both common wire shapes are accepted:
+
+```json
+{"timestamp":"2026-08-08T10:00:00Z","model":"gemini-3-pro","cwd":"/repos/app","sessionId":"s-1","usage":{"input_tokens":1200,"output_tokens":300,"cache_read_input_tokens":8000}}
+{"created":1786060800,"model":"gpt-5.6","usage":{"prompt_tokens":9000,"completion_tokens":250,"prompt_tokens_details":{"cached_tokens":8000}}}
+```
+
+Anthropic-style `input_tokens` is treated as excluding cache reads;
+OpenAI-style `prompt_tokens` is treated as including them and the cached
+portion is subtracted so both price correctly. `cwd` (or `repo`) drives the
+BY REPO table; `sessionId` falls back to the file name.
+
+A format that needs a real parser is a code-level provider — call
+`registerTokenProvider({ id, label, read })` from `src/token-usage.mjs` before
+building a snapshot. `read({ root, sinceMs, now })` returns normalized records
+(`ts`, `source`, `model`, `cwd`, `sessionId`, `input`, `output`, `cacheRead`,
+`cacheWrite`). A provider that throws is reported as a warning line on the
+board instead of taking the page down.
+
+**Pricing new models.** Unknown models stay unpriced rather than guessed. Add
+rates without editing the source by pointing `AGENT_MANAGER_TOKEN_PRICING` at a
+JSON file (USD per million tokens):
+
+```json
+{ "models": [
+  { "family": "gemini-3", "test": "^gemini-3", "inputPerM": 2, "outputPerM": 12, "cacheReadPerM": 0.2 }
+] }
+```
+
+`test` is optional — without it the family name is matched as a model prefix.
+The file is re-read when it changes; a malformed file is ignored and the
+affected models simply stay flagged as unpriced.
 
 `status.json` is authoritative. `events.jsonl` and `watch-signal` are notification sources, not alternate state stores. A `blocked` run is resumable and is not terminal.
 
@@ -432,6 +500,51 @@ and renewed by the supervisor. An expired claim is recovered automatically only
 when its recorded local supervisor process is confirmed inactive; unverifiable
 remote or legacy claims remain blocking until explicit release. Set
 `AGENT_MANAGER_CLAIM_BIN` to use another implementation.
+
+## Autopilot Director (Phase 1)
+
+Director is the policy-bound scheduling layer above Agent Manager. The shipped
+foundation validates a standing policy and runs a deterministic dry cycle
+against local source fixtures. It does not launch workers or ship anything.
+
+```bash
+agent-manager director validate --policy ./director-policy.yaml
+agent-manager director cycle --policy ./director-policy.yaml \
+  --items ./director-items.yaml --dry-run --json
+```
+
+Keep the policy outside the target repository when it describes private
+operating details. The Director identity (`harness`, `model`, `reasoning`) is
+configured separately from worker identities, so planning and execution can run
+on different models.
+
+Enable it deliberately:
+
+1. Write a `pr-only` policy — see [DIRECTOR.md](./DIRECTOR.md) for the full
+   field list. `enabled: true`, `mode: pr-only`, and
+   `on_blocker: quarantine-and-continue` are required.
+2. Run `director validate` and confirm the reported repository, mode, and
+   Director identity are the ones you intended.
+3. Run a `--dry-run` cycle and read `selected`, `quarantined`, and `skipped`.
+   Quarantine reasons name the policy rule that rejected the item.
+
+Boundaries that fail closed rather than warn:
+
+| Attempt | Result |
+|---|---|
+| `mode` other than `pr-only` | policy rejected |
+| `merge`, `tag`, `release`, or unknown action | policy rejected |
+| Scope or repository outside the policy | item quarantined |
+| A cycle without `--dry-run` | command fails |
+| A second cycle on the same repository | repository lease refuses |
+
+Cycle state defaults to `$AGENT_MANAGER_RUNS_ROOT/director`. Override it with
+`--state-dir`. Replaying the same policy and fixtures returns the persisted
+cycle instead of minting duplicate claim, run, or closeout identities, so a
+retry is safe.
+
+Director does not create or approve a Ship Gate reply. Delivery Review and Ship
+Gate remain operator-driven for every run.
 
 ## Dangerous permissions
 

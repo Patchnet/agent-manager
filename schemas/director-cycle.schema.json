@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/director-cycle.schema.json",
+  "title": "Agent Manager Director cycle result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "cycleId", "status", "dryRun", "repository", "director",
+    "policyDigest", "sourceDigest", "startedAt", "endedAt", "selected",
+    "quarantined", "skipped", "transitions", "statePath", "replayed"
+  ],
+  "properties": {
+    "schema": { "const": "agent-manager.director-cycle.v1" },
+    "cycleId": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["dry-run-complete", "quarantined", "failed"] },
+    "dryRun": { "const": true },
+    "repository": { "type": "string", "minLength": 1 },
+    "director": { "$ref": "director-policy.schema.json#/$defs/agentIdentity" },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "sourceDigest": { "$ref": "#/$defs/digest" },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "endedAt": { "type": "string", "format": "date-time" },
+    "selected": { "type": "array", "items": { "$ref": "#/$defs/decision" } },
+    "quarantined": { "type": "array", "items": { "$ref": "#/$defs/decision" } },
+    "skipped": { "type": "array", "items": { "$ref": "#/$defs/decision" } },
+    "transitions": { "type": "array", "items": { "$ref": "#/$defs/transition" } },
+    "statePath": { "type": "string", "minLength": 1 },
+    "replayed": { "type": "boolean" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceKey", "sourceRef", "reason", "idempotencyKeys"],
+      "properties": {
+        "sourceKey": { "type": "string", "minLength": 1 },
+        "sourceRef": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "idempotencyKeys": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "at", "decision"],
+      "properties": {
+        "from": { "type": ["string", "null"] },
+        "to": { "enum": ["DISCOVER", "TRIAGE", "PLAN", "VALIDATE", "RUN", "REVIEW", "SHIP", "CLOSE", "QUARANTINE"] },
+        "at": { "type": "string", "format": "date-time" },
+        "decision": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

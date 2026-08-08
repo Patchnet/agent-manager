@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/director-state.schema.json",
+  "title": "Agent Manager Director persisted cycle state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "cycleId", "repository", "policyDigest", "sourceDigest", "phase",
+    "status", "dryRun", "director", "createdAt", "updatedAt", "items", "transitions"
+  ],
+  "properties": {
+    "schema": { "const": "agent-manager.director-state.v1" },
+    "cycleId": { "type": "string", "minLength": 1 },
+    "repository": { "type": "string", "minLength": 1 },
+    "policyDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sourceDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "phase": { "enum": ["DISCOVER", "TRIAGE", "PLAN", "VALIDATE", "RUN", "REVIEW", "SHIP", "CLOSE", "QUARANTINE"] },
+    "status": { "enum": ["running", "dry-run-complete", "quarantined", "failed"] },
+    "dryRun": { "const": true },
+    "director": { "$ref": "director-policy.schema.json#/$defs/agentIdentity" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selected", "quarantined", "skipped"],
+      "properties": {
+        "selected": { "type": "array", "items": { "$ref": "director-cycle.schema.json#/$defs/decision" } },
+        "quarantined": { "type": "array", "items": { "$ref": "director-cycle.schema.json#/$defs/decision" } },
+        "skipped": { "type": "array", "items": { "$ref": "director-cycle.schema.json#/$defs/decision" } }
+      }
+    },
+    "transitions": { "type": "array", "items": { "$ref": "director-cycle.schema.json#/$defs/transition" } }
+  }
+}
