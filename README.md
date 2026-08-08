@@ -888,6 +888,26 @@ agent-manager brain status
 agent-manager brain status --repo /path/to/repo --json
 ```
 
+Manage durable goals and inspect their evidence-based progress from the same
+local brain:
+
+```bash
+agent-manager goal create --title "Ship the local workflow" --id goal-local-workflow
+agent-manager goal create --title "Verify delivery" --parent goal-local-workflow
+agent-manager goal link goal-local-workflow --type plan --ref plan:local-workflow --state active
+agent-manager goals
+agent-manager goal status goal-local-workflow
+agent-manager goal map goal-local-workflow --output ./goal-local-workflow.html
+```
+
+`goal status` reports the effective state, the exact completed-leaf ratio, and
+the decisive goal, artifact, and run evidence. Add `--json` for the stable
+`agent-manager.goal-progress.v1` payload. `goal map` writes one responsive HTML
+file that works offline without scripts, remote fonts, CDNs, or a running Agent
+Manager process. Its JSON result uses `agent-manager.goal-map-export.v1` and
+includes the resolved output path. Stored labels and references are escaped and
+rendered as text, not active links. See [the goal model](docs/GOAL-MODEL.md).
+
 Repository identity prefers a normalized Git remote, so two local checkouts of
 the same repository coordinate under one key. A repository without a remote
 falls back to its canonical local path and therefore coordinates only on that

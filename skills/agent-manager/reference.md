@@ -98,6 +98,32 @@ review, the review state becomes `awaiting_operator` and emits `needs_input`
 with the exact verdict vocabulary. Heartbeats are suppressed while waiting on
 an operator decision.
 
+## Goal commands
+
+The packaged Git-free brain also stores hierarchical goals and typed artifact
+links. These commands do not require an external tracker or network access:
+
+```bash
+agent-manager goals [--roots | --parent <goal-id>] [--json]
+agent-manager goal create --title <text> [--id <goal-id>] [options] [--json]
+agent-manager goal update <goal-id> [options] [--json]
+agent-manager goal show <goal-id> [--json]
+agent-manager goal link <goal-id> --type <type> --ref <opaque-ref> [options] [--json]
+agent-manager goal status <goal-id> [--json]
+agent-manager goal map <goal-id> [--output <file>] [--json]
+```
+
+`goal status` returns `agent-manager.goal-progress.v1`, including effective
+state, counts, decisive evidence, and an exact completed-leaf numerator and
+denominator. `goal map` writes a responsive, self-contained HTML document and
+returns `agent-manager.goal-map-export.v1` in JSON mode. The export contains no
+scripts, CDNs, remote fonts, or runtime network calls; opaque references are
+escaped text.
+
+Use workflow-level `goal_refs` to attach admitted runs. Each reference must be
+an existing local goal. The frozen worker context then includes the relevant
+goal tree and artifact evidence.
+
 ## Workflow YAML (minimal)
 
 ```yaml
@@ -107,6 +133,7 @@ claim_mode: required
 max_concurrency: 3        # 1..5; extra lanes remain queued
 target_dev_flow: simple   # optional override; else Version.md; else simple
 integrate: true           # optional — fold lanes into am/<runId>/integrate when done
+goal_refs: [goal-local-workflow] # optional existing local goal IDs
 delivery:                 # required for multi-lane writable runs without integration
   mode: single            # single | train | review-only
   release_required: false

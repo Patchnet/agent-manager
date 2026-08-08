@@ -361,6 +361,37 @@ agent-manager brain init
 agent-manager brain status --repo /path/to/repo
 ```
 
+## Goals and evidence maps
+
+Goals are local, durable MAADB records. They remain usable without Git, a
+network service, or an external tracker. The command surface supports creation,
+updates, hierarchy, artifact links, deterministic status, and an offline map:
+
+```bash
+agent-manager goal create --id goal-release --title "Deliver the release"
+agent-manager goal update goal-release --lifecycle active
+agent-manager goal link goal-release --type release --ref release:next --relationship delivers --state pending_delivery
+agent-manager goals --roots
+agent-manager goal show goal-release
+agent-manager goal status goal-release --json
+agent-manager goal map goal-release --output ./goal-release.html --json
+```
+
+`goal status` derives effective state from stored lifecycle, descendant goals,
+linked artifact states, and attached run intents. Blocked evidence takes
+precedence. Superseded branches are excluded. The only ratio is explicitly
+labeled `completed-leaf ratio` and includes its numerator and denominator.
+
+`goal map` exports one self-contained HTML file. It shows the selected goal and
+nested goals, blockers, active and pending-delivery runs, linked artifacts, and
+delivered evidence. It has no runtime network dependency and does not turn
+opaque stored references into links. The command prints the resolved path; in
+JSON mode it returns `agent-manager.goal-map-export.v1`.
+
+Workflows may include `goal_refs` as local goal IDs. Admission fails before a
+run is created when a referenced goal is missing. Existing workflows without
+`goal_refs` remain valid.
+
 The packaged brain defaults to `~/.agent-manager/brain` and explicitly uses
 MAADB `feed` history, so it writes durable Markdown and an index without
 initializing or mutating Git. Edit leases renew with the supervisor heartbeat;
