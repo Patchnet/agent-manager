@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.10.0
+current: 1.11.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.11.0 - 2026-08-08
+
+Added a packaged MAADB-backed goal graph, deterministic progress tracking, run-to-goal references, and self-contained visual goal maps.
 
 ## 1.10.0 - 2026-08-07
 
