@@ -7,6 +7,7 @@ import {
   openSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -16,17 +17,71 @@ import YAML from "yaml";
 import { BRAIN_ROOT } from "./paths.mjs";
 import { normalizeScopePath, scopesMayOverlap } from "./scope.mjs";
 
-const BRAIN_SCHEMA_VERSION = 1;
+export const BRAIN_SCHEMA_VERSION = 2;
 const EDIT_LEASE_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 2 * 60 * 1000;
 const LOCK_WAIT_MS = 10_000;
 
-const REGISTRY = {
+export const GOAL_LIFECYCLES = Object.freeze([
+  "planned",
+  "active",
+  "blocked",
+  "delivered",
+  "superseded",
+  "cancelled",
+]);
+
+export const ARTIFACT_TYPES = Object.freeze([
+  "fup",
+  "decision",
+  "plan",
+  "bug",
+  "pr",
+  "release",
+  "other",
+]);
+
+export const ARTIFACT_RELATIONSHIPS = Object.freeze([
+  "supports",
+  "blocks",
+  "delivers",
+  "tracks",
+  "relates",
+]);
+
+export const ARTIFACT_STATES = Object.freeze([
+  "unknown",
+  "planned",
+  "active",
+  "blocked",
+  "pending_delivery",
+  "delivered",
+  "superseded",
+  "cancelled",
+]);
+
+const REGISTRY_V1 = {
   types: {
     run_intent: {
       path: "run-intents/",
       id_prefix: "ari",
       schema: "run_intent.v1",
+    },
+  },
+};
+
+const REGISTRY = {
+  types: {
+    ...REGISTRY_V1.types,
+    goal: {
+      path: "goals/",
+      id_prefix: "goal",
+      schema: "goal.v1",
+    },
+    artifact_link: {
+      path: "artifact-links/",
+      id_prefix: "glink",
+      schema: "artifact_link.v1",
     },
   },
 };
@@ -87,6 +142,58 @@ const RUN_INTENT_SCHEMA = {
   },
 };
 
+const GOAL_SCHEMA = {
+  type: "goal",
+  version: 1,
+  required: [
+    "doc_id",
+    "title",
+    "lifecycle",
+    "dependencies",
+    "success_criteria",
+    "created_at",
+    "updated_at",
+  ],
+  fields: {
+    title: { type: "string", index: true, max_length: 240, multiline: false },
+    lifecycle: { type: "enum", values: GOAL_LIFECYCLES, index: true },
+    parent_goal: { type: "ref", target: "goal", index: true },
+    dependencies: { type: "list", item_type: "ref", target: "goal", index: true },
+    outcome: { type: "string", multiline: true },
+    success_criteria: { type: "list", item_type: "string" },
+    external_source_refs: { type: "list", item_type: "string", index: true },
+    created_at: { type: "date", format: "YYYY-MM-DD", store_precision: "second", index: true },
+    updated_at: { type: "date", format: "YYYY-MM-DD", store_precision: "second", index: true },
+  },
+};
+
+const ARTIFACT_LINK_SCHEMA = {
+  type: "artifact_link",
+  version: 1,
+  required: [
+    "doc_id",
+    "title",
+    "goal_id",
+    "artifact_type",
+    "artifact_ref",
+    "relationship",
+    "state",
+    "created_at",
+    "updated_at",
+  ],
+  fields: {
+    title: { type: "string", index: true, max_length: 300, multiline: false },
+    goal_id: { type: "ref", target: "goal", index: true },
+    artifact_type: { type: "enum", values: ARTIFACT_TYPES, index: true },
+    artifact_ref: { type: "string", index: true, max_length: 500, multiline: false },
+    relationship: { type: "enum", values: ARTIFACT_RELATIONSHIPS, index: true },
+    state: { type: "enum", values: ARTIFACT_STATES, index: true },
+    label: { type: "string", index: true, max_length: 240, multiline: false },
+    created_at: { type: "date", format: "YYYY-MM-DD", store_precision: "second", index: true },
+    updated_at: { type: "date", format: "YYYY-MM-DD", store_precision: "second", index: true },
+  },
+};
+
 export class BrainConflictError extends Error {
   constructor(repoLabel, conflicts) {
     const detail = conflicts
@@ -112,6 +219,59 @@ function atomicWrite(path, value) {
     writeFileSync(path, value, { encoding: "utf8", mode: 0o600, flag: "wx" });
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
+  }
+}
+
+function replaceWrite(path, value) {
+  const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temporaryPath, value, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  try {
+    renameSync(temporaryPath, path);
+  } catch (error) {
+    if (!existsSync(path) || !["EEXIST", "EPERM"].includes(error?.code)) throw error;
+    rmSync(path, { force: true });
+    renameSync(temporaryPath, path);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+}
+
+function normalizedJson(value) {
+  if (Array.isArray(value)) return value.map(normalizedJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, normalizedJson(item)]),
+    );
+  }
+  return value;
+}
+
+function sameValue(left, right) {
+  return JSON.stringify(normalizedJson(left)) === JSON.stringify(normalizedJson(right));
+}
+
+function assertCompatibleRegistration(registry, type, expected) {
+  const actual = registry?.types?.[type];
+  if (!actual) throw new Error(`Agent Manager brain registry is missing ${type}`);
+  for (const field of ["path", "id_prefix", "schema"]) {
+    if (actual[field] !== expected[field]) {
+      throw new Error(`Agent Manager brain registry has an incompatible ${type} registration`);
+    }
+  }
+}
+
+function assertCompatibleSchema(schema, expected, label) {
+  if (schema?.type !== expected.type || schema?.version !== expected.version) {
+    throw new Error(`Agent Manager brain has an incompatible ${label} schema version`);
+  }
+  if (!sameValue(schema.required, expected.required)) {
+    throw new Error(`Agent Manager brain ${label} required fields are incompatible`);
+  }
+  for (const [field, definition] of Object.entries(expected.fields)) {
+    if (!sameValue(schema.fields?.[field], definition)) {
+      throw new Error(`Agent Manager brain ${label} field is incompatible: ${field}`);
+    }
   }
 }
 
@@ -156,51 +316,89 @@ export async function ensureBrain({ root = BRAIN_ROOT } = {}) {
     mkdirSync(join(root, "_registry"), { recursive: true, mode: 0o700 });
     mkdirSync(join(root, "_schema"), { recursive: true, mode: 0o700 });
     const markerPath = join(root, ".agent-manager-brain.json");
+    let previousVersion = null;
     if (existsSync(markerPath)) {
       const marker = JSON.parse(readFileSync(markerPath, "utf8"));
-      if (marker.schemaVersion !== BRAIN_SCHEMA_VERSION) {
+      previousVersion = marker.schemaVersion;
+      if (![1, BRAIN_SCHEMA_VERSION].includes(previousVersion)) {
         throw new Error(
-          `unsupported Agent Manager brain schema ${marker.schemaVersion}; expected ${BRAIN_SCHEMA_VERSION}`,
+          `unsupported Agent Manager brain schema ${marker.schemaVersion}; expected 1 or ${BRAIN_SCHEMA_VERSION}`,
         );
+      }
+      const expectedMarkerSchema = previousVersion === 1
+        ? "agent-manager.brain.v1"
+        : "agent-manager.brain.v2";
+      if (marker.schema !== expectedMarkerSchema || marker.historyMode !== "feed") {
+        throw new Error("Agent Manager brain marker is incompatible with Git-free feed mode");
       }
     }
     const registryPath = join(root, "_registry", "object_types.yaml");
-    const schemaPath = join(root, "_schema", "run_intent.v1.yaml");
-    atomicWrite(registryPath, YAML.stringify(REGISTRY));
-    atomicWrite(schemaPath, YAML.stringify(RUN_INTENT_SCHEMA));
-    const registry = YAML.parse(readFileSync(registryPath, "utf8"));
-    const registered = registry?.types?.run_intent;
-    if (
-      registered?.path !== REGISTRY.types.run_intent.path ||
-      registered?.id_prefix !== REGISTRY.types.run_intent.id_prefix ||
-      registered?.schema !== REGISTRY.types.run_intent.schema
-    ) {
-      throw new Error("Agent Manager brain registry has an incompatible run_intent registration");
-    }
-    const schema = YAML.parse(readFileSync(schemaPath, "utf8"));
-    if (schema?.type !== RUN_INTENT_SCHEMA.type || schema?.version !== RUN_INTENT_SCHEMA.version) {
-      throw new Error("Agent Manager brain has an incompatible run_intent schema version");
-    }
-    for (const [field, definition] of Object.entries(RUN_INTENT_SCHEMA.fields)) {
-      if (schema.fields?.[field]?.type !== definition.type) {
-        throw new Error(`Agent Manager brain run_intent field is incompatible: ${field}`);
+    const schemaDefinitions = new Map([
+      ["run_intent.v1", RUN_INTENT_SCHEMA],
+      ["goal.v1", GOAL_SCHEMA],
+      ["artifact_link.v1", ARTIFACT_LINK_SCHEMA],
+    ]);
+    let registry;
+    if (existsSync(registryPath)) {
+      registry = YAML.parse(readFileSync(registryPath, "utf8"));
+      assertCompatibleRegistration(registry, "run_intent", REGISTRY_V1.types.run_intent);
+      for (const type of ["goal", "artifact_link"]) {
+        if (registry?.types?.[type]) assertCompatibleRegistration(registry, type, REGISTRY.types[type]);
       }
     }
-    atomicWrite(markerPath, JSON.stringify({
-      schema: "agent-manager.brain.v1",
+    for (const [name, definition] of schemaDefinitions) {
+      const schemaPath = join(root, "_schema", `${name}.yaml`);
+      if (existsSync(schemaPath)) {
+        assertCompatibleSchema(YAML.parse(readFileSync(schemaPath, "utf8")), definition, definition.type);
+      }
+    }
+    for (const [name, definition] of schemaDefinitions) {
+      atomicWrite(join(root, "_schema", `${name}.yaml`), YAML.stringify(definition));
+    }
+
+    if (registry) {
+      const migrated = {
+        ...registry,
+        types: { ...registry.types, ...REGISTRY.types },
+      };
+      if (!sameValue(registry, migrated)) replaceWrite(registryPath, YAML.stringify(migrated));
+      registry = migrated;
+    } else {
+      atomicWrite(registryPath, YAML.stringify(REGISTRY));
+      registry = REGISTRY;
+    }
+
+    for (const [type, registration] of Object.entries(REGISTRY.types)) {
+      assertCompatibleRegistration(registry, type, registration);
+    }
+    for (const [name, definition] of schemaDefinitions) {
+      const schema = YAML.parse(readFileSync(join(root, "_schema", `${name}.yaml`), "utf8"));
+      assertCompatibleSchema(schema, definition, definition.type);
+    }
+
+    const marker = JSON.stringify({
+      schema: "agent-manager.brain.v2",
       schemaVersion: BRAIN_SCHEMA_VERSION,
       historyMode: "feed",
-    }, null, 2) + "\n");
-    return { root, schemaVersion: BRAIN_SCHEMA_VERSION, historyMode: "feed" };
+    }, null, 2) + "\n";
+    if (previousVersion !== BRAIN_SCHEMA_VERSION) replaceWrite(markerPath, marker);
+    return {
+      root,
+      schemaVersion: BRAIN_SCHEMA_VERSION,
+      migratedFrom: previousVersion === 1 ? 1 : null,
+      historyMode: "feed",
+    };
   }, { root });
 }
 
-function unwrap(result, action) {
+export function unwrapBrainResult(result, action) {
   if (result?.ok) return result.value;
   const errors = result?.errors || [];
   const message = errors.map((item) => `${item.code}: ${item.message}`).join("; ") || "unknown MAADB error";
   throw new Error(`${action} failed: ${message}`);
 }
+
+const unwrap = unwrapBrainResult;
 
 async function openBrain(root = BRAIN_ROOT) {
   await ensureBrain({ root });
@@ -211,7 +409,7 @@ async function openBrain(root = BRAIN_ROOT) {
     throw new Error(`MAADB runtime is unavailable; install @maadb/core@0.14.0 or newer: ${error.message}`);
   }
   const engine = new imported.MaadEngine();
-  unwrap(await engine.init(root, {
+  unwrapBrainResult(await engine.init(root, {
     semantic: false,
     history: {
       effectiveMode: "feed",
@@ -222,6 +420,18 @@ async function openBrain(root = BRAIN_ROOT) {
     },
   }), "initialize Agent Manager brain");
   return engine;
+}
+
+export async function useBrain(operation, { root = BRAIN_ROOT, lock = null } = {}) {
+  const execute = async () => {
+    const engine = await openBrain(root);
+    try {
+      return await operation(engine);
+    } finally {
+      await engine.close();
+    }
+  };
+  return lock ? withBrainLock(lock, execute, { root }) : execute();
 }
 
 function normalizeRemote(value) {

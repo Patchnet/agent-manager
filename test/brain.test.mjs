@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import YAML from "yaml";
 import {
   BrainConflictError,
   admitRun,
@@ -32,10 +33,51 @@ test.after(() => rmSync(root, { recursive: true, force: true }));
 
 test("brain initializes explicitly in Git-free feed mode", async () => {
   const result = await ensureBrain({ root: brainRoot });
+  assert.equal(result.schemaVersion, 2);
   assert.equal(result.historyMode, "feed");
   assert.equal(existsSync(join(brainRoot, ".git")), false);
   assert.equal(existsSync(join(brainRoot, "_registry", "object_types.yaml")), true);
   assert.equal(existsSync(join(brainRoot, "_schema", "run_intent.v1.yaml")), true);
+  assert.equal(existsSync(join(brainRoot, "_schema", "goal.v1.yaml")), true);
+  assert.equal(existsSync(join(brainRoot, "_schema", "artifact_link.v1.yaml")), true);
+});
+
+test("schema-v1 brains migrate explicitly without changing run-intent records", async () => {
+  const migrationRoot = join(root, "migration-brain");
+  await ensureBrain({ root: migrationRoot });
+  const awareness = await admitRun({
+    runId: "run-20260807-225500-55555555",
+    repoRoot: repoOne,
+    lanes: [{ scope: ["src/migration/**"] }],
+    goalRefs: ["goal-future"],
+    root: migrationRoot,
+  });
+  const registryPath = join(migrationRoot, "_registry", "object_types.yaml");
+  const registry = YAML.parse(readFileSync(registryPath, "utf8"));
+  delete registry.types.goal;
+  delete registry.types.artifact_link;
+  writeFileSync(registryPath, YAML.stringify(registry));
+  rmSync(join(migrationRoot, "_schema", "goal.v1.yaml"));
+  rmSync(join(migrationRoot, "_schema", "artifact_link.v1.yaml"));
+  writeFileSync(join(migrationRoot, ".agent-manager-brain.json"), JSON.stringify({
+    schema: "agent-manager.brain.v1",
+    schemaVersion: 1,
+    historyMode: "feed",
+  }, null, 2));
+
+  const migrated = await ensureBrain({ root: migrationRoot });
+  assert.equal(migrated.schemaVersion, 2);
+  assert.equal(migrated.migratedFrom, 1);
+  const marker = JSON.parse(readFileSync(join(migrationRoot, ".agent-manager-brain.json"), "utf8"));
+  assert.equal(marker.schema, "agent-manager.brain.v2");
+  const migratedRegistry = YAML.parse(readFileSync(registryPath, "utf8"));
+  assert.equal(migratedRegistry.types.run_intent.schema, "run_intent.v1");
+  assert.equal(migratedRegistry.types.goal.schema, "goal.v1");
+  assert.equal(migratedRegistry.types.artifact_link.schema, "artifact_link.v1");
+  const intents = await listBrainIntents({ root: migrationRoot });
+  assert.equal(intents.length, 1);
+  assert.equal(intents[0].docId, awareness.intentId);
+  assert.deepEqual(intents[0].goalRefs, ["goal-future"]);
 });
 
 test("canonical repository identity follows the remote across local paths", () => {
