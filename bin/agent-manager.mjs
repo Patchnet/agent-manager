@@ -50,6 +50,8 @@ import {
   listGoals,
   updateGoal,
 } from "../src/goals.mjs";
+import { formatGoalProgress, getGoalProgress } from "../src/goal-progress.mjs";
+import { exportGoalMap } from "../src/goal-map.mjs";
 import {
   formatAgentManagerConfig,
   initAgentManagerConfig,
@@ -94,6 +96,8 @@ function usage() {
     "  agent-manager goal create --title <text> [--id <id>] [options] [--json]",
     "  agent-manager goal update <id> [options] [--json]",
     "  agent-manager goal show <id> [--json]",
+    "  agent-manager goal status <id> [--json]",
+    "  agent-manager goal map <id> [--output <file>] [--json]",
     "  agent-manager goal link <id> --type <type> --ref <ref> [options] [--json]",
     "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000]",
     "  agent-manager reply <runId> <laneId> --message <text> [--json]",
@@ -386,7 +390,7 @@ async function runGoalsCommand(rest) {
 
 async function runGoalCommand(rest) {
   const action = rest[0];
-  if (!action) throw new Error("goal requires create, update, show, inspect, or link");
+  if (!action) throw new Error("goal requires create, update, show, inspect, status, map, or link");
   if (action === "create") {
     const parsed = parseNamedArgs(rest.slice(1), {
       values: {
@@ -421,6 +425,29 @@ async function runGoalCommand(rest) {
       formatGoal(payload.goal),
       `children: ${payload.children.length ? payload.children.map((goal) => goal.id).join(", ") : "-"}`,
       `artifact links: ${payload.artifactLinks.length ? payload.artifactLinks.map((link) => link.id).join(", ") : "-"}`,
+    ].join("\n"));
+    return;
+  }
+  if (action === "status") {
+    const parsed = parseNamedArgs(rest.slice(1), { booleans: { "--json": "json" } });
+    if (parsed.positionals.length !== 1) throw new Error("goal status requires exactly one <id>");
+    const progress = await getGoalProgress(parsed.positionals[0]);
+    console.log(parsed.json ? JSON.stringify(progress) : formatGoalProgress(progress));
+    return;
+  }
+  if (action === "map") {
+    const parsed = parseNamedArgs(rest.slice(1), {
+      values: { "--output": { key: "outputPath" }, "--out": { key: "outputPath" } },
+      booleans: { "--json": "json" },
+    });
+    if (parsed.positionals.length !== 1) throw new Error("goal map requires exactly one <id>");
+    const result = await exportGoalMap(parsed.positionals[0], {
+      outputPath: parsed.outputPath || null,
+    });
+    console.log(parsed.json ? JSON.stringify(result) : [
+      `goal map: ${result.outputPath}`,
+      `effective state: ${result.effectiveState}`,
+      `${result.completedLeafRatio.label}: ${result.completedLeafRatio.numerator}/${result.completedLeafRatio.denominator}`,
     ].join("\n"));
     return;
   }

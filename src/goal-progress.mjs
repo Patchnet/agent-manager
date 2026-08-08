@@ -358,3 +358,21 @@ export async function getGoalProgress(goalId, { root = BRAIN_ROOT } = {}) {
   ]);
   return computeGoalProgress(goalId, { goals, artifactLinks, runIntents });
 }
+
+export function formatGoalProgress(progress) {
+  const ratio = progress.completedLeafRatio;
+  const evidence = progress.basis.decisiveEvidence.length
+    ? progress.basis.decisiveEvidence.map((item) => (
+      `${item.kind}:${item.id} (${item.state} -> ${item.contribution})`
+    )).join("\n  ")
+    : "none";
+  return [
+    `${progress.goalId}  ${progress.effectiveState}  ${progress.title}`,
+    `stored lifecycle: ${progress.storedLifecycle}`,
+    `${ratio.label}: ${ratio.numerator}/${ratio.denominator}`,
+    `goals: ${progress.counts.goals.included} included, ${progress.counts.goals.excludedSuperseded} superseded`,
+    `artifacts: ${progress.counts.artifacts.included} included`,
+    `runs: ${progress.counts.runs.included} included`,
+    `decisive evidence:\n  ${evidence}`,
+  ].join("\n");
+}

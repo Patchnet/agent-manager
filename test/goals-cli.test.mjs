@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -80,6 +80,33 @@ test("goal CLI creates, updates, lists, shows, inspects, and links goals", () =>
   assert.deepEqual(shown.artifactLinks.map((link) => link.id), ["glink-cli-plan"]);
   const inspected = json(["goal", "inspect", "goal-cli-parent"]);
   assert.deepEqual(inspected.children.map((goal) => goal.id), ["goal-cli-child"]);
+
+  const status = json(["goal", "status", "goal-cli-parent"]);
+  assert.equal(status.schema, "agent-manager.goal-progress.v1");
+  assert.equal(status.goalId, "goal-cli-parent");
+  assert.equal(status.effectiveState, "active");
+  assert.deepEqual(status.completedLeafRatio, {
+    label: "completed-leaf ratio",
+    numerator: 0,
+    denominator: 1,
+    value: 0,
+  });
+  const statusText = run(["goal", "status", "goal-cli-parent"]);
+  assert.match(statusText, /completed-leaf ratio: 0\/1/);
+  assert.match(statusText, /decisive evidence:/);
+
+  const outputPath = join(root, "exports", "cli-goal-map.html");
+  const exported = json(["goal", "map", "goal-cli-parent", "--output", outputPath]);
+  assert.equal(exported.schema, "agent-manager.goal-map-export.v1");
+  assert.equal(exported.goalId, "goal-cli-parent");
+  assert.equal(exported.outputPath, outputPath);
+  assert.equal(existsSync(outputPath), true);
+  assert.match(run(["goal", "map", "goal-cli-parent", "--output", outputPath]), /goal map: .*cli-goal-map\.html/);
+  const html = readFileSync(outputPath, "utf8");
+  assert.match(html, /CLI parent/);
+  assert.match(html, /CLI child/);
+  assert.match(html, /Public example plan/);
+  assert.doesNotMatch(html, /<script\b/i);
 });
 
 test("goal CLI is discoverable and rejects missing local goals", () => {
@@ -87,6 +114,8 @@ test("goal CLI is discoverable and rejects missing local goals", () => {
   assert.match(help, /agent-manager goals/);
   assert.match(help, /agent-manager goal create/);
   assert.match(help, /agent-manager goal link/);
+  assert.match(help, /agent-manager goal status/);
+  assert.match(help, /agent-manager goal map/);
   const missing = spawnSync(process.execPath, [
     cli, "goal", "show", "goal-does-not-exist", "--json",
   ], {
