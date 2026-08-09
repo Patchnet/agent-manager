@@ -13,6 +13,149 @@ import { loadWorkflow } from "./workflow.mjs";
 import { markWorkersComplete } from "./delivery.mjs";
 import { validateLaneCompletion } from "./completion.mjs";
 
+/**
+ * Operator vocabulary for talking to a worker lane:
+ *
+ * - reply      answers a lane that already stopped and raised needs-input.
+ *              `prepareReply` + `resumeLane`, unchanged.
+ * - correct    sends a mid-flight correction to a lane that is still running.
+ *              `prepareCorrection` pauses the lane through the supervisor's
+ *              needs-input channel, then resumes the same harness session with
+ *              the correction as its next turn, so lane context survives.
+ *
+ * A correction is deliberately not a second concurrent turn: harness print-mode
+ * sessions take one turn at a time, so the only honest way to reach a running
+ * lane is interrupt, then resume.
+ */
+export const CORRECTION_TYPE = "operator_correction";
+const CORRECTION_POLL_MS = 250;
+const CORRECTION_TIMEOUT_MS = 60_000;
+const CORRECTION_SETTLE_MS = 15_000;
+const PAUSABLE_STATES = new Set(["running", "blocked"]);
+
+function processIsAlive(pid) {
+  if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return false;
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+/**
+ * Pause a running lane so an operator correction can be delivered. Writes the
+ * lane's needs-input marker, which the run supervisor already polls: it blocks the
+ * lane, retains the claim, and stops the harness at its next poll. Fails closed
+ * rather than leaving a marker nobody will read.
+ */
+export async function interruptLaneForCorrection(runId, laneId, message, {
+  pollMs = CORRECTION_POLL_MS,
+  timeoutMs = CORRECTION_TIMEOUT_MS,
+  settleMs = CORRECTION_SETTLE_MS,
+  sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
+  now = () => Date.now(),
+  isSupervisorAlive = processIsAlive,
+} = {}) {
+  assertSafeSlug(runId, "run id");
+  assertSafeSlug(laneId, "lane id");
+  const text = String(message || "").trim();
+  if (!text) throw new Error("correction requires a non-empty message");
+  const status = readStatus(runId);
+  if (!status) throw new Error("no status for " + runId);
+  const lane = (status.lanes || []).find((item) => item.id === laneId);
+  if (!lane) throw new Error("no lane " + laneId + " in " + runId);
+  if (lane.state === "blocked") {
+    return { state: "already-blocked", interrupted: false, markerPath: null, settled: true };
+  }
+  if (!PAUSABLE_STATES.has(lane.state)) {
+    throw new Error(
+      "lane " + laneId + " is " + lane.state + "; corrections apply to running or blocked lanes",
+    );
+  }
+  if (!lane.sessionId) {
+    throw new Error(
+      "lane " + laneId + " has no harness session id yet; wait for the first harness event before correcting it",
+    );
+  }
+
+  const root = runDir(runId);
+  const laneDir = join(root, laneId);
+  const safeWorktree = lane.worktree
+    ? assertPathInside(root, lane.worktree, `lane ${laneId} worktree`)
+    : null;
+  const markerPath = join(laneDir, "needs-input.json");
+  for (const path of [
+    markerPath,
+    safeWorktree ? join(safeWorktree, "needs-input.json") : null,
+  ].filter(Boolean)) {
+    if (existsSync(path)) {
+      throw new Error(
+        "lane " + laneId + " already raised needs-input; answer it with reply instead of a correction",
+      );
+    }
+  }
+  if (!isSupervisorAlive(status.supervisor?.pid)) {
+    throw new Error(
+      "no live supervisor for " + runId + "; a correction cannot reach lane " + laneId,
+    );
+  }
+
+  writePrivateFile(
+    markerPath,
+    JSON.stringify({
+      type: CORRECTION_TYPE,
+      prompt: text,
+      blocking: true,
+      source: "operator",
+      requestedAt: new Date().toISOString(),
+    }, null, 2) + "\n",
+    "utf8",
+  );
+
+  const deadline = now() + timeoutMs;
+  let blockedAt = null;
+  while (now() <= deadline) {
+    const current = (readStatus(runId)?.lanes || []).find((item) => item.id === laneId);
+    if (current?.state === "blocked") {
+      blockedAt ??= now();
+      if (current.pid == null) {
+        return { state: "blocked", interrupted: true, markerPath, settled: true };
+      }
+      if (now() - blockedAt >= settleMs) {
+        return { state: "blocked", interrupted: true, markerPath, settled: false };
+      }
+    } else if (current && current.state !== "running") {
+      rmSync(markerPath, { force: true });
+      throw new Error(
+        "lane " + laneId + " reached " + current.state + " before the correction was delivered",
+      );
+    }
+    await sleep(pollMs);
+  }
+  // Once the lane is paused the correction is committed; only an undelivered marker
+  // is withdrawn, so a slow harness exit never strands the lane without its reason.
+  if (blockedAt !== null) {
+    return { state: "blocked", interrupted: true, markerPath, settled: false };
+  }
+  rmSync(markerPath, { force: true });
+  throw new Error("timed out waiting for lane " + laneId + " to pause for an operator correction");
+}
+
+/**
+ * Pause a running lane and stage the correction for harness resume. Returns the same
+ * shape as `prepareReply`, so a caller detaches the resume supervisor identically.
+ */
+export async function prepareCorrection(runId, laneId, message, options = {}) {
+  const correction = await interruptLaneForCorrection(runId, laneId, message, options);
+  const prepared = prepareReply(runId, laneId, message);
+  if (correction.interrupted) {
+    prepared.lane.lastActivity = "operator correction queued for harness resume";
+    writeStatus(runId, prepared.status);
+  }
+  return { ...prepared, correction, interrupted: correction.interrupted };
+}
+
 export function prepareReply(runId, laneId, message) {
   assertSafeSlug(runId, "run id");
   assertSafeSlug(laneId, "lane id");

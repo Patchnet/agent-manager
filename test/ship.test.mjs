@@ -21,7 +21,10 @@ mkdirSync(runsRoot, { recursive: true });
 const {
   diagnoseBlockedMerge,
   execCommand,
+  isSymbolicBaseRef,
   isWithinCheckRegistrationGrace,
+  resolveDefaultBaseBranch,
+  resolveShipBase,
   prepareShipHandoff,
   prepareReleaseWorkspace,
   queueShip,
@@ -170,6 +173,91 @@ test("ship handoff requires the exact approval and release inputs", () => {
   });
   assert.equal(handoff.flow, "formal");
   assert.equal(handoff.branch, `am/${runId}/integrate`);
+});
+
+test("a symbolic base ref is a moving pointer or a bare commit, not a branch", () => {
+  assert.equal(isSymbolicBaseRef("HEAD"), true);
+  assert.equal(isSymbolicBaseRef("@"), true);
+  assert.equal(isSymbolicBaseRef(""), true);
+  assert.equal(isSymbolicBaseRef(null), true);
+  assert.equal(isSymbolicBaseRef("c".repeat(40)), true);
+  assert.equal(isSymbolicBaseRef("main"), false);
+  assert.equal(isSymbolicBaseRef("release/2026-08"), false);
+  assert.equal(isSymbolicBaseRef("HEADroom"), false);
+});
+
+test("ship base resolves symbolic defaults and keeps the --base override", () => {
+  const calls = [];
+  const remoteHead = (command, args) => {
+    calls.push(`${command} ${args.join(" ")}`);
+    if (command === "git" && args[0] === "symbolic-ref") return ok("origin/trunk");
+    return fail("unexpected");
+  };
+
+  assert.deepEqual(
+    resolveShipBase({ explicit: "release/2026-08", recorded: "HEAD", remote: "origin", cwd: root, exec: remoteHead }),
+    { base: "release/2026-08", source: "override", resolvedFrom: null },
+  );
+  assert.deepEqual(calls, [], "an explicit base never needs resolution");
+
+  assert.deepEqual(
+    resolveShipBase({ explicit: null, recorded: "HEAD", remote: "origin", cwd: root, exec: remoteHead }),
+    { base: "trunk", source: "remote-default", resolvedFrom: "HEAD" },
+  );
+  assert.deepEqual(
+    resolveShipBase({ explicit: null, recorded: "origin/develop", remote: "origin", cwd: root, exec: remoteHead }),
+    { base: "develop", source: "recorded", resolvedFrom: null },
+  );
+});
+
+test("ship base falls back to GitHub, then to main, when the remote head is unknown", () => {
+  const viaGh = (command, args) => {
+    if (command === "gh" && args[0] === "repo") return ok("primary\n");
+    return fail("no remote head");
+  };
+  assert.equal(resolveDefaultBaseBranch(viaGh, root, "origin"), "primary");
+  assert.deepEqual(
+    resolveShipBase({ explicit: null, recorded: "HEAD", remote: "origin", cwd: root, exec: viaGh }),
+    { base: "primary", source: "remote-default", resolvedFrom: "HEAD" },
+  );
+
+  const blind = () => fail("offline");
+  assert.equal(resolveDefaultBaseBranch(blind, root, "origin"), null);
+  assert.deepEqual(
+    resolveShipBase({ explicit: null, recorded: "d".repeat(40), remote: "origin", cwd: root, exec: blind }),
+    { base: "main", source: "fallback", resolvedFrom: "d".repeat(40) },
+  );
+});
+
+test("ship handoff never inherits a literal HEAD from the workflow base_ref", () => {
+  const runId = "run-ship-symbolic-base";
+  writeRun(runId, { baseRef: "HEAD" });
+  const exec = (command, args) => {
+    if (command === "git" && args[0] === "symbolic-ref") return ok("origin/trunk");
+    return fail("unexpected");
+  };
+
+  const handoff = prepareShipHandoff(runId, {
+    approve: "through-pr",
+    commitMessage: "feat: approved branch",
+    exec,
+  });
+  assert.equal(handoff.base, "trunk");
+  assert.equal(handoff.baseSource, "remote-default");
+  assert.equal(handoff.baseResolvedFrom, "HEAD");
+
+  const overridden = prepareShipHandoff(runId, {
+    approve: "through-pr",
+    commitMessage: "feat: approved branch",
+    base: "main",
+    exec,
+  });
+  assert.equal(overridden.base, "main");
+  assert.equal(overridden.baseSource, "override");
+
+  const queued = queueShip(runId, handoff);
+  assert.equal(queued.status.ship.base, "trunk");
+  assert.equal(queued.status.ship.baseSource, "remote-default");
 });
 
 test("shipping refuses a delivery target with no changed files", () => {

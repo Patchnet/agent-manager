@@ -101,20 +101,6 @@ export function prepareShipHandoff(runId, options = {}) {
   }
 
   const remote = safeArgument(options.remote || status.integrate?.remote || "origin", "remote");
-  const base = safeArgument(
-    options.base || target?.base || normalizeBase(status.baseRef, remote) || "main",
-    "base branch",
-  );
-  const branch = safeArgument(
-    options.branch ||
-      target?.branch ||
-      (flow === "formal" ? status.integrate?.branch : base) ||
-      "",
-    "ship branch",
-  );
-  if (!branch) {
-    throw new Error("ship requires --branch when no integrate branch is recorded");
-  }
 
   const repoValue = options.repo || status.repoRoot;
   if (!repoValue) {
@@ -132,6 +118,25 @@ export function prepareShipHandoff(runId, options = {}) {
   );
   if (!existsSync(worktree)) {
     throw new Error(`ship worktree does not exist: ${worktree}`);
+  }
+
+  const resolvedBase = resolveShipBase({
+    explicit: options.base || null,
+    recorded: target?.base || status.baseRef || null,
+    remote,
+    cwd: worktree,
+    exec: options.exec || execCommand,
+  });
+  const base = safeArgument(resolvedBase.base, "base branch");
+  const branch = safeArgument(
+    options.branch ||
+      target?.branch ||
+      (flow === "formal" ? status.integrate?.branch : base) ||
+      "",
+    "ship branch",
+  );
+  if (!branch) {
+    throw new Error("ship requires --branch when no integrate branch is recorded");
   }
 
   const commitMessage = optionalSingleLine(options.commitMessage, "commit message", 200);
@@ -173,6 +178,8 @@ export function prepareShipHandoff(runId, options = {}) {
     worktree,
     branch,
     base,
+    baseSource: resolvedBase.source,
+    baseResolvedFrom: resolvedBase.resolvedFrom,
     remote,
     pr,
     targetId: target?.id || null,
@@ -184,6 +191,56 @@ export function prepareShipHandoff(runId, options = {}) {
     checkGraceSec,
     runtime: detectRuntimeProfile(),
     requestedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * True when a recorded base ref names a moving pointer or a bare commit rather than a
+ * branch. `base_ref` defaults to HEAD so lane worktrees fork from the current commit;
+ * shipping to a literal `HEAD` (or a raw SHA) would push to the wrong ref.
+ */
+export function isSymbolicBaseRef(value) {
+  const text = String(value || "").trim();
+  if (!text) return true;
+  return text === "HEAD" || text === "@" || /^[0-9a-f]{40}$/i.test(text);
+}
+
+/**
+ * Read the remote's default branch: the local remote-HEAD pointer first, then GitHub.
+ * Returns null when neither answers so the caller can fall back explicitly.
+ */
+export function resolveDefaultBaseBranch(exec, cwd, remote) {
+  const symbolic = exec("git", ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], { cwd });
+  if (symbolic.ok && symbolic.stdout) {
+    const value = symbolic.stdout.split(/\r?\n/)[0].trim();
+    const branch = value.startsWith(`${remote}/`) ? value.slice(remote.length + 1) : value;
+    if (branch) return branch;
+  }
+  const viewed = exec(
+    "gh",
+    ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+    { cwd },
+  );
+  if (viewed.ok && viewed.stdout.trim()) return viewed.stdout.split(/\r?\n/)[0].trim();
+  return null;
+}
+
+/**
+ * Pick the branch an approved shipment pushes into. An explicit --base always wins; a
+ * recorded branch name is kept; a symbolic default resolves to the remote's default
+ * branch, and only then falls back to main.
+ */
+export function resolveShipBase({ explicit, recorded, remote, cwd, exec = execCommand }) {
+  if (explicit) return { base: explicit, source: "override", resolvedFrom: null };
+  const candidate = recorded ? normalizeBase(recorded, remote) : "";
+  if (candidate && !isSymbolicBaseRef(candidate)) {
+    return { base: candidate, source: "recorded", resolvedFrom: null };
+  }
+  const resolved = resolveDefaultBaseBranch(exec, cwd, remote);
+  return {
+    base: resolved || "main",
+    source: resolved ? "remote-default" : "fallback",
+    resolvedFrom: candidate || null,
   };
 }
 
@@ -213,6 +270,8 @@ export function queueShip(runId, handoff) {
     worktree: handoff.worktree,
     branch: handoff.branch,
     base: handoff.base,
+    baseSource: handoff.baseSource || null,
+    baseResolvedFrom: handoff.baseResolvedFrom || null,
     remote: handoff.remote,
     prUrl: handoff.pr,
     targetId: handoff.targetId || null,

@@ -129,7 +129,14 @@
     "policy": {
       "type": "object", "additionalProperties": false,
       "properties": {
-        "allow_commit": { "type": "boolean" }, "allow_pr": { "type": "boolean" },
+        "allow_commit": {
+          "type": "boolean",
+          "description": "Permit worker commits. Claude implementation lanes must then use permission_mode auto, or dontAsk with an allowed_tools rule for git; acceptEdits and workspace-write prompt before shell commands and are rejected at load."
+        },
+        "allow_pr": {
+          "type": "boolean",
+          "description": "Permit worker pull requests. Claude implementation lanes must then use permission_mode auto, or dontAsk with an allowed_tools rule for gh; acceptEdits and workspace-write prompt before shell commands and are rejected at load."
+        },
         "dangerously_skip_permissions": { "type": "boolean" },
         "permission_mode": { "enum": ["acceptEdits", "auto", "dontAsk", "readOnly", "read-only", "read_only", "workspace-write"] },
         "stall_timeout_sec": { "type": "number", "minimum": 5, "maximum": 86400 },
