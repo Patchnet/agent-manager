@@ -1,6 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { cwd } from "node:process";
 
 export const CONFIG_KEYS = [
@@ -10,6 +18,90 @@ export const CONFIG_KEYS = [
   "AGENT_MANAGER_BRAIN_ROOT",
   "AGENT_MANAGER_CLAIM_BIN",
 ];
+
+/**
+ * Test runs must never resolve onto an operator's real runs, claims, or brain
+ * root. Individual tests cannot be trusted to remember that, so isolation is
+ * enforced here — the single place every root passes through — instead of in
+ * each test file. See `test/isolation.test.mjs`.
+ */
+export const TEST_SANDBOX_ENV = "AGENT_MANAGER_TEST_ROOT";
+
+/** Keys whose *default* moves into the sandbox; the rest keep their defaults. */
+const SANDBOX_SUBDIRS = {
+  AGENT_MANAGER_RUNS_ROOT: "runs",
+  AGENT_MANAGER_CLAIMS_ROOT: "claims",
+  AGENT_MANAGER_BRAIN_ROOT: "brain",
+};
+
+function temporaryRoots(tempDir) {
+  const roots = new Set([resolve(tempDir)]);
+  try {
+    roots.add(resolve(realpathSync.native(tempDir)));
+  } catch {
+    // A missing or unreadable temp dir just means one fewer accepted prefix.
+  }
+  return [...roots];
+}
+
+function isInside(root, value) {
+  const rel = relative(resolve(root), resolve(value));
+  return Boolean(rel) && rel !== "." && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/** True when `value` lives under the OS temp directory. */
+export function isTemporaryPath(value, tempDir = tmpdir()) {
+  if (!value) return false;
+  return temporaryRoots(tempDir).some((root) => isInside(root, String(value)));
+}
+
+/**
+ * Under test, a path is only trustworthy if it is disposable: somewhere in the
+ * OS temp directory, or inside the sandbox this session already declared.
+ */
+export function isIsolatedPath(value, { env = process.env, tempDir = tmpdir() } = {}) {
+  if (!value) return false;
+  if (isTemporaryPath(value, tempDir)) return true;
+  const declared = env[TEST_SANDBOX_ENV];
+  return Boolean(declared) && isAbsolute(declared) && isInside(declared, String(value));
+}
+
+/**
+ * Detects a test process. `NODE_TEST_CONTEXT` covers `node --test` children
+ * (the default process isolation), `--test` in `execArgv` covers
+ * `--test-isolation=none`, and the two Agent Manager variables cover child
+ * processes a test spawns plus explicit opt-in.
+ */
+export function detectTestContext({ env = process.env, execArgv = process.execArgv } = {}) {
+  if (env[TEST_SANDBOX_ENV]) return true;
+  if (env.NODE_TEST_CONTEXT) return true;
+  if (env.AGENT_MANAGER_TEST_MODE === "1") return true;
+  return Array.isArray(execArgv) && execArgv.some((arg) => arg === "--test" || arg.startsWith("--test-") || arg.startsWith("--test="));
+}
+
+/**
+ * Returns the sandbox root for this test session, creating it on first use.
+ * The path is published to `env` so every child process a test spawns joins the
+ * same sandbox instead of minting its own.
+ */
+export function testSandboxRoot({ env = process.env, tempDir = tmpdir() } = {}) {
+  const existing = env[TEST_SANDBOX_ENV];
+  if (existing && isAbsolute(existing)) {
+    const root = resolve(existing);
+    mkdirSync(root, { recursive: true });
+    return root;
+  }
+  const root = mkdtempSync(join(resolve(tempDir), "agent-manager-test-"));
+  env[TEST_SANDBOX_ENV] = root;
+  process.once("exit", () => {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch {
+      // Best effort: the sandbox lives in the OS temp directory either way.
+    }
+  });
+  return root;
+}
 
 export function defaultConfigPath(home = homedir()) {
   return join(home, ".agent-manager", "config.env");
@@ -52,8 +144,24 @@ export function resolveAgentManagerConfig({
   cwdValue = cwd(),
   configPath = env.AGENT_MANAGER_CONFIG || defaultConfigPath(home),
   overrides = {},
+  execArgv = process.execArgv,
+  tempDir = tmpdir(),
 } = {}) {
-  const resolvedConfigPath = resolveConfiguredPath(configPath, { home, baseDir: cwdValue });
+  const sandboxed = detectTestContext({ env, execArgv });
+  let sandbox = null;
+  // Created lazily: a test that already points every root at its own temp
+  // directory never needs a sandbox directory at all.
+  const sandboxRoot = () => {
+    if (!sandbox) sandbox = testSandboxRoot({ env, tempDir });
+    return sandbox;
+  };
+  const isolated = (value) => isIsolatedPath(value, { env, tempDir });
+
+  let resolvedConfigPath = resolveConfiguredPath(configPath, { home, baseDir: cwdValue });
+  if (sandboxed && !isolated(resolvedConfigPath)) {
+    // Never read (or later write) the operator's real config from a test.
+    resolvedConfigPath = join(sandboxRoot(), "config.env");
+  }
   const fileValues = existsSync(resolvedConfigPath)
     ? parseConfigEnv(readFileSync(resolvedConfigPath, "utf8"))
     : {};
@@ -75,11 +183,29 @@ export function resolveAgentManagerConfig({
       [fileValues[key], "user-config"],
       [defaults[key], "default"],
     ];
-    const [rawValue, source] = candidates.find(([value]) => value !== undefined && value !== null && String(value).trim() !== "") || [null, "default"];
-    values[key] = rawValue === null ? null : resolveConfiguredPath(rawValue, {
-      home,
-      baseDir: source === "user-config" ? baseDir : cwdValue,
-    });
+    const supplied = candidates.filter(
+      ([value]) => value !== undefined && value !== null && String(value).trim() !== "",
+    );
+    let [rawValue, source] = supplied[0] || [null, "default"];
+    if (rawValue !== null) {
+      rawValue = resolveConfiguredPath(rawValue, {
+        home,
+        baseDir: source === "user-config" ? baseDir : cwdValue,
+      });
+    }
+    if (sandboxed && source !== "default" && !isolated(rawValue)) {
+      // Ambient operator configuration reached a test process. Drop it rather
+      // than let the test write into a real registry.
+      rawValue = null;
+      source = "default";
+    }
+    if (sandboxed && source === "default" && SANDBOX_SUBDIRS[key]) {
+      rawValue = join(sandboxRoot(), SANDBOX_SUBDIRS[key]);
+      source = "test-sandbox";
+    } else if (rawValue === null && source === "default") {
+      rawValue = defaults[key] === null ? null : resolveConfiguredPath(defaults[key], { home, baseDir: cwdValue });
+    }
+    values[key] = rawValue;
     sources[key] = source;
   }
 
@@ -88,6 +214,7 @@ export function resolveAgentManagerConfig({
     configExists: existsSync(resolvedConfigPath),
     values,
     sources,
+    testSandbox: sandboxed ? sandbox || env[TEST_SANDBOX_ENV] || null : null,
   };
 }
 
@@ -106,8 +233,15 @@ export function initAgentManagerConfig({
   claimsRoot = join(home, ".agent-manager", "claims"),
   brainRoot = join(home, ".agent-manager", "brain"),
   force = false,
+  execArgv = process.execArgv,
+  tempDir = tmpdir(),
 } = {}) {
   const path = resolveConfiguredPath(configPath, { home, baseDir: cwdValue });
+  if (detectTestContext({ env, execArgv }) && !isIsolatedPath(path, { env, tempDir })) {
+    throw new Error(
+      `refusing to write agent-manager configuration outside the test sandbox: ${path}`,
+    );
+  }
   if (existsSync(path) && !force) {
     throw new Error(`configuration already exists: ${path} (use --force to replace it)`);
   }

@@ -1,16 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  assertResolvedRootsIsolated,
+  isolatedRoot,
+  useIsolatedRoots,
+} from "../test-support/isolated-roots.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "agent-manager-hardening-"));
-const runsRoot = join(root, "runs");
+const root = isolatedRoot("hardening-");
 const repo = join(root, "repo");
 mkdirSync(repo, { recursive: true });
-process.env.AGENT_MANAGER_DEV_ROOT = root;
-process.env.AGENT_MANAGER_RUNS_ROOT = runsRoot;
+// The reply path below claims a lane. Without an explicit claims root that
+// claim landed in the operator's registry, so pin every root up front.
+const { AGENT_MANAGER_RUNS_ROOT: runsRoot } = useIsolatedRoots(root);
 
 execFileSync("git", ["init", "-b", "main", repo]);
 writeFileSync(join(repo, "README.md"), "base\n");
@@ -42,6 +46,10 @@ function valid(overrides = {}) {
     ...overrides,
   };
 }
+
+test("this test file resolves disposable runs, claims, and brain roots", async () => {
+  await assertResolvedRootsIsolated();
+});
 
 test("workflow validation rejects traversal, duplicate ids, wrong booleans, credentials, and unknown fields", () => {
   assert.throws(() => loadWorkflow(workflow("scope-traversal", valid({ lanes: [{ id: "lane", scope: "../outside", prompt: "work" }] }))), /stay inside/);

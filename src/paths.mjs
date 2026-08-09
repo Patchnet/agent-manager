@@ -5,8 +5,18 @@ import { resolveAgentManagerConfig } from "./config.mjs";
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PATH_CONFIG = resolveAgentManagerConfig();
 
+/** Resolved configuration file backing these roots. */
+export const CONFIG_PATH = PATH_CONFIG.configPath;
+
+/**
+ * Temp sandbox this process was redirected into, or `null` outside tests.
+ * Set by `resolveAgentManagerConfig`; see `src/config.mjs`.
+ */
+export const TEST_SANDBOX_ROOT = PATH_CONFIG.testSandbox;
+
 /** Workspace root used to resolve `workflow.repo` as a sibling folder. */
 export const DEV_ROOT = PATH_CONFIG.values.AGENT_MANAGER_DEV_ROOT;
+export const DEV_ROOT_SOURCE = PATH_CONFIG.sources.AGENT_MANAGER_DEV_ROOT;
 
 /** Run telemetry root (`status.json`, lane logs, heartbeats). */
 export const RUNS_ROOT = PATH_CONFIG.values.AGENT_MANAGER_RUNS_ROOT;
@@ -14,6 +24,7 @@ export const RUNS_ROOT_SOURCE = PATH_CONFIG.sources.AGENT_MANAGER_RUNS_ROOT;
 
 /** Advisory claim registry root. */
 export const CLAIMS_ROOT = PATH_CONFIG.values.AGENT_MANAGER_CLAIMS_ROOT;
+export const CLAIMS_ROOT_SOURCE = PATH_CONFIG.sources.AGENT_MANAGER_CLAIMS_ROOT;
 
 /** MAADB-backed semantic awareness root. */
 export const BRAIN_ROOT = PATH_CONFIG.values.AGENT_MANAGER_BRAIN_ROOT;

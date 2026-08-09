@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { assertResolvedRootsIsolated, isolatedRoot } from "../test-support/isolated-roots.mjs";
 import {
   GoalModelError,
   assertGoalsExist,
@@ -20,7 +20,7 @@ import {
 const roots = [];
 
 function brainRoot() {
-  const root = mkdtempSync(join(tmpdir(), "agent-manager-goals-"));
+  const root = isolatedRoot("goals-");
   roots.push(root);
   return join(root, "brain");
 }
@@ -31,6 +31,12 @@ function rejectsWith(code) {
 
 test.after(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
+
+// The default brain root is an operator's real brain. A goal test that forgets
+// to pass `root` must not be able to write into it.
+test("this test file resolves a disposable brain root", async () => {
+  await assertResolvedRootsIsolated();
 });
 
 test("creates, reads, lists, and updates hierarchical goals with stable IDs", async () => {
