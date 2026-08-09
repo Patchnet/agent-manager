@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.15.0
+current: 1.16.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.16.0 - 2026-08-09
+
+Add accept-without-ship filed closeout with brain artifact links, force test isolation for runs/claims/brain, fail closed on acceptEdits+allow_commit, resolve ship base_ref HEAD to the default branch, and add mid-flight lane corrections.
 
 ## 1.15.0 - 2026-08-09
 
