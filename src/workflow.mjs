@@ -51,6 +51,11 @@ const HARNESS_PERMISSION_MODES = new Map([
   ["cursor", CURSOR_PERMISSION_MODES],
 ]);
 const CLAIM_MODES = new Set(["auto", "off", "required"]);
+const READ_ONLY_PERMISSION_MODES = new Set(["readOnly", "read-only", "read_only"]);
+// Claude prompts before shell commands under acceptEdits / workspace-write, and a
+// detached worker cannot answer that prompt. Only these modes can actually run the
+// git and gh commands a commit/PR policy claims to allow.
+const CLAUDE_UNATTENDED_SHELL_MODES = new Set(["auto", "dontAsk"]);
 
 export function loadWorkflow(filePath, {
   repoOverride = null,
@@ -90,6 +95,7 @@ export function loadWorkflow(filePath, {
   const lanes = doc.lanes.map((lane, index) =>
     normalizeLane(lane, index, repoRoot, harnessDefault, ids, policy));
   validateDependencies(lanes);
+  assertShellPolicyCoherence(lanes, policy);
   const scopeOverrides = normalizeScopeOverrides(doc.scope_overrides, lanes);
   const sequentialOverlaps = applyScopeOwnership(lanes, scopeOverrides);
   const feed = normalizeFeed(doc.feed, basename(repoRoot));
@@ -443,6 +449,56 @@ function validateDependencies(lanes) {
     visited.add(laneId);
   };
   for (const lane of lanes) visit(lane.id);
+}
+
+/**
+ * Reject a workflow whose policy says workers may commit or open pull requests while
+ * its lanes run under a permission mode that denies the git and gh commands. Claude
+ * prompts before shell commands under acceptEdits / workspace-write and a detached
+ * worker cannot answer, so the policy would advertise an ability the harness refuses.
+ * Fails at load instead of halfway through a detached run.
+ */
+export function assertShellPolicyCoherence(lanes, policy) {
+  const claims = [
+    policy.allow_commit === true ? "allow_commit" : null,
+    policy.allow_pr === true ? "allow_pr" : null,
+  ].filter(Boolean);
+  if (!claims.length || policy.dangerously_skip_permissions === true) return lanes;
+  const claimed = claims.map((name) => `workflow.policy.${name}=true`).join(" and ");
+  const binaryFor = (name) => (name === "allow_commit" ? "git" : "gh");
+  for (const lane of lanes) {
+    if (lane.kind !== "implementation") continue;
+    const mode = lane.permission_mode;
+    if (READ_ONLY_PERMISSION_MODES.has(mode)) {
+      throw new Error(
+        `${claimed}, but implementation lane ${lane.id} runs read-only (permission_mode ${mode}); ` +
+          `set ${claims.join("/")} to false or give the lane a writable permission mode`,
+      );
+    }
+    if (lane.harness !== "claude") continue;
+    if (!CLAUDE_UNATTENDED_SHELL_MODES.has(mode)) {
+      throw new Error(
+        `${claimed}, but Claude lane ${lane.id} uses permission_mode ${mode}, which prompts before ` +
+          "git and gh commands and therefore denies them in a detached run; use permission_mode auto, " +
+          `or dontAsk with allowed_tools that grant those commands, or set ${claims.join("/")} to false`,
+      );
+    }
+    if (mode !== "dontAsk") continue;
+    const missing = claims.filter((name) => !laneAllowsBinary(lane, binaryFor(name)));
+    if (missing.length) {
+      throw new Error(
+        `${claimed}, but Claude lane ${lane.id} uses dontAsk without an allowed_tools rule for ` +
+          `${missing.map(binaryFor).join(" and ")}; add the rule or set ` +
+          `${missing.join("/")} to false`,
+      );
+    }
+  }
+  return lanes;
+}
+
+function laneAllowsBinary(lane, binary) {
+  const pattern = new RegExp(`(?:^|[^A-Za-z0-9_-])${binary}(?![A-Za-z0-9_-])`);
+  return (lane.allowed_tools || []).some((rule) => pattern.test(rule));
 }
 
 export function analyzeDependencyTopology(lanes, maxConcurrency = lanes.length) {
