@@ -192,15 +192,20 @@ function spawnClaudeProcess({
   let lastByteAt = Date.now();
   let buf = "";
   let sawEmptyPrompt = false;
+  let sawEmptyPromptOnStderr = false;
+  let sawSuccessfulResult = false;
   let reportedNeedsInput = null;
   let sessionId = resumeSessionId;
 
-  const handleChunk = (chunk) => {
+  const handleChunk = (chunk, stream) => {
     lastByteAt = Date.now();
     const text = chunk.toString("utf8");
     log.write(text);
-    if (/came through empty|message came through empty/i.test(text)) {
-      sawEmptyPrompt = true;
+    // stderr carries CLI diagnostics only — never tool output — so it is the
+    // one stream where a raw match is worth keeping as a fallback for a fatal
+    // that never produced a JSON result event.
+    if (stream === "stderr" && EMPTY_PROMPT_PATTERN.test(text)) {
+      sawEmptyPromptOnStderr = true;
     }
     buf += text;
     const lines = buf.split(/\r?\n/);
@@ -211,14 +216,13 @@ function spawnClaudeProcess({
         const ev = JSON.parse(line);
         sessionId = parseSessionId(ev) || sessionId;
         reportedNeedsInput ||= parseResultNeedsInput(ev);
+        if (detectEmptyPromptEvent(ev)) sawEmptyPrompt = true;
+        if (isSuccessfulResultEvent(ev)) sawSuccessfulResult = true;
         onEvent?.(ev);
         const summary = summarizeEvent(ev);
         if (summary) {
           lastActivity = summary;
           onActivity?.(summary, ev);
-        }
-        if (typeof summary === "string" && /came through empty/i.test(summary)) {
-          sawEmptyPrompt = true;
         }
       } catch {
         lastActivity = line.slice(0, 200);
@@ -227,8 +231,8 @@ function spawnClaudeProcess({
     }
   };
 
-  child.stdout?.on("data", handleChunk);
-  child.stderr?.on("data", handleChunk);
+  child.stdout?.on("data", (chunk) => handleChunk(chunk, "stdout"));
+  child.stderr?.on("data", (chunk) => handleChunk(chunk, "stderr"));
 
   try {
     child.stdin.write(prompt);
@@ -240,7 +244,7 @@ function spawnClaudeProcess({
   const done = new Promise((resolve) => {
     child.on("close", (code, signal) => {
       log.end();
-      const emptyFail = sawEmptyPrompt;
+      const emptyFail = sawEmptyPrompt || (sawEmptyPromptOnStderr && !sawSuccessfulResult);
       resolve({
         exitCode: emptyFail ? 2 : code,
         signal,
@@ -306,6 +310,36 @@ export function parseResultNeedsInput(event) {
     blocking: true,
     source: "harness-result",
   };
+}
+
+const EMPTY_PROMPT_PATTERN = /came through empty/i;
+
+function joinStrings(values) {
+  return values.filter((v) => typeof v === "string").join("\n");
+}
+
+// Only structured harness error events count as an empty-prompt failure. Raw
+// stream scanning cannot be used: assistant text and tool_result payloads echo
+// whatever the worker reads, so a lane that opens this very file would other-
+// wise fail itself.
+export function detectEmptyPromptEvent(event) {
+  if (!event || typeof event !== "object") return false;
+  if (event.type === "result") {
+    if (event.is_error !== true) return false;
+    return EMPTY_PROMPT_PATTERN.test(
+      joinStrings([event.result, event.error, event.message, event.subtype]),
+    );
+  }
+  if (event.type === "error") {
+    return EMPTY_PROMPT_PATTERN.test(joinStrings([event.error, event.message, event.result]));
+  }
+  return false;
+}
+
+// A result event that is not flagged as an error means the session ran to
+// completion, which outranks any heuristic stderr match.
+export function isSuccessfulResultEvent(event) {
+  return event?.type === "result" && event.is_error !== true;
 }
 
 function summarizeEvent(ev) {

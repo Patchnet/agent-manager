@@ -4,6 +4,7 @@ import { RUNS_ROOT } from "./paths.mjs";
 import { checkCommand } from "./preflight.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
 import { resolveCodexInstallation } from "./harness/codex.mjs";
+import { resolveCursorBin } from "./harness/cursor.mjs";
 import { harnessFailureRecommendation, harnessSetup } from "./harness/setup.mjs";
 import { detectRuntimeProfile, formatRuntime } from "./runtime.mjs";
 import { AGENT_MANAGER_VERSION } from "./version.mjs";
@@ -33,6 +34,7 @@ export function runDoctor({ repo = process.cwd() } = {}) {
         sandboxReady: codexInstallation.sandboxReady,
       },
     },
+    asHarnessCheck("cursor", checkCommand(resolveCursorBin()), runtime),
     { name: "repository", ok: existsSync(root), detail: root },
     writableCheck("runs root", RUNS_ROOT),
   ];

@@ -6,6 +6,7 @@ import {
   spawnClaude,
 } from "./claude.mjs";
 import { codexAdapter } from "./codex.mjs";
+import { cursorAdapter } from "./cursor.mjs";
 import { fakeAdapter } from "./fake.mjs";
 
 const claudeAdapter = {
@@ -19,25 +20,10 @@ const claudeAdapter = {
   parseNeedsInput: detectNeedsInput,
 };
 
-function unsupportedAdapter(name) {
-  const fail = () => {
-    throw new Error('harness "' + name + '" is declared but not implemented');
-  };
-  return {
-    name,
-    supported: false,
-    start: fail,
-    resume: fail,
-    cancel: fail,
-    parseSessionId: () => null,
-    parseNeedsInput: () => null,
-  };
-}
-
 const adapters = new Map([
   ["claude", claudeAdapter],
   ["codex", codexAdapter],
-  ["cursor", unsupportedAdapter("cursor")],
+  ["cursor", cursorAdapter],
   ["fake", fakeAdapter],
 ]);
 

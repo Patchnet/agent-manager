@@ -19,8 +19,8 @@ const SETUP = {
     displayName: "Cursor Agent CLI",
     command: "cursor-agent",
     overrideEnv: "CURSOR_AGENT_BIN",
-    docs: "https://docs.cursor.com/en/cli/installation",
-    win32: "Install inside WSL: curl https://cursor.com/install -fsS | bash",
+    docs: "https://cursor.com/docs/cli/installation",
+    win32: "powershell -ExecutionPolicy Bypass -c \"irm 'https://cursor.com/install?win32=true' | iex\"",
     default: "curl https://cursor.com/install -fsS | bash",
   },
 };
@@ -39,8 +39,8 @@ export function harnessSetup(name, { platform = process.platform } = {}) {
     restartRequired: true,
     environmentRule: "Install and verify the CLI in the same OS environment that launches Agent Manager.",
     sandboxNote: "Agent Manager does not override the launching harness sandbox or executable permissions.",
-    ...(platform === "win32" && name !== "cursor"
-      ? { shimGuidance: `If an npm shim is installed, point ${config.overrideEnv} to its full .cmd path and restart the launching harness.` }
+    ...(platform === "win32"
+      ? { shimGuidance: `If a launcher shim is installed, point ${config.overrideEnv} to its full .cmd path and restart the launching harness.` }
       : {}),
   };
 }

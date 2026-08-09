@@ -11,7 +11,7 @@ Master Dev (chat)
          → detached supervisor (same CLI, --run-id)
               → tools/claim.mjs (or AGENT_MANAGER_CLAIM_BIN)
               → git worktree per lane
-              → harness adapter (claude -p | codex exec --json)
+              → harness adapter (claude -p | codex exec --json | agent -p)
               → $AGENT_MANAGER_RUNS_ROOT/<runId>/status.json  (supervisor polls ~2s)
     → Master arms watch-signal (3m heartbeat + state wakes) → chat templates
     → optional side terminal: fleet (all runs) or monitor (one run)
@@ -281,9 +281,13 @@ merged|released` as the machine-readable downstream gate.
   executables continue to launch without a shell.
 - PowerShell `*.ps1` shims run through Windows PowerShell with a scoped bypass;
   this does not enable a general shell for worker commands.
-- Prompt is delivered on **stdin** (multiline argv is unreliable).
-- Claude and Codex discovery checks native binaries and global npm `.cmd` shims.
-  `CLAUDE_BIN` and `CODEX_BIN` overrides take precedence.
+- Claude and Codex prompts are delivered on **stdin** (multiline argv is
+  unreliable). Cursor has no stdin prompt, so Windows Cursor lanes get a
+  single-line pointer to the lane's `prompt.md` (added with `--add-dir`).
+- Claude and Codex discovery checks native binaries and global npm `.cmd`
+  shims; Cursor discovery checks the native `%LOCALAPPDATA%\cursor-agent`
+  install. `CLAUDE_BIN`, `CODEX_BIN`, and `CURSOR_AGENT_BIN` overrides take
+  precedence.
 - Install and verify worker CLIs in the same OS environment that launches Agent
   Manager. Restart the launching harness after PATH or environment changes, then
   run `agent-manager doctor --json`. See `docs/HARNESS-SETUP.md`.
@@ -438,15 +442,22 @@ planning context or make it available through the target repo's normal tooling.
 |---|---|---|
 | `claude` | supported | `claude -p --output-format stream-json` |
 | `codex` | supported | `codex exec --json` / `codex exec resume <id>` |
-| `cursor` | not implemented | stub only |
+| `cursor` | supported | `agent -p --output-format stream-json` / `--resume=<chatId>` |
 | `fake` | test-only | gated by `AGENT_MANAGER_TEST_MODE=1` in the launching process |
 
-Codex session ids come from `thread.started.thread_id`. Needs-input still uses
-lane `needs-input.json` (same contract as Claude).
+Codex session ids come from `thread.started.thread_id`; Cursor chat ids come
+from `system.init.session_id`. Needs-input still uses lane `needs-input.json`
+(same contract as Claude).
+
+Lane `model` passes through to each CLI's native flag: `--model` for Claude and
+Cursor, `-m` for Codex. Cursor `permission_mode` maps to `--mode plan`,
+`--auto-review`, or print-mode defaults; `dontAsk` is rejected
+because Cursor has no allowlist-only mode. `--force` / `--yolo` requires an
+explicit `dangerously_skip_permissions` policy. See `docs/HARNESS-SETUP.md`.
 
 ## Out of scope (current)
 
-- Cursor Agent CLI/SDK harness adapter
+- Cursor Agent SDK (`@cursor/sdk`) adapter — the CLI adapter is the supported path
 - Cross-repo lanes in one workflow (one `repo:` per run today)
 - Canvas auto-refresh / `/loop`
 - Always-on daemon / HTTP status API (detach supervisor ≠ always-on daemon)

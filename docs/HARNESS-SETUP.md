@@ -134,15 +134,64 @@ process-launch issue to the harness owner rather than disabling the sandbox.
 
 ### Cursor Agent CLI
 
+Windows PowerShell (native, no WSL):
+
+```powershell
+irm 'https://cursor.com/install?win32=true' | iex
+agent --version
+```
+
+macOS or Linux:
+
 ```bash
 curl https://cursor.com/install -fsS | bash
 cursor-agent --version
 ```
 
-On Windows, run this in WSL. See the
-[Cursor CLI installation guide](https://docs.cursor.com/en/cli/installation).
-Cursor can host the Manager workflow and receive Master returns. A Cursor worker
-lane adapter is not implemented yet.
+See the [Cursor CLI installation guide](https://cursor.com/docs/cli/installation).
+Cursor can host the Manager workflow, receive Master returns, and run worker
+lanes (`harness: cursor`).
+
+The installer places both launcher names — `agent` and `cursor-agent` — in
+`%LOCALAPPDATA%\cursor-agent` on Windows and `~/.local/bin` elsewhere. Agent
+Manager discovers either one; `CURSOR_AGENT_BIN` overrides discovery.
+
+#### Cursor lane behavior
+
+Lanes run `agent -p --output-format stream-json`, with `--model` when the lane
+or workflow requests one. Session ids come from the `system.init` event and
+feed `--resume=<chatId>`. Needs-input uses the same lane `needs-input.json`
+contract as Claude and Codex.
+
+`permission_mode` maps onto Cursor's native flags:
+
+| `permission_mode` | Cursor flags |
+|---|---|
+| `readOnly`, `read-only`, `read_only` | `--mode plan` |
+| `auto` | `--auto-review` (server-side classifier) |
+| `acceptEdits`, `workspace-write` | print-mode defaults |
+| `dontAsk` | rejected — Cursor has no allowlist-only mode |
+
+`--force` / `--yolo` is reachable only through an explicit
+`dangerously_skip_permissions` policy. Agent Manager does pass `--trust` so a
+detached lane is not stopped by the workspace-trust prompt: the worktree is a
+checkout of the operator's own repository that Agent Manager created. That flag
+grants no command permissions. MCP servers are not auto-approved; approve the
+ones a lane needs in Cursor before the run.
+
+Cursor takes the prompt as a command-line value and does not read it from
+stdin, so Agent Manager always writes the full briefing to the lane's
+`prompt.md` and adds the lane directory with `--add-dir`. On macOS and Linux
+the prompt is also passed inline. On Windows the launcher is a `.cmd`/`.ps1`
+shim, and both cmd.exe and PowerShell corrupt a multiline argument — cmd
+truncates at the first newline, PowerShell strips quotes — so Windows lanes
+receive a single-line pointer to `prompt.md` instead.
+
+Cursor authenticates through `agent login` or the documented `CURSOR_API_KEY`
+environment variable. Both reach worker lanes: login state through the normal
+user profile, and `CURSOR_API_KEY` / `CURSOR_API_ENDPOINT` through the worker
+environment allowlist. `CURSOR_MODEL` supplies a default model for lanes that
+do not name one.
 
 ## Windows npm shims
 
@@ -158,6 +207,8 @@ Get-Command claude -All
 claude --version
 Get-Command codex -All
 codex --version
+Get-Command agent -All
+agent --version
 agent-manager doctor --json
 ```
 
@@ -167,6 +218,7 @@ binary override for the current session:
 ```powershell
 $env:CLAUDE_BIN = "$env:APPDATA\npm\claude.cmd"
 $env:CODEX_BIN = "$env:APPDATA\npm\codex.cmd"
+$env:CURSOR_AGENT_BIN = "$env:LOCALAPPDATA\cursor-agent\agent.cmd"
 agent-manager doctor --json
 ```
 
@@ -175,6 +227,7 @@ To make the override available to future processes:
 ```powershell
 setx CLAUDE_BIN "%APPDATA%\npm\claude.cmd"
 setx CODEX_BIN "%APPDATA%\npm\codex.cmd"
+setx CURSOR_AGENT_BIN "%LOCALAPPDATA%\cursor-agent\agent.cmd"
 ```
 
 `setx` does not update the current process. Restart the launching harness after
@@ -188,11 +241,14 @@ command -v claude
 claude --version
 command -v codex
 codex --version
+command -v cursor-agent
+cursor-agent --version
 agent-manager doctor --json
 ```
 
-Use `CLAUDE_BIN` or `CODEX_BIN` for nonstandard locations. Keep machine-specific
-paths in the local environment. Do not commit them to a public workflow file.
+Use `CLAUDE_BIN`, `CODEX_BIN`, or `CURSOR_AGENT_BIN` for nonstandard locations.
+Keep machine-specific paths in the local environment. Do not commit them to a
+public workflow file.
 
 ## Discovery versus authentication
 

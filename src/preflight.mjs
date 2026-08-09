@@ -1,6 +1,7 @@
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
 import { resolveCodexInstallation } from "./harness/codex.mjs";
+import { resolveCursorBin } from "./harness/cursor.mjs";
 import { assertPlanningReady } from "./planning.mjs";
 import { spawnCommandSync } from "./command.mjs";
 import { harnessFailureRecommendation } from "./harness/setup.mjs";
@@ -71,7 +72,11 @@ export function preflightWorkflow(workflow) {
       checks.push({ ok: process.env.AGENT_MANAGER_TEST_MODE === "1", command: "fake", version: "test", error: "fake harness requires AGENT_MANAGER_TEST_MODE=1" });
     } else {
       const installation = name === "codex" ? resolveCodexInstallation() : null;
-      const command = name === "claude" ? resolveClaudeBin() : installation.command;
+      const command = name === "claude"
+        ? resolveClaudeBin()
+        : name === "cursor"
+          ? resolveCursorBin()
+          : installation.command;
       harnessCommands.set(command, name);
       checks.push(checkCommand(command));
       if (name === "claude") {

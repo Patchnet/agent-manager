@@ -81,7 +81,7 @@ test("codex harness is supported and parses thread_id session ids", async () => 
 
   const listed = listHarnessAdapters();
   assert.equal(listed.find((a) => a.name === "codex")?.supported, true);
-  assert.equal(listed.find((a) => a.name === "cursor")?.supported, false);
+  assert.equal(listed.find((a) => a.name === "cursor")?.supported, true);
   assert.equal(getHarnessAdapter("codex").name, "codex");
 
   const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
@@ -367,7 +367,8 @@ test("harness setup provides platform-specific, machine-readable remediation", a
   assert.equal(claude.overrideEnv, "CLAUDE_BIN");
   assert.match(claude.shimGuidance, /full \.cmd path/);
   assert.match(codex.install, /install\.sh/);
-  assert.match(cursor.install, /WSL/);
+  assert.match(cursor.install, /cursor\.com\/install\?win32=true/);
+  assert.match(cursor.shimGuidance, /CURSOR_AGENT_BIN/);
   assert.match(
     harnessFailureRecommendation("claude", { platform: "win32" }),
     /Verify from the same environment: claude --version/,
@@ -402,7 +403,10 @@ test("Master return authentication stays out of worker harness environments", as
   };
   const worker = buildHarnessEnv([], source);
   const master = buildMasterReturnEnv([], source);
-  assert.equal(worker.CURSOR_API_KEY, undefined);
+  // Cursor is a worker harness now, so its documented API key travels with
+  // lanes exactly like ANTHROPIC_API_KEY and OPENAI_API_KEY. The Master's own
+  // interactive session identity still stays out of worker environments.
+  assert.equal(worker.CURSOR_API_KEY, "cursor-secret");
   assert.equal(worker.CLAUDE_CODE_SESSION_ID, undefined);
   assert.equal(worker.CLAUDE_BIN, "C:\\tools\\claude.cmd");
   assert.equal(worker.CODEX_BIN, "C:\\tools\\codex.cmd");
@@ -495,4 +499,96 @@ test("git guardrails report dirty state, scope violations, and worker commits", 
   });
   assert.equal(committed.commitCount, 1);
   assert.match(committed.policyViolations[0], /allow_commit=false/);
+});
+
+// Regression: run run-20260808-184504-acd233bf failed lane cursor-harness
+// because the worker read src/harness/claude.mjs and the raw stdout scan matched
+// the detector's own source text inside the tool_result.
+test("empty-prompt detection reads structured error events, not echoed stream text", async () => {
+  const { detectEmptyPromptEvent, isSuccessfulResultEvent } = await import(
+    "../src/harness/claude.mjs?empty-prompt-core"
+  );
+  const phrase = "Your message came through empty";
+
+  // False positives: the phrase travelling as content the worker read or wrote.
+  assert.equal(detectEmptyPromptEvent({
+    type: "user",
+    message: { content: [{ type: "tool_result", content: `202: if (/came through empty/i.test(text))` }] },
+  }), false);
+  assert.equal(detectEmptyPromptEvent({
+    type: "assistant",
+    message: { content: [{ type: "text", text: `The detector matches "${phrase}" on raw stdout.` }] },
+  }), false);
+  assert.equal(detectEmptyPromptEvent({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: `Fixed the "${phrase}" false positive.`,
+  }), false);
+
+  // True positives: the harness itself reporting the failure.
+  assert.equal(detectEmptyPromptEvent({
+    type: "result",
+    subtype: "error_during_execution",
+    is_error: true,
+    result: phrase,
+  }), true);
+  assert.equal(detectEmptyPromptEvent({ type: "error", message: phrase }), true);
+
+  assert.equal(isSuccessfulResultEvent({ type: "result", subtype: "success", is_error: false }), true);
+  assert.equal(isSuccessfulResultEvent({ type: "result", is_error: true }), false);
+  assert.equal(isSuccessfulResultEvent({ type: "assistant" }), false);
+});
+
+test("a lane that reads the detector's own source is not forced to exit 2", async () => {
+  const { resumeClaude } = await import("../src/harness/claude.mjs?empty-prompt-e2e");
+  const laneDir = join(root, "empty-prompt-lane");
+  mkdirSync(laneDir, { recursive: true });
+
+  // Fake CLI: replays a tool_result carrying the detector's own source line,
+  // then ends the session cleanly the way the failed run actually did.
+  const fakeCli = join(laneDir, "fake-claude.mjs");
+  writeFileSync(fakeCli, [
+    'const events = [',
+    '  { type: "system", subtype: "init", session_id: "sess-empty-prompt" },',
+    '  { type: "user", message: { content: [{ type: "tool_result",',
+    '      content: "if (/came through empty|message came through empty/i.test(text)) {" }] } },',
+    '  { type: "assistant", message: { content: [{ type: "text",',
+    '      text: "The string \'came through empty\' appears in claude.mjs." }] } },',
+    '  { type: "result", subtype: "success", is_error: false, result: "done" },',
+    '];',
+    'process.stdin.resume();',
+    'process.stdin.on("data", () => {});',
+    'process.stdin.on("end", () => {',
+    '  for (const ev of events) process.stdout.write(JSON.stringify(ev) + "\\n");',
+    '  process.exit(0);',
+    '});',
+  ].join("\n"));
+
+  // resolveSpawnCommand only routes .mjs through node for explicit overrides, so
+  // the fake is exposed through a platform-native shim.
+  const shim = process.platform === "win32"
+    ? join(laneDir, "fake-claude.cmd")
+    : join(laneDir, "fake-claude.sh");
+  writeFileSync(
+    shim,
+    process.platform === "win32"
+      ? `@echo off\r\n"${process.execPath}" "${fakeCli}" %*\r\n`
+      : `#!/bin/sh\nexec "${process.execPath}" "${fakeCli}" "$@"\n`,
+    { mode: 0o755 },
+  );
+
+  const run = resumeClaude({
+    sessionId: "sess-empty-prompt",
+    cwd: laneDir,
+    prompt: "read src/harness/claude.mjs",
+    laneDir,
+    env: { ...process.env, CLAUDE_BIN: shim },
+  });
+  const result = await run.done;
+
+  assert.equal(result.emptyPrompt, false);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.sessionId, "sess-empty-prompt");
+  assert.doesNotMatch(String(result.lastActivity), /received empty prompt/);
 });

@@ -31,7 +31,7 @@ const POLICY_KEYS = new Set([
   "allow_commit", "allow_pr", "dangerously_skip_permissions", "permission_mode",
   "stall_timeout_sec", "poll_interval_ms",
 ]);
-const HARNESSES = new Set(["claude", "codex", "fake"]);
+const HARNESSES = new Set(["claude", "codex", "cursor", "fake"]);
 const PERMISSION_MODES = new Set([
   "acceptEdits", "auto", "dontAsk", "readOnly", "read-only", "read_only", "workspace-write",
 ]);
@@ -40,6 +40,15 @@ const CLAUDE_PERMISSION_MODES = new Set([
 ]);
 const CODEX_PERMISSION_MODES = new Set([
   "acceptEdits", "readOnly", "read-only", "read_only", "workspace-write",
+]);
+// Cursor has --mode plan and --auto-review, but no allowlist-only mode.
+const CURSOR_PERMISSION_MODES = new Set([
+  "acceptEdits", "auto", "readOnly", "read-only", "read_only", "workspace-write",
+]);
+const HARNESS_PERMISSION_MODES = new Map([
+  ["claude", CLAUDE_PERMISSION_MODES],
+  ["codex", CODEX_PERMISSION_MODES],
+  ["cursor", CURSOR_PERMISSION_MODES],
 ]);
 const CLAIM_MODES = new Set(["auto", "off", "required"]);
 
@@ -303,7 +312,7 @@ function normalizeLane(input, index, repoRoot, harnessDefault, ids, policy) {
   }
   const scope = normalizeScope(input.scope, id);
   const permissionMode = input.permission_mode || policy.permission_mode;
-  const supportedModes = harness === "claude" ? CLAUDE_PERMISSION_MODES : CODEX_PERMISSION_MODES;
+  const supportedModes = HARNESS_PERMISSION_MODES.get(harness) || CODEX_PERMISSION_MODES;
   if (!supportedModes.has(permissionMode)) {
     throw new Error(`lane ${id}.permission_mode ${permissionMode} is not supported by ${harness}`);
   }

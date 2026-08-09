@@ -7,6 +7,9 @@ const BASE_ENV = [
   "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
   "NODE_EXTRA_CA_CERTS", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY", "CODEX_MODEL", "CLAUDE_BIN", "CODEX_BIN", "CURSOR_AGENT_BIN",
+  // Cursor worker lanes authenticate the same way Claude and Codex lanes do:
+  // through the CLI's own login state, or through its documented API key.
+  "CURSOR_API_KEY", "CURSOR_API_ENDPOINT", "CURSOR_MODEL",
 ];
 
 const VERIFICATION_ENV = [
@@ -20,7 +23,6 @@ const VERIFICATION_ENV = [
 const MASTER_RETURN_ENV = [
   ...BASE_ENV,
   "ANTHROPIC_AUTH_TOKEN",
-  "CURSOR_API_KEY",
 ];
 
 export function buildHarnessEnv(
