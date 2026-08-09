@@ -577,32 +577,34 @@ when its recorded local supervisor process is confirmed inactive; unverifiable
 remote or legacy claims remain blocking until explicit release. Set
 `AGENT_MANAGER_CLAIM_BIN` to use another implementation.
 
-## Autopilot Director (Phase 1)
+## Director proposal cycle
 
-Director is the policy-bound scheduling layer above Agent Manager. The shipped
-foundation validates a standing policy and runs a deterministic dry cycle
-against local source fixtures. It does not launch workers or ship anything.
+Director is the policy-bound **proposal** layer above Agent Manager. It validates
+a standing policy, triages local source fixtures, and writes validated workflow
+YAML drafts. Master Dev kicks those drafts off with `run --detach`. Director
+does **not** auto-launch workers, run a planner LLM, or ship anything.
 
 ```bash
 agent-manager director validate --policy ./director-policy.yaml
 agent-manager director cycle --policy ./director-policy.yaml \
   --items ./director-items.yaml --dry-run --json
+# then, for each draft kickoff line:
+agent-manager run "<cycle>/workflows/<draft>.yaml" --detach
 ```
 
 Keep the policy outside the target repository when it describes private
 operating details. The Director identity (`harness`, `model`, `reasoning`) is
-configured separately from worker identities, so planning and execution can run
-on different models.
+configured separately from worker identities (`workers.harness_default`,
+default `claude`).
 
 Enable it deliberately:
 
-1. Write a `pr-only` policy — see [DIRECTOR.md](./DIRECTOR.md) for the full
-   field list. `enabled: true`, `mode: pr-only`, and
-   `on_blocker: quarantine-and-continue` are required.
-2. Run `director validate` and confirm the reported repository, mode, and
-   Director identity are the ones you intended.
-3. Run a `--dry-run` cycle and read `selected`, `quarantined`, and `skipped`.
-   Quarantine reasons name the policy rule that rejected the item.
+1. Write a `pr-only` policy — see [DIRECTOR.md](./DIRECTOR.md). Keep
+   `security` in `forbidden_risks` for boring app work; add
+   `risk_exceptions` for CodeQL-class waves (labels + narrow paths).
+2. Run `director validate` and confirm repository, mode, and Director identity.
+3. Run a `--dry-run` cycle. Read `selected` / `quarantined` / `skipped`, then
+   the `kickoff:` lines for each draft.
 
 Boundaries that fail closed rather than warn:
 
@@ -611,16 +613,17 @@ Boundaries that fail closed rather than warn:
 | `mode` other than `pr-only` | policy rejected |
 | `merge`, `tag`, `release`, or unknown action | policy rejected |
 | Scope or repository outside the policy | item quarantined |
+| Forbidden risk without matching exception | item quarantined |
+| Non-`fixture` source provider | `connector-not-implemented:…` |
 | A cycle without `--dry-run` | command fails |
 | A second cycle on the same repository | repository lease refuses |
 
-Cycle state defaults to `$AGENT_MANAGER_RUNS_ROOT/director`. Override it with
-`--state-dir`. Replaying the same policy and fixtures returns the persisted
-cycle instead of minting duplicate claim, run, or closeout identities, so a
-retry is safe.
+Cycle state defaults to `$AGENT_MANAGER_RUNS_ROOT/director` (includes
+`workflows/`). Override with `--state-dir`. Replaying the same policy and
+fixtures returns the persisted cycle (and draft paths) safely.
 
 Director does not create or approve a Ship Gate reply. Delivery Review and Ship
-Gate remain operator-driven for every run.
+Gate remain operator-driven for every run launched from a draft.
 
 ## Dangerous permissions
 

@@ -61,22 +61,22 @@ Prints `runId`, `pid`, `telemetry`, `supervisorLog` and exits. The supervisor
 continues writing `status.json` under the runs root. Never await a
 non-detach `run` from a Master Dev chat turn.
 
-## Director Phase 1 commands
+## Director proposal commands
 
 ```bash
 agent-manager director validate --policy <policy.yaml> [--repo <path>] [--json]
 agent-manager director cycle --policy <policy.yaml> --items <fixtures.yaml> --dry-run [--json]
 ```
 
-The foundation accepts JSON or YAML policy and local source fixtures. Policy
-validation is strict and supports only `pr-only`. A dry cycle leases one
-canonical repository, deterministically selects eligible work, quarantines
-policy violations, persists `DISCOVER -> TRIAGE -> PLAN -> VALIDATE -> CLOSE`,
-and releases the lease. Replaying the same normalized policy and fixtures uses
-the prior cycle record. This command does not launch Agent Manager workers or
-perform commit, push, PR, merge, tag, or release actions. Full policy and source
-shapes are in `docs/DIRECTOR.md`; machine contracts are in
-`schemas/director-*.schema.json`.
+Accepts JSON or YAML policy and local source fixtures (`provider: fixture` only).
+Policy validation is strict and supports only `pr-only`. A proposal cycle leases
+one repository, selects eligible work, applies `risk_exceptions` when present,
+quarantines policy / connector gaps, writes validated workflow drafts under
+`cycles/<id>/workflows/`, persists
+`DISCOVER -> TRIAGE -> PLAN -> VALIDATE -> CLOSE`, and prints kickoff commands.
+Replaying the same inputs returns the prior cycle. Director does not auto-launch
+workers or perform commit, push, PR, merge, tag, or release actions. See
+`docs/DIRECTOR.md` and `schemas/director-*.schema.json`.
 
 ## Watch-signal + terminal watchers
 

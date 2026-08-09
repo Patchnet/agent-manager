@@ -191,6 +191,104 @@ test("dry cycle quarantines repository, base, risk, and scope policy violations"
   }
 });
 
+test("dry cycle writes validated workflow drafts and kickoff commands", async () => {
+  const fx = fixture();
+  try {
+    writeItems(fx.itemsPath, [
+      item("selected", {
+        priority: 90,
+        scope: ["src/feature/**"],
+        goal_refs: ["goal-am-feature"],
+      }),
+    ]);
+    const result = await runDirectorCycle({
+      policyPath: fx.policyPath,
+      itemsPath: fx.itemsPath,
+      stateRoot: fx.stateRoot,
+      dryRun: true,
+    });
+    assert.equal(result.drafts.length, 1);
+    assert.equal(result.drafts[0].validateOk, true);
+    assert.deepEqual(result.drafts[0].sourceKeys, ["fixture:selected"]);
+    assert.match(result.drafts[0].kickoff, /agent-manager run .+ --detach/);
+    assert.equal(existsSync(result.drafts[0].path), true);
+    const workflow = readFileSync(result.drafts[0].path, "utf8");
+    assert.match(workflow, /goal-am-feature/);
+    assert.match(workflow, /harness_default:\s*claude/);
+    assert.match(result.transitions.find((entry) => entry.to === "PLAN").decision, /wrote 1 validated workflow draft/);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test("risk_exceptions admit scoped CodeQL-class security work", async () => {
+  const fx = fixture();
+  try {
+    fx.policy.autopilot.allowed_paths = ["src/**", "test/**", "src/lib/security/**", "test/security/**"];
+    fx.policy.autopilot.risk_exceptions = [{
+      risk: "security",
+      require_labels: ["codeql", "automation-ready"],
+      allowed_paths: ["src/lib/security/**", "test/security/**"],
+    }];
+    writeFileSync(fx.policyPath, JSON.stringify(fx.policy, null, 2));
+    writeItems(fx.itemsPath, [
+      item("codeql", {
+        priority: 95,
+        risks: ["security"],
+        labels: ["automation-ready", "codeql"],
+        scope: ["src/lib/security/**", "test/security/**"],
+        planning: {
+          plan_ref: "plan:codeql",
+          verified_by: "fixture-manager",
+          verified_at: "2026-08-08T12:00:00.000Z",
+          repository_instruction_refs: ["AGENTS.md"],
+          reviewed_paths: ["src/lib/security/**"],
+        },
+      }),
+      item("security-open", {
+        priority: 90,
+        risks: ["security"],
+        labels: ["automation-ready"],
+        scope: ["src/lib/security/**"],
+      }),
+    ]);
+    const result = await runDirectorCycle({
+      policyPath: fx.policyPath,
+      itemsPath: fx.itemsPath,
+      stateRoot: fx.stateRoot,
+      dryRun: true,
+    });
+    assert.deepEqual(result.selected.map((entry) => entry.sourceKey), ["fixture:codeql"]);
+    assert.deepEqual(result.quarantined.map((entry) => entry.reason), ["forbidden-risk:security"]);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test("unknown source providers quarantine as connector-not-implemented", async () => {
+  const fx = fixture();
+  try {
+    writeItems(fx.itemsPath, [
+      item("from-jared", {
+        source: { provider: "jared", item_id: "from-jared", ref: "jared:from-jared" },
+      }),
+    ]);
+    const result = await runDirectorCycle({
+      policyPath: fx.policyPath,
+      itemsPath: fx.itemsPath,
+      stateRoot: fx.stateRoot,
+      dryRun: true,
+    });
+    assert.equal(result.selected.length, 0);
+    assert.deepEqual(result.quarantined.map((entry) => entry.reason), [
+      "connector-not-implemented:jared",
+    ]);
+    assert.equal(result.drafts.length, 0);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
 test("Director cycle refuses execution and repository leases are exclusive", async () => {
   const fx = fixture();
   try {

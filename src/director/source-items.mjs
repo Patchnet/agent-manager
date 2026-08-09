@@ -14,7 +14,9 @@ import {
 const ITEM_KEYS = new Set([
   "schema", "source", "repository", "objective", "acceptance_criteria", "priority",
   "dependencies", "automation_eligible", "labels", "risks", "scope", "planning",
+  "goal_refs",
 ]);
+const IMPLEMENTED_PROVIDERS = new Set(["fixture"]);
 const SOURCE_KEYS = new Set(["provider", "item_id", "ref"]);
 const REPOSITORY_KEYS = new Set(["path", "base_ref", "reviewed_base_sha"]);
 const PLANNING_KEYS = new Set([
@@ -83,6 +85,14 @@ function normalizeItem(item, index, filePath) {
     labels: stringArray(item.labels, `${label}.labels`),
     risks: stringArray(item.risks, `${label}.risks`),
     scope,
+    goal_refs: item.goal_refs === undefined
+      ? []
+      : stringArray(item.goal_refs, `${label}.goal_refs`).map((ref, refIndex) => {
+        if (!/^goal-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(ref) || ref.length > 128) {
+          throw new Error(`${label}.goal_refs[${refIndex}] must be a valid local goal ID`);
+        }
+        return ref;
+      }),
     planning: {
       plan_ref: nonEmptyString(planning.plan_ref, `${label}.planning.plan_ref`),
       verified_by: nonEmptyString(planning.verified_by, `${label}.planning.verified_by`),
@@ -94,6 +104,8 @@ function normalizeItem(item, index, filePath) {
     sourceKey: `${normalizedSource.provider}:${normalizedSource.item_id}`,
   });
 }
+
+export { IMPLEMENTED_PROVIDERS };
 
 export function loadDirectorSourceItems(filePath) {
   if (!filePath) throw new Error("Director cycle source fixtures are required; pass --items <file>");

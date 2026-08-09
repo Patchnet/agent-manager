@@ -60,37 +60,29 @@ flowchart LR
 | Approved work should ship without blocking the host chat | All three |
 | A human will handle GitHub after review | 🎛️ Agent Manager only; stop after Delivery Review |
 
-### Autopilot Director (Phase 1 foundation)
+### Director proposal cycle
 
-Autopilot Director is the approved higher-autonomy mode for scheduled or
-continuous operation. It promotes the planning and oversight role normally
-shared by the human operator and Manager agent into a policy-bound Director
-agent. Agent Manager remains the deterministic execution layer beneath it.
-
-The autonomy boundary is `pr-only`: select eligible work, plan, run, review,
-push, and open a review-ready pull request without synchronous human input.
-Automatic merge and release require later, narrower policies and independent
-review.
-
-The **Phase 1 foundation ships in this release**: versioned policy,
-source-item, cycle, and state schemas; strict fail-closed policy validation;
-a Director identity (harness, model, reasoning) configured separately from
-workers; single-repository leasing; and a deterministic, replay-safe dry cycle.
+Director is a policy-bound **proposal** layer above Agent Manager — not full
+autopilot. It triages fixture-backed work under a standing `pr-only` policy and
+writes validated workflow YAML drafts. Master Dev kicks those drafts off with
+`agent-manager run … --detach`. Scheduled or continuous unattended loops, planner
+LLM sessions, and source connectors (Jared / GitHub) are not in this slice.
 
 ```bash
 agent-manager director validate --policy ./director-policy.yaml
 agent-manager director cycle --policy ./director-policy.yaml \
   --items ./director-items.yaml --dry-run
+# kickoff lines print for each draft under $AGENT_MANAGER_RUNS_ROOT/director/cycles/...
 ```
 
-`--dry-run` is mandatory today. The cycle triages work and persists evidence;
-it does not start workers, commit, push, open a pull request, merge, tag,
-release, or bypass harness permissions. Policies that request `merge`, `tag`,
-`release`, or any non-`pr-only` mode fail validation.
+`--dry-run` is mandatory. The cycle does not start workers, commit, push, open
+a pull request, merge, tag, release, or bypass harness permissions. Keep
+`security` in `forbidden_risks` by default; use scoped `risk_exceptions` for
+CodeQL-class waves. Unknown source providers quarantine as
+`connector-not-implemented:<provider>`.
 
-See [DIRECTOR.md](docs/DIRECTOR.md) for the policy and fixture formats and
-[the Director plan](docs/AUTOPILOT-DIRECTOR-PLAN.md) for the role model,
-autonomy levels, and remaining phases.
+See [DIRECTOR.md](docs/DIRECTOR.md) for policy/fixture formats and
+[the Director plan](docs/AUTOPILOT-DIRECTOR-PLAN.md) for the longer roadmap.
 
 ### Worker completion is not delivery completion
 

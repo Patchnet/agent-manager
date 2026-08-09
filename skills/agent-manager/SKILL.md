@@ -118,15 +118,16 @@ agent-manager director cycle --policy <director-policy.yaml> --items <fixtures.y
 Example: `examples/two-lane-smoke.yaml` (set `AGENT_MANAGER_DEV_ROOT` to the
 parent that contains the `agent-manager` folder).
 
-### Director Phase 1 foundation
+### Director proposal cycle
 
-Director policy and scheduler exercises use the same CLI but do not replace the
-normal Master Dev flow. Validate the standing policy first, then use an explicit
-fixture-backed `--dry-run`. The current Director cycle records separate
-Director harness/model/reasoning identity, takes one repository lease, triages
-items, and persists lifecycle/idempotency evidence. It does not start workers
-or invoke Ship Gate. Only `pr-only` policies validate; merge, tag, release, and
-dangerous-permission actions fail closed. See `docs/DIRECTOR.md`.
+Director is a **proposal** layer, not full autopilot. Validate the standing
+policy, then run an explicit fixture-backed `--dry-run`. The cycle records
+Director identity (separate from workers), leases one repository, triages items,
+writes validated workflow YAML drafts, and prints `kickoff:` lines. Master Dev
+launches drafts with `run --detach`. Director does not auto-detach, call a
+planner LLM, or invoke Ship Gate. Keep `security` forbidden by default; use
+`risk_exceptions` for CodeQL-class waves. Non-`fixture` providers quarantine as
+`connector-not-implemented:…`. See `docs/DIRECTOR.md`.
 
 ## Operator flow (Master Dev)
 

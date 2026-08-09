@@ -748,6 +748,10 @@ async function main() {
         cycleId: flags.cycleId,
         dryRun: flags.dryRun,
       });
+      const draftLines = (result.drafts || []).flatMap((draft) => [
+        `draft: ${draft.path}${draft.validateOk ? "" : " (invalid)"}`,
+        `kickoff: ${draft.kickoff}`,
+      ]);
       console.log(flags.json ? JSON.stringify(result) : [
         `cycle: ${result.cycleId}`,
         `status: ${result.status}${result.replayed ? " (replayed)" : ""}`,
@@ -756,8 +760,10 @@ async function main() {
         `selected: ${result.selected.length}`,
         `quarantined: ${result.quarantined.length}`,
         `skipped: ${result.skipped.length}`,
+        `drafts: ${(result.drafts || []).length}`,
+        ...draftLines,
         `state: ${result.statePath}`,
-        "execution: dry-run only; no workers or shipping actions started",
+        "execution: proposal/dry-run; Master kickoff via run --detach (no auto launch)",
       ].join("\n"));
       return;
     }

@@ -88,6 +88,15 @@ test("Director CLI validates policy and runs a fixture-backed dry cycle", () => 
     assert.equal(cycle.status, "dry-run-complete");
     assert.equal(cycle.selected[0].sourceKey, "fixture:cli-one");
     assert.equal(cycle.director.harness, "codex");
+    assert.equal(cycle.drafts.length, 1);
+    assert.match(cycle.drafts[0].kickoff, /--detach/);
+
+    const human = run([
+      "director", "cycle", "--policy", fx.policyPath, "--items", fx.itemsPath,
+      "--state-dir", fx.stateRoot, "--dry-run",
+    ]);
+    assert.match(human, /kickoff: agent-manager run/);
+    assert.match(human, /proposal\/dry-run/);
 
     const replay = JSON.parse(run([
       "director", "dry-cycle", "--policy", fx.policyPath, "--items", fx.itemsPath,
@@ -95,6 +104,7 @@ test("Director CLI validates policy and runs a fixture-backed dry cycle", () => 
     ]));
     assert.equal(replay.cycleId, cycle.cycleId);
     assert.equal(replay.replayed, true);
+    assert.equal(replay.drafts.length, 1);
   } finally {
     rmSync(fx.root, { recursive: true, force: true });
   }

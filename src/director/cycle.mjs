@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { RUNS_ROOT, assertSafeSlug } from "../paths.mjs";
 import { matchesScope, normalizeScopePath, scopePrefix } from "../scope.mjs";
 import { acquireRepositoryLease } from "./lease.mjs";
-import { loadDirectorPolicy } from "./policy.mjs";
-import { loadDirectorSourceItems } from "./source-items.mjs";
+import { loadDirectorPolicy, pathCoveredByAllowlist } from "./policy.mjs";
+import { IMPLEMENTED_PROVIDERS, loadDirectorSourceItems } from "./source-items.mjs";
 import { atomicWriteJson, sha256 } from "./util.mjs";
+import { writeWorkflowDrafts } from "./workflow-draft.mjs";
 
 function samePath(left, right) {
   const a = resolve(left);
@@ -48,11 +49,23 @@ function compareItems(left, right) {
     || left.source.item_id.localeCompare(right.source.item_id);
 }
 
+function riskExceptionCovers(item, risk, exceptions) {
+  return exceptions.some((exception) => {
+    if (exception.risk !== risk) return false;
+    if (!exception.require_labels.every((label) => item.labels.includes(label))) return false;
+    return item.scope.every((path) => pathCoveredByAllowlist(path, exception.allowed_paths));
+  });
+}
+
 function triage(items, policy) {
   const eligible = [];
   const quarantined = [];
   const skipped = [];
   for (const item of [...items].sort(compareItems)) {
+    if (!IMPLEMENTED_PROVIDERS.has(item.source.provider)) {
+      quarantined.push(sourceDecision(item, `connector-not-implemented:${item.source.provider}`));
+      continue;
+    }
     if (!samePath(item.repositoryRoot, policy.repoRoot)) {
       quarantined.push(sourceDecision(item, "repository-outside-policy"));
       continue;
@@ -61,7 +74,10 @@ function triage(items, policy) {
       quarantined.push(sourceDecision(item, "base-ref-outside-policy"));
       continue;
     }
-    const forbiddenRisks = item.risks.filter((risk) => policy.autopilot.forbidden_risks.includes(risk));
+    const forbiddenRisks = item.risks.filter((risk) => {
+      if (!policy.autopilot.forbidden_risks.includes(risk)) return false;
+      return !riskExceptionCovers(item, risk, policy.autopilot.risk_exceptions || []);
+    });
     if (forbiddenRisks.length) {
       quarantined.push(sourceDecision(item, `forbidden-risk:${forbiddenRisks.sort().join(",")}`));
       continue;
@@ -92,6 +108,7 @@ function triage(items, policy) {
   }
   return {
     selected: selectedItems.map((item) => sourceDecision(item, "policy-eligible")),
+    selectedItems,
     quarantined,
     skipped,
   };
@@ -105,6 +122,24 @@ function transition(state, to, decision, at) {
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function collectExistingDrafts(cycleDir) {
+  const workflowsDir = join(cycleDir, "workflows");
+  if (!existsSync(workflowsDir)) return [];
+  return readdirSync(workflowsDir)
+    .filter((name) => name.endsWith(".yaml") || name.endsWith(".yml"))
+    .sort()
+    .map((name) => {
+      const path = join(workflowsDir, name);
+      return {
+        path,
+        draftId: name.replace(/\.ya?ml$/i, ""),
+        sourceKeys: [],
+        validateOk: true,
+        kickoff: `agent-manager run ${JSON.stringify(path)} --detach`,
+      };
+    });
 }
 
 export function defaultDirectorStateRoot() {
@@ -121,7 +156,7 @@ export async function runDirectorCycle({
   now = () => new Date(),
 } = {}) {
   if (dryRun !== true) {
-    throw new Error("Director Phase 1 cycles require --dry-run; worker launch and shipping are not enabled");
+    throw new Error("Director proposal cycles require --dry-run; auto-detach worker launch is not enabled");
   }
   const policy = loadDirectorPolicy(policyPath, { repoOverride });
   const source = loadDirectorSourceItems(itemsPath);
@@ -146,6 +181,7 @@ export async function runDirectorCycle({
     mkdirSync(cycleDir, { recursive: true, mode: 0o700 });
     let resumed = false;
     let state;
+    let drafts = [];
     if (existsSync(statePath)) {
       resumed = true;
       state = readJson(statePath);
@@ -157,6 +193,9 @@ export async function runDirectorCycle({
       }
       if (!["running", "dry-run-complete"].includes(state.status)) {
         throw new Error(`Director cycle id ${id} cannot resume from state ${state.status}`);
+      }
+      if (state.status === "dry-run-complete") {
+        drafts = collectExistingDrafts(cycleDir);
       }
     } else {
       const startedAt = now().toISOString();
@@ -180,13 +219,44 @@ export async function runDirectorCycle({
     }
 
     if (state.status === "running") {
+      let selectedItems = [];
       if (state.phase === "DISCOVER") {
-        state.items = triage(source.items, policy);
+        const triageResult = triage(source.items, policy);
+        state.items = {
+          selected: triageResult.selected,
+          quarantined: triageResult.quarantined,
+          skipped: triageResult.skipped,
+        };
+        selectedItems = triageResult.selectedItems;
         transition(state, "TRIAGE", `selected ${state.items.selected.length}; quarantined ${state.items.quarantined.length}; skipped ${state.items.skipped.length}`, now().toISOString());
         atomicWriteJson(statePath, state);
       }
       if (state.phase === "TRIAGE") {
-        transition(state, "PLAN", `prepared ${state.items.selected.length} deterministic draft candidate${state.items.selected.length === 1 ? "" : "s"}`, now().toISOString());
+        if (!selectedItems.length) {
+          selectedItems = state.items.selected
+            .map((decision) => source.items.find((item) => item.sourceKey === decision.sourceKey))
+            .filter(Boolean);
+        }
+        drafts = writeWorkflowDrafts({
+          policy,
+          selectedItems,
+          cycleId: id,
+          cycleDir,
+        });
+        const invalid = drafts.filter((draft) => !draft.validateOk);
+        if (invalid.length) {
+          throw new Error(
+            `Director workflow draft validation failed: ${
+              invalid.map((draft) => `${draft.draftId}: ${draft.validateError}`).join("; ")
+            }`,
+          );
+        }
+        transition(
+          state,
+          "PLAN",
+          `wrote ${drafts.length} validated workflow draft${drafts.length === 1 ? "" : "s"}`,
+          now().toISOString(),
+        );
         atomicWriteJson(statePath, state);
       }
       if (state.phase === "PLAN") {
@@ -194,7 +264,7 @@ export async function runDirectorCycle({
         atomicWriteJson(statePath, state);
       }
       if (state.phase === "VALIDATE") {
-        transition(state, "CLOSE", "dry-run boundary reached; no workers or shipping actions started", now().toISOString());
+        transition(state, "CLOSE", "proposal boundary reached; Master may kick off draft workflows with run --detach", now().toISOString());
         atomicWriteJson(statePath, state);
       }
       if (state.phase !== "CLOSE") {
@@ -202,6 +272,7 @@ export async function runDirectorCycle({
       }
       state.status = "dry-run-complete";
       atomicWriteJson(statePath, state);
+      if (!drafts.length) drafts = collectExistingDrafts(cycleDir);
     }
 
     const cycle = {
@@ -219,6 +290,7 @@ export async function runDirectorCycle({
       quarantined: state.items.quarantined,
       skipped: state.items.skipped,
       transitions: state.transitions,
+      drafts,
       statePath,
       replayed: false,
     };

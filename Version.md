@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.16.0
+current: 1.17.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.17.0 - 2026-08-09
+
+Director proposal bridge: validated workflow YAML drafts + Master kickoff lines, scoped `risk_exceptions` for CodeQL-class security, fixture-only source providers, and docs/skills retuned to proposal (not autopilot).
 
 ## 1.16.0 - 2026-08-09
 

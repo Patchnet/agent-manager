@@ -7,7 +7,7 @@
   "required": [
     "schema", "cycleId", "status", "dryRun", "repository", "director",
     "policyDigest", "sourceDigest", "startedAt", "endedAt", "selected",
-    "quarantined", "skipped", "transitions", "statePath", "replayed"
+    "quarantined", "skipped", "transitions", "drafts", "statePath", "replayed"
   ],
   "properties": {
     "schema": { "const": "agent-manager.director-cycle.v1" },
@@ -24,6 +24,22 @@
     "quarantined": { "type": "array", "items": { "$ref": "#/$defs/decision" } },
     "skipped": { "type": "array", "items": { "$ref": "#/$defs/decision" } },
     "transitions": { "type": "array", "items": { "$ref": "#/$defs/transition" } },
+    "drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "draftId", "sourceKeys", "validateOk", "kickoff"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "draftId": { "type": "string", "minLength": 1 },
+          "sourceKeys": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "validateOk": { "type": "boolean" },
+          "validateError": { "type": "string", "minLength": 1 },
+          "kickoff": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "statePath": { "type": "string", "minLength": 1 },
     "replayed": { "type": "boolean" }
   },
