@@ -1,15 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { assertResolvedRootsIsolated, isolatedRoot } from "../test-support/isolated-roots.mjs";
 import { GoalModelError, createGoal, linkGoalArtifact } from "../src/goals.mjs";
 import { computeGoalProgress, getGoalProgress } from "../src/goal-progress.mjs";
 
 const roots = [];
 
 function brainRoot() {
-  const root = mkdtempSync(join(tmpdir(), "agent-manager-goal-progress-"));
+  const root = isolatedRoot("goal-progress-");
   roots.push(root);
   return join(root, "brain");
 }
@@ -38,6 +38,10 @@ function artifact(id, goalId, state, relationship = "supports") {
 
 test.after(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
+
+test("this test file resolves a disposable brain root", async () => {
+  await assertResolvedRootsIsolated();
 });
 
 test("reports empty goals from stored lifecycle with an exact leaf ratio", () => {

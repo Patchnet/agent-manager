@@ -6,23 +6,25 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertIsolated, isolatedRoot, sandboxRoot } from "./isolated-roots.mjs";
 
 const execFileAsync = promisify(execFile);
 
 // Each importing test file gets a fully isolated fixture: its own temp root,
-// git repository, runs root, claim log, feed server, and frozen context file.
-// Nothing here may be shared across Node test-file processes.
+// git repository, runs root, claims root, claim log, feed server, and frozen
+// context file. Nothing here may be shared across Node test-file processes,
+// and nothing here may resolve onto an operator's real registries.
 export async function createE2eFixture() {
   const cli = join(process.cwd(), "bin", "agent-manager.mjs");
-  const root = mkdtempSync(join(tmpdir(), "agent-manager-e2e-"));
+  const root = isolatedRoot("e2e-");
   const runsRoot = join(root, ".runs");
+  const claimsRoot = join(root, ".claims");
+  const brainRoot = join(root, ".brain");
   const repo = join(root, "fixture-repo");
   const tools = join(root, "tools");
   const claimLog = join(root, "claim.log");
@@ -71,13 +73,18 @@ export async function createE2eFixture() {
 
   const env = {
     ...process.env,
+    AGENT_MANAGER_TEST_ROOT: sandboxRoot(),
     AGENT_MANAGER_DEV_ROOT: root,
     AGENT_MANAGER_RUNS_ROOT: runsRoot,
-    AGENT_MANAGER_BRAIN_ROOT: join(root, ".brain"),
+    AGENT_MANAGER_CLAIMS_ROOT: claimsRoot,
+    AGENT_MANAGER_BRAIN_ROOT: brainRoot,
     AGENT_MANAGER_CLAIM_BIN: claimScript,
     AGENT_MANAGER_TEST_MODE: "1",
     CLAIM_LOG: claimLog,
   };
+  // An ambient AGENT_MANAGER_CONFIG must not reintroduce operator roots.
+  delete env.AGENT_MANAGER_CONFIG;
+  assertIsolated({ root, runsRoot, claimsRoot, brainRoot }, "e2e fixture");
 
   function writeWorkflow(name, value) {
     const path = join(root, name + ".json");
@@ -167,6 +174,9 @@ export async function createE2eFixture() {
   return {
     root,
     runsRoot,
+    claimsRoot,
+    brainRoot,
+    env,
     repo,
     claimLog,
     fixtureBase,

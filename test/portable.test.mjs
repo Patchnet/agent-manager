@@ -1,19 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
+import { isolatedEnv, isolatedRoot } from "../test-support/isolated-roots.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "agent-manager-portable-"));
+const root = isolatedRoot("portable-");
 const repo = join(root, "repo");
 mkdirSync(repo, { recursive: true });
 execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
 execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "base"], { stdio: "ignore" });
 const cli = join(process.cwd(), "bin", "agent-manager.mjs");
 const fleetCli = join(process.cwd(), "bin", "agent-manager-fleet.mjs");
-const env = { ...process.env, AGENT_MANAGER_DEV_ROOT: root, AGENT_MANAGER_RUNS_ROOT: join(root, "runs") };
+const env = isolatedEnv({ AGENT_MANAGER_DEV_ROOT: root, AGENT_MANAGER_RUNS_ROOT: join(root, "runs") });
 
 test.after(() => rmSync(root, { recursive: true, force: true }));
 

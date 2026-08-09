@@ -1,16 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { isolatedEnv, isolatedRoot } from "../test-support/isolated-roots.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "agent-manager-goals-cli-"));
+const root = isolatedRoot("goals-cli-");
 const cli = join(process.cwd(), "bin", "agent-manager.mjs");
-const env = {
-  ...process.env,
-  AGENT_MANAGER_BRAIN_ROOT: join(root, "brain"),
-};
+// isolatedEnv drops ambient roots outright, so the CLI child cannot fall back
+// to the operator's brain for anything this file does not name.
+const env = isolatedEnv({ AGENT_MANAGER_BRAIN_ROOT: join(root, "brain") });
 
 test.after(() => rmSync(root, { recursive: true, force: true }));
 
