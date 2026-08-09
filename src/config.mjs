@@ -20,12 +20,34 @@ export const CONFIG_KEYS = [
 ];
 
 /**
+ * When set to `1` / `true`, ambient environment and command-line path overrides
+ * may beat `~/.agent-manager/config.env`. Default is locked: user-config wins
+ * for every key present in that file so agents cannot redirect telemetry.
+ */
+export const PATH_OVERRIDE_ENV = "AGENT_MANAGER_ALLOW_PATH_OVERRIDE";
+
+/**
  * Test runs must never resolve onto an operator's real runs, claims, or brain
  * root. Individual tests cannot be trusted to remember that, so isolation is
  * enforced here — the single place every root passes through — instead of in
  * each test file. See `test/isolation.test.mjs`.
  */
 export const TEST_SANDBOX_ENV = "AGENT_MANAGER_TEST_ROOT";
+
+export function pathOverridesAllowed(env = process.env) {
+  const raw = env?.[PATH_OVERRIDE_ENV];
+  if (raw === undefined || raw === null || raw === "") return false;
+  return raw === "1" || String(raw).toLowerCase() === "true";
+}
+
+function hasConfiguredValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== "";
+}
+
+function pathsEqual(left, right) {
+  if (!hasConfiguredValue(left) || !hasConfiguredValue(right)) return false;
+  return resolve(String(left)) === resolve(String(right));
+}
 
 /** Keys whose *default* moves into the sandbox; the rest keep their defaults. */
 const SANDBOX_SUBDIRS = {
@@ -175,17 +197,28 @@ export function resolveAgentManagerConfig({
   };
   const values = {};
   const sources = {};
+  const ignoredOverrides = [];
+  // Outside tests, keys present in config.env beat ambient env / CLI unless the
+  // operator explicitly unlocks overrides. Test sandboxes keep the old order so
+  // fixtures can still point roots at disposable temp dirs.
+  const unlocked = sandboxed || pathOverridesAllowed(env);
+  const pathLockActive = !sandboxed && Object.keys(fileValues).some((key) => hasConfiguredValue(fileValues[key]));
 
   for (const key of CONFIG_KEYS) {
-    const candidates = [
-      [overrides[key], "command-line"],
-      [env[key], "environment"],
-      [fileValues[key], "user-config"],
-      [defaults[key], "default"],
-    ];
-    const supplied = candidates.filter(
-      ([value]) => value !== undefined && value !== null && String(value).trim() !== "",
-    );
+    const fileConfigured = hasConfiguredValue(fileValues[key]);
+    const locked = !unlocked && fileConfigured;
+    const candidates = locked
+      ? [
+        [fileValues[key], "user-config"],
+        [defaults[key], "default"],
+      ]
+      : [
+        [overrides[key], "command-line"],
+        [env[key], "environment"],
+        [fileValues[key], "user-config"],
+        [defaults[key], "default"],
+      ];
+    const supplied = candidates.filter(([value]) => hasConfiguredValue(value));
     let [rawValue, source] = supplied[0] || [null, "default"];
     if (rawValue !== null) {
       rawValue = resolveConfiguredPath(rawValue, {
@@ -205,6 +238,25 @@ export function resolveAgentManagerConfig({
     } else if (rawValue === null && source === "default") {
       rawValue = defaults[key] === null ? null : resolveConfiguredPath(defaults[key], { home, baseDir: cwdValue });
     }
+
+    if (locked && rawValue !== null) {
+      for (const [overrideValue, overrideSource] of [
+        [overrides[key], "command-line"],
+        [env[key], "environment"],
+      ]) {
+        if (!hasConfiguredValue(overrideValue)) continue;
+        const resolvedOverride = resolveConfiguredPath(overrideValue, { home, baseDir: cwdValue });
+        if (!pathsEqual(resolvedOverride, rawValue)) {
+          ignoredOverrides.push({
+            key,
+            source: overrideSource,
+            value: resolvedOverride,
+            configured: rawValue,
+          });
+        }
+      }
+    }
+
     values[key] = rawValue;
     sources[key] = source;
   }
@@ -214,6 +266,12 @@ export function resolveAgentManagerConfig({
     configExists: existsSync(resolvedConfigPath),
     values,
     sources,
+    pathLock: {
+      active: pathLockActive,
+      unlocked,
+      allowOverrideEnv: PATH_OVERRIDE_ENV,
+    },
+    ignoredOverrides,
     testSandbox: sandboxed ? sandbox || env[TEST_SANDBOX_ENV] || null : null,
   };
 }
@@ -245,6 +303,12 @@ export function initAgentManagerConfig({
   if (existsSync(path) && !force) {
     throw new Error(`configuration already exists: ${path} (use --force to replace it)`);
   }
+  const sandboxed = detectTestContext({ env, execArgv });
+  if (force && existsSync(path) && !sandboxed && !pathOverridesAllowed(env)) {
+    throw new Error(
+      `refusing config init --force while path lock is active (set ${PATH_OVERRIDE_ENV}=1 to replace ${path})`,
+    );
+  }
   const values = {
     AGENT_MANAGER_DEV_ROOT: resolveConfiguredPath(devRoot, { home, baseDir: cwdValue }),
     AGENT_MANAGER_RUNS_ROOT: resolveConfiguredPath(runsRoot, { home, baseDir: cwdValue }),
@@ -253,7 +317,9 @@ export function initAgentManagerConfig({
   };
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, [
-    "# Agent Manager user paths. Process environment variables override these values.",
+    "# Agent Manager user paths.",
+    `# Keys present here beat process environment and CLI overrides unless ${PATH_OVERRIDE_ENV}=1.`,
+    "# Agents must not invent or export AGENT_MANAGER_*_ROOT values.",
     envLine("AGENT_MANAGER_DEV_ROOT", values.AGENT_MANAGER_DEV_ROOT),
     envLine("AGENT_MANAGER_RUNS_ROOT", values.AGENT_MANAGER_RUNS_ROOT),
     envLine("AGENT_MANAGER_CLAIMS_ROOT", values.AGENT_MANAGER_CLAIMS_ROOT),
@@ -261,6 +327,17 @@ export function initAgentManagerConfig({
     "",
   ].join("\n"), { encoding: "utf8", mode: 0o600 });
   return { path, values };
+}
+
+export function formatIgnoredPathOverrides(ignoredOverrides = []) {
+  if (!Array.isArray(ignoredOverrides) || ignoredOverrides.length === 0) return "";
+  return [
+    "ignored path overrides (user-config wins):",
+    ...ignoredOverrides.map(
+      (entry) => `  ${entry.key} [${entry.source}] ${entry.value} (configured ${entry.configured})`,
+    ),
+    `set ${PATH_OVERRIDE_ENV}=1 to honor environment/CLI path overrides`,
+  ].join("\n");
 }
 
 export function formatAgentManagerConfig(config) {
@@ -271,9 +348,16 @@ export function formatAgentManagerConfig(config) {
     ["brain root", "AGENT_MANAGER_BRAIN_ROOT"],
     ["claim bin", "AGENT_MANAGER_CLAIM_BIN"],
   ];
+  const lock = config.pathLock || {};
+  const lockLine = lock.active
+    ? `path lock: active${lock.unlocked ? " (unlocked)" : ""} — user-config beats env/CLI; unlock with ${lock.allowOverrideEnv || PATH_OVERRIDE_ENV}=1`
+    : "path lock: inactive (no user-config path keys, test sandbox, or unlocked)";
+  const ignored = formatIgnoredPathOverrides(config.ignoredOverrides);
   return [
     `config: ${config.configPath}`,
     `config exists: ${config.configExists ? "yes" : "no"}`,
+    lockLine,
     ...labels.map(([label, key]) => `${label}: ${config.values[key] || "(bundled)"} [${config.sources[key]}]`),
+    ...(ignored ? [ignored] : []),
   ].join("\n");
 }

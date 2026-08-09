@@ -14,6 +14,10 @@ export const CONFIG_PATH = PATH_CONFIG.configPath;
  */
 export const TEST_SANDBOX_ROOT = PATH_CONFIG.testSandbox;
 
+/** Path-lock metadata and any env/CLI overrides ignored in favor of user-config. */
+export const PATH_LOCK = PATH_CONFIG.pathLock || { active: false, unlocked: true };
+export const IGNORED_PATH_OVERRIDES = PATH_CONFIG.ignoredOverrides || [];
+
 /** Workspace root used to resolve `workflow.repo` as a sibling folder. */
 export const DEV_ROOT = PATH_CONFIG.values.AGENT_MANAGER_DEV_ROOT;
 export const DEV_ROOT_SOURCE = PATH_CONFIG.sources.AGENT_MANAGER_DEV_ROOT;

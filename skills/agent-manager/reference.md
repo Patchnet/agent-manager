@@ -34,13 +34,17 @@ still come from Master reading `status.json` on each wake
 | `AGENT_MANAGER_CLAIMS_ROOT` | `~/.agent-manager/claims` | Claim JSON registry |
 | `AGENT_MANAGER_BRAIN_ROOT` | `~/.agent-manager/brain` | Git-free MAADB awareness plane |
 | `AGENT_MANAGER_CLAIM_BIN` | `<pkg>/tools/claim.mjs` | Claims CLI |
+| `AGENT_MANAGER_ALLOW_PATH_OVERRIDE` | unset | Operator unlock: env/CLI may beat `config.env` |
 | `AGENT_MANAGER_ENV_ALLOWLIST` | empty | Extra worker environment names |
 
 Initialize stable user paths with `agent-manager config init --dev-root <path>`
-and inspect the effective values with `agent-manager config show`. Process
-environment variables override user config, so existing launch automation
-remains compatible. The user config is outside the installed package and is not
-replaced by updates.
+and inspect the effective values with `agent-manager config show`. **Path lock:**
+keys present in `config.env` beat ambient environment and CLI overrides.
+Conflicting values are ignored (shown by `config show` and warned on
+`run`/`ship`/`director`). Do not invent or export `AGENT_MANAGER_*_ROOT`. Set
+`AGENT_MANAGER_ALLOW_PATH_OVERRIDE=1` only when the operator explicitly needs
+an override. `config init --force` also requires that unlock. The user config is
+outside the installed package and is not replaced by updates.
 
 Director dry-cycle state defaults below the runs root at
 `$AGENT_MANAGER_RUNS_ROOT/director`. Override it per invocation with

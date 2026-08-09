@@ -15,7 +15,8 @@ description: >-
 
 **Canonical home:** `<agent-manager-repo>/skills/agent-manager/`  
 **CLI:** `<agent-manager-repo>/bin/agent-manager.mjs`  
-**Telemetry:** `$AGENT_MANAGER_RUNS_ROOT/<runId>/status.json` (default `~/.agent-manager/runs`)  
+**Telemetry:** resolved runs root from `agent-manager config show` →
+`<runsRoot>/<runId>/status.json` (never invent a path)  
 **Detail:** [reference.md](./reference.md) · [reporting.md](./reporting.md) · [operator guide](https://github.com/Patchnet/agent-manager/blob/main/docs/OPERATOR.md)
 
 This skill is model-neutral. Claude Code, Codex, Cursor, and others follow the
@@ -50,24 +51,29 @@ themselves in one chat — that stays a normal focused session.
 3. **Arm a watch loop after every detach (mandatory).** Do not leave the operator
    in silence until they ask for status. See **Watch loop** below.
 4. **One worktree + one agent per lane** (CLI enforces via worktrees + claims).
-5. **Read telemetry from disk** — `status.json` / `report.md` under the runs root.
-   Do not invent lane state. Prefer `node … status` / `monitor` or reading JSON.
-6. **Chat status uses the templates in [reporting.md](./reporting.md) only** —
+5. **Read telemetry from disk** — `status.json` / `report.md` under the runs root
+   from `agent-manager config show`. Do not invent lane state. Prefer
+   `node … status` / `monitor` or reading JSON.
+6. **Never redirect path roots.** Do not set/export `AGENT_MANAGER_*_ROOT`,
+   pass write-path overrides, or run `config init --force`. User `config.env`
+   is authoritative; conflicting ambient values are ignored. Only the operator
+   may unlock with `AGENT_MANAGER_ALLOW_PATH_OVERRIDE=1`.
+7. **Chat status uses the templates in [reporting.md](./reporting.md) only** —
    no freestyle dashboards.
-7. **Delivery Review before Ship Gate.** Lane exit 0 / CI green is not
+8. **Delivery Review before Ship Gate.** Lane exit 0 / CI green is not
    acceptance. Master re-reads the original proposal, verifies worktree
    deliverables (including cross-lane contracts), and posts **Delivery Review
    · Pass 1**. Worker completion is `delivery_review_pending`, not a terminal
    delivery state. Persist the operator decision with `agent-manager review`.
-8. **One eval loop only (anti-perpetual).** Per parent `runId`: Pass 1 → at
+9. **One eval loop only (anti-perpetual).** Per parent `runId`: Pass 1 → at
    most **one** worker correction (`revise` or `relaunch`) → **Pass 2**
    correction report to the operator. Master **must not** open Pass 3, issue
    another revise/relaunch, or start another eval loop. Further work requires
    an **operator-ordered** new run (new `runId`).
-9. **Workers do not commit/merge/tag** unless the workflow explicitly allows it
+10. **Workers do not commit/merge/tag** unless the workflow explicitly allows it
    (default: forbidden). Shipping goes through **Ship Gate** *after* an
    accepting Delivery Review (Pass 1 or Pass 2).
-10. **Integrate** (`integrate: true` in workflow) folds successful lanes into
+11. **Integrate** (`integrate: true` in workflow) folds successful lanes into
     `am/<runId>/integrate` after coding finishes. It prepares the branch only.
     Master owns Delivery Review and Ship Gate. After approval, hand shipping to
     the **pr-manager** skill with `ship --detach`; do not babysit push, PR, CI,
@@ -76,16 +82,16 @@ themselves in one chat — that stays a normal focused session.
     must map every lane to its delivery branch/PR. Downstream work must use
     `agent-manager delivery-ready <runId> --require merged|released`, never
     worker `done` or released claims.
-11. **Dangerous permissions need two approvals.** The workflow policy and the launch flag
+12. **Dangerous permissions need two approvals.** The workflow policy and the launch flag
     `--allow-dangerous-permissions` (or matching environment confirmation) must both be present.
-12. On `needs-input` / blocked lanes: surface the question in chat, wait for the
+13. On `needs-input` / blocked lanes: surface the question in chat, wait for the
     operator, then resume/reply (or cancel) — do not guess product decisions.
-13. **Every operator board declares its transition.** End with
+14. **Every operator board declares its transition.** End with
     `AUTO_CONTINUE`, `WAIT_OPERATOR`, or `TERMINAL`, plus the exact next action
     and reply vocabulary. On `AUTO_CONTINUE`, take that action before ending
     the turn. Never report only that a stage finished. Use
     `agent-manager next-action <runId> --json` to resolve ambiguity.
-14. **Verify worker harness visibility before planning a run.** Run
+15. **Verify worker harness visibility before planning a run.** Run
     `agent-manager doctor --json` in the same OS environment that will launch
     Agent Manager. If a harness is missing, follow Doctor's structured setup
     recommendation. Restart the host after PATH or binary-override changes.

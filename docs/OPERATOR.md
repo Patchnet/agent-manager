@@ -165,9 +165,13 @@ It reads telemetry and the brain directly and does not need a mounted service.
 
 The Fleet header always identifies the resolved runs root and whether it came
 from a command-line override, process environment, user config, or the built-in
-default. Use `agent-manager config show` to inspect all resolved paths. Use
-`agent-manager fleet --runs-root <path>` for a one-time alternate view without
-changing the active shell or user config.
+default. Use `agent-manager config show` to inspect all resolved paths and any
+ignored ambient overrides. Keys present in `~/.agent-manager/config.env` beat
+process environment and CLI path overrides unless
+`AGENT_MANAGER_ALLOW_PATH_OVERRIDE=1`. Agents must not invent or export
+`AGENT_MANAGER_*_ROOT` values, and must not run `config init --force`. Use
+`agent-manager fleet --runs-root <path>` for a one-time read-only alternate view
+without changing where `run` writes telemetry.
 
 The Fleet header shows the viewer runtime version. Selected run details show
 the Agent Manager engine version captured when that run started. If installed

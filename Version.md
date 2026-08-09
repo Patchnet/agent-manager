@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.17.0
+current: 1.18.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.18.0 - 2026-08-09
+
+Lock telemetry and path roots to `config.env` so ambient env/CLI cannot redirect runs; require `AGENT_MANAGER_ALLOW_PATH_OVERRIDE=1` to unlock overrides or `config init --force`.
 
 ## 1.17.0 - 2026-08-09
 

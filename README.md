@@ -956,9 +956,17 @@ agent-manager config show
 
 Use `--runs-root`, `--claims-root`, and `--brain-root` with `config init` to choose other
 locations. `config init` refuses to replace an existing file unless `--force`
-is supplied. Resolution order is command-line override, process environment,
-user config, then the built-in default. Relative paths in a manually edited
-user config are resolved from the config file's directory.
+is supplied, and `--force` also requires `AGENT_MANAGER_ALLOW_PATH_OVERRIDE=1`
+so agents cannot rewrite the locked path file.
+
+**Path lock:** when a key is present in `config.env`, that value beats process
+environment and CLI overrides. Conflicting ambient values are ignored (and
+reported by `config show` / stderr on `run` / `ship` / `director`). Set
+`AGENT_MANAGER_ALLOW_PATH_OVERRIDE=1` only when you intentionally need the old
+override order. Keys absent from the file still follow environment → default.
+Relative paths in a manually edited user config are resolved from the config
+file's directory. `fleet --runs-root` remains a read-only view override and does
+not change where `run` writes telemetry.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -968,6 +976,7 @@ user config are resolved from the config file's directory.
 | `AGENT_MANAGER_CLAIMS_ROOT` | `~/.agent-manager/claims` | Bundled advisory claim registry |
 | `AGENT_MANAGER_BRAIN_ROOT` | `~/.agent-manager/brain` | Git-free MAADB run-intent and cross-run awareness project |
 | `AGENT_MANAGER_CLAIM_BIN` | bundled `tools/claim.mjs` | Optional external claim implementation |
+| `AGENT_MANAGER_ALLOW_PATH_OVERRIDE` | unset | When `1`/`true`, allow env/CLI to beat `config.env` path keys |
 | `AGENT_MANAGER_ENV_ALLOWLIST` | empty | Extra comma-separated variables passed to workers |
 | `AGENT_MANAGER_ALLOW_DANGEROUS_PERMISSIONS` | unset | Invocation-level dangerous-mode confirmation |
 | `AGENT_MANAGER_CLAUDE_LOGS_ROOT` | `~/.claude/projects` | Claude Code logs root for `tokens` |

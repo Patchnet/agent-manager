@@ -11,7 +11,7 @@ import { listHarnessAdapters } from "../src/harness/index.mjs";
 import { initWorkflow } from "../src/init.mjs";
 import { installCursor } from "../src/install.mjs";
 import { integrateRun } from "../src/integrate-run.mjs";
-import { assertSafeSlug, runDir } from "../src/paths.mjs";
+import { assertSafeSlug, IGNORED_PATH_OVERRIDES, runDir } from "../src/paths.mjs";
 import { preflightWorkflow, validateRepository } from "../src/preflight.mjs";
 import { assertPlanningReady } from "../src/planning.mjs";
 import { prepareReply, resumeLane } from "../src/reply.mjs";
@@ -55,6 +55,7 @@ import { formatGoalProgress, getGoalProgress } from "../src/goal-progress.mjs";
 import { exportGoalMap } from "../src/goal-map.mjs";
 import {
   formatAgentManagerConfig,
+  formatIgnoredPathOverrides,
   initAgentManagerConfig,
   resolveAgentManagerConfig,
 } from "../src/config.mjs";
@@ -713,11 +714,18 @@ function detachShip(flags) {
   return payload;
 }
 
+function warnIgnoredPathOverrides() {
+  const message = formatIgnoredPathOverrides(IGNORED_PATH_OVERRIDES);
+  if (!message) return;
+  console.error(message);
+}
+
 async function main() {
   if (cmd === "--version" || cmd === "-v") { console.log(AGENT_MANAGER_VERSION); return; }
   if (!cmd || cmd === "-h" || cmd === "--help") { usage(); process.exitCode = cmd ? 0 : 1; return; }
 
   if (cmd === "director") {
+    warnIgnoredPathOverrides();
     const flags = parseDirectorFlags(args.slice(1));
     if (flags.action === "validate") {
       const policy = loadDirectorPolicy(flags.policy, { repoOverride: flags.repo });
@@ -771,6 +779,7 @@ async function main() {
   }
 
   if (cmd === "run") {
+    warnIgnoredPathOverrides();
     const flags = parseRunFlags(args.slice(1));
     if (!flags.file) throw new Error("run requires <workflow.yaml>");
     if (!existsSync(resolve(flags.file))) throw new Error("workflow not found: " + resolve(flags.file));
@@ -1087,6 +1096,7 @@ async function main() {
   }
 
   if (cmd === "ship") {
+    warnIgnoredPathOverrides();
     detachShip(parseShipFlags(args.slice(1)));
     return;
   }
