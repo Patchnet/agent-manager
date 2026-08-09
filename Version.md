@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.14.0
+current: 1.15.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.15.0 - 2026-08-09
+
+Add Cursor as a first-class worker harness with native Windows Agent CLI discovery, model selection, doctor/setup docs, and a structured empty-prompt detector that no longer false-fails when workers read harness source.
 
 ## 1.14.0 - 2026-08-08
 
