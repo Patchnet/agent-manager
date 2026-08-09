@@ -906,8 +906,10 @@ export async function runWorkflow(workflowPath, {
       status.endedAt = new Date().toISOString();
     }
     await syncBrainStatus(status);
-    persistStatus();
+    // Write report before publishing status so waiters on delivery_review_pending
+    // (and other post-worker states) never observe a missing report.md.
     const reportPath = writeReport(runId, status);
+    persistStatus();
     if (status.state === "delivery_review_pending") {
       await emit("workers_done", { executionEndedAt: status.execution?.endedAt });
     } else if (status.state === "failed" || status.state === "cancelled") {
