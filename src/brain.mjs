@@ -17,7 +17,8 @@ import YAML from "yaml";
 import { BRAIN_ROOT } from "./paths.mjs";
 import { normalizeScopePath, scopesMayOverlap } from "./scope.mjs";
 
-export const BRAIN_SCHEMA_VERSION = 2;
+export const BRAIN_SCHEMA_VERSION = 3;
+const SUPPORTED_BRAIN_SCHEMA_VERSIONS = Object.freeze([1, 2, BRAIN_SCHEMA_VERSION]);
 const EDIT_LEASE_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 2 * 60 * 1000;
 const LOCK_WAIT_MS = 10_000;
@@ -117,6 +118,7 @@ const RUN_INTENT_SCHEMA = {
         "pending_delivery",
         "shipping",
         "reviewed",
+        "filed",
         "merged",
         "released",
         "rejected",
@@ -261,6 +263,25 @@ function assertCompatibleRegistration(registry, type, expected) {
   }
 }
 
+/**
+ * Widening an enum is forward compatible: every value already stored on disk
+ * stays legal. Any other field difference is a genuine incompatibility.
+ */
+function fieldCompatibility(actual, expected) {
+  if (sameValue(actual, expected)) return "same";
+  const isEnum = (value) => value?.type === "enum" && Array.isArray(value.values);
+  if (isEnum(actual) && isEnum(expected)) {
+    const withoutValues = (value) => Object.fromEntries(
+      Object.entries(value).filter(([key]) => key !== "values"),
+    );
+    if (sameValue(withoutValues(actual), withoutValues(expected))
+      && actual.values.every((value) => expected.values.includes(value))) {
+      return "widened";
+    }
+  }
+  return "incompatible";
+}
+
 function assertCompatibleSchema(schema, expected, label) {
   if (schema?.type !== expected.type || schema?.version !== expected.version) {
     throw new Error(`Agent Manager brain has an incompatible ${label} schema version`);
@@ -268,11 +289,15 @@ function assertCompatibleSchema(schema, expected, label) {
   if (!sameValue(schema.required, expected.required)) {
     throw new Error(`Agent Manager brain ${label} required fields are incompatible`);
   }
+  let upgrade = false;
   for (const [field, definition] of Object.entries(expected.fields)) {
-    if (!sameValue(schema.fields?.[field], definition)) {
+    const compatibility = fieldCompatibility(schema.fields?.[field], definition);
+    if (compatibility === "incompatible") {
       throw new Error(`Agent Manager brain ${label} field is incompatible: ${field}`);
     }
+    if (compatibility === "widened") upgrade = true;
   }
+  return { upgrade };
 }
 
 async function withBrainLock(name, operation, { root = BRAIN_ROOT } = {}) {
@@ -320,14 +345,12 @@ export async function ensureBrain({ root = BRAIN_ROOT } = {}) {
     if (existsSync(markerPath)) {
       const marker = JSON.parse(readFileSync(markerPath, "utf8"));
       previousVersion = marker.schemaVersion;
-      if (![1, BRAIN_SCHEMA_VERSION].includes(previousVersion)) {
+      if (!SUPPORTED_BRAIN_SCHEMA_VERSIONS.includes(previousVersion)) {
         throw new Error(
-          `unsupported Agent Manager brain schema ${marker.schemaVersion}; expected 1 or ${BRAIN_SCHEMA_VERSION}`,
+          `unsupported Agent Manager brain schema ${marker.schemaVersion}; expected ${SUPPORTED_BRAIN_SCHEMA_VERSIONS.join(", ")}`,
         );
       }
-      const expectedMarkerSchema = previousVersion === 1
-        ? "agent-manager.brain.v1"
-        : "agent-manager.brain.v2";
+      const expectedMarkerSchema = `agent-manager.brain.v${previousVersion}`;
       if (marker.schema !== expectedMarkerSchema || marker.historyMode !== "feed") {
         throw new Error("Agent Manager brain marker is incompatible with Git-free feed mode");
       }
@@ -346,14 +369,18 @@ export async function ensureBrain({ root = BRAIN_ROOT } = {}) {
         if (registry?.types?.[type]) assertCompatibleRegistration(registry, type, REGISTRY.types[type]);
       }
     }
+    const widenedSchemas = new Set();
     for (const [name, definition] of schemaDefinitions) {
       const schemaPath = join(root, "_schema", `${name}.yaml`);
-      if (existsSync(schemaPath)) {
-        assertCompatibleSchema(YAML.parse(readFileSync(schemaPath, "utf8")), definition, definition.type);
-      }
+      if (!existsSync(schemaPath)) continue;
+      const existing = YAML.parse(readFileSync(schemaPath, "utf8"));
+      if (assertCompatibleSchema(existing, definition, definition.type).upgrade) widenedSchemas.add(name);
     }
     for (const [name, definition] of schemaDefinitions) {
-      atomicWrite(join(root, "_schema", `${name}.yaml`), YAML.stringify(definition));
+      const schemaPath = join(root, "_schema", `${name}.yaml`);
+      const serialized = YAML.stringify(definition);
+      if (widenedSchemas.has(name)) replaceWrite(schemaPath, serialized);
+      else atomicWrite(schemaPath, serialized);
     }
 
     if (registry) {
@@ -377,7 +404,7 @@ export async function ensureBrain({ root = BRAIN_ROOT } = {}) {
     }
 
     const marker = JSON.stringify({
-      schema: "agent-manager.brain.v2",
+      schema: `agent-manager.brain.v${BRAIN_SCHEMA_VERSION}`,
       schemaVersion: BRAIN_SCHEMA_VERSION,
       historyMode: "feed",
     }, null, 2) + "\n";
@@ -385,7 +412,7 @@ export async function ensureBrain({ root = BRAIN_ROOT } = {}) {
     return {
       root,
       schemaVersion: BRAIN_SCHEMA_VERSION,
-      migratedFrom: previousVersion === 1 ? 1 : null,
+      migratedFrom: previousVersion && previousVersion !== BRAIN_SCHEMA_VERSION ? previousVersion : null,
       historyMode: "feed",
     };
   }, { root });
@@ -647,7 +674,7 @@ function phaseForStatus(status) {
   if (["delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "release_pending"].includes(state)) {
     return "delivery";
   }
-  if (["reviewed", "merged", "released", "rejected", "failed", "cancelled", "abandoned"].includes(state)) {
+  if (["reviewed", "filed", "merged", "released", "rejected", "failed", "cancelled", "abandoned"].includes(state)) {
     return "terminal";
   }
   if (state === "blocked" && (
@@ -661,7 +688,7 @@ function phaseForStatus(status) {
 function brainStateForStatus(status, phase) {
   const state = status?.state;
   const values = new Set([
-    "shipping", "reviewed", "merged", "released", "rejected", "failed", "cancelled", "abandoned",
+    "shipping", "reviewed", "filed", "merged", "released", "rejected", "failed", "cancelled", "abandoned",
   ]);
   if (values.has(state)) return state;
   if (state === "blocked") return "needs_input";

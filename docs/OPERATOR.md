@@ -313,6 +313,77 @@ command rejects conversational approval that was not recorded in `status.json`.
 Workers do not own commits, pushes, pull requests, merges, tags, or releases
 unless the workflow explicitly permits a narrower action.
 
+## Accept without shipping: closeout and `filed`
+
+Not every accepted run ships. Research, audits, and investigations produce
+reports that are the deliverable. Those runs end in `filed`:
+
+```bash
+agent-manager closeout <runId> --operator master-dev \
+  --reason "research accepted; nothing to ship"
+```
+
+`closeout` requires a persisted accepted Delivery Review and a run sitting at
+Ship Gate. It files the run's outputs (below), records who filed the run and
+why, then ends the run in the terminal state `filed`. Delivery targets keep
+their `changes_ready` evidence so the report shows exactly what was accepted
+and deliberately not shipped.
+
+**Never use `cancel` to close accepted work.** Cancellation means the work was
+abandoned; filing means it was delivered without a merge. The two read very
+differently on a run board and in the goal graph.
+
+A run whose workflow declares `delivery.mode: review-only` still ends in
+`reviewed` after acceptance. That remains the right choice when a workflow is
+research-only by design — including when its lanes write report files.
+`review-only` does not require read-only lanes. Use `closeout` for the runs
+that were *not* declared review-only but turn out not to need shipping.
+
+Filing is refused when a delivery target has already merged. A half-shipped
+train must be finished or released, not filed.
+
+### File run outputs as durable artifacts
+
+```bash
+agent-manager file-artifacts <runId>
+```
+
+Closeout runs this automatically; the standalone command is for runs in any
+other state, and for re-filing after new evidence lands. It copies the run
+report, run telemetry, every recorded Delivery Review, and each lane's declared
+`expected_outputs` into a private bundle under the brain root
+(`<brain>/.artifacts/<runId>/`) with a `manifest.json` carrying a SHA-256 for
+every file. This survives `agent-manager cleanup`, which removes the run
+directory.
+
+It then records one `artifact_link` per declared `goal_refs` entry, pointing at
+`run-artifact:<runId>` with relationship `delivers`. Re-filing updates the
+existing link instead of creating a duplicate, so the command is safe to repeat.
+
+A run with no `goal_refs` still gets a bundle and a manifest; there is simply
+nothing to link it to. Goal-link failures are reported and do not undo the
+filing or the terminal state — the evidence is on disk either way.
+
+### Goal advancement is a hint, never automatic
+
+Runs update themselves; goals do not. When a run reaches any terminal state,
+`report.md` and `next-action` list the declared `goal_refs` that the frozen
+goal snapshot still shows as open:
+
+```bash
+agent-manager next-action <runId>
+# goals awaiting advancement: goal-am-research-closeout (active)
+```
+
+Agent Manager never advances a goal. Master reads the hint and decides:
+
+```bash
+agent-manager goal update goal-am-research-closeout --lifecycle delivered
+```
+
+Lifecycles come from the snapshot frozen at launch, so treat them as a prompt to
+check the goal, not as proof of its current state.
+
 ## Integration
 
 ```bash
@@ -436,6 +507,11 @@ terminates lane process trees it owns. The detached ship supervisor stops
 between bounded Git or GitHub commands and polling cycles. The cancel command
 does not kill an unverified stale PID. Cleanup refuses every incomplete
 delivery state. Stale cleanup removes only overall-terminal runs.
+
+Cancel means abandoned. To close accepted work that will not ship, use
+`agent-manager closeout` instead; `filed` is a delivered outcome. File the run's
+artifacts before cleanup — cleanup removes the run directory, the brain bundle
+survives it.
 
 ## Claims
 

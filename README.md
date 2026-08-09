@@ -102,11 +102,14 @@ is explicit:
 running → delivery_review_pending → ship_gate_pending → shipping
         → merged
         → release_pending → released
+        → filed (accepted, deliberately not shipped)
         → reviewed (review-only or approved no-change work)
 ```
 
 `correction_pending`, `blocked`, `rejected`, `failed`, and `cancelled` retain
-their own meanings. Downstream work must use the deterministic readiness gate,
+their own meanings. `filed` is a **delivered** outcome, not an abandoned one:
+accepted research and audits are closed with `agent-manager closeout`, never
+with `cancel`. Downstream work must use the deterministic readiness gate,
 not a lane or worker state:
 
 ```bash
@@ -133,6 +136,42 @@ This prevents “stage finished” dead ends. Worker completion automatically
 advances into Delivery Review; `revise` automatically launches the one
 correction; accepted review automatically presents Ship Gate. Only actual
 approval or blocker stages wait for the operator.
+
+### Filed is a state
+
+Delivered does not always mean merged. Research, audits, and investigations
+produce reports that *are* the deliverable, and an accepted run that will not be
+shipped needs an honest ending — not a cancellation:
+
+```bash
+agent-manager closeout <runId> --operator master-dev \
+  --reason "research accepted; nothing to ship"
+```
+
+This requires a persisted accepted Delivery Review, records who filed the run
+and why, files the run's outputs, and ends the run in the terminal state
+`filed`. Delivery targets keep their evidence, so the report states exactly what
+was accepted and deliberately not shipped. Filing is refused once a delivery
+target has merged: a half-shipped train gets finished, not filed.
+
+Run outputs are filed as durable artifacts — the run report, run telemetry,
+every recorded Delivery Review, and each lane's declared `expected_outputs` —
+copied into a private bundle under the brain root with a `manifest.json`
+carrying a SHA-256 per file. The bundle outlives `cleanup`, which deletes the
+run directory. One `artifact_link` per declared goal reference then points at
+`run-artifact:<runId>`, so the goal graph can find the evidence later:
+
+```bash
+agent-manager file-artifacts <runId>
+```
+
+Re-filing refreshes the bundle and updates the existing links instead of
+duplicating them.
+
+Runs update themselves; goals do not. At any terminal state, `report.md` and
+`next-action` list the declared `goal_refs` the frozen goal snapshot still shows
+as open. Agent Manager never advances a goal — the hint is for the operator, who
+decides and runs `agent-manager goal update <id> --lifecycle <value>`.
 
 When writable lanes are not folded into one integrate branch, declare every
 delivery destination. Multi-lane workflows with `integrate: false` are rejected
@@ -760,7 +799,9 @@ Implementation lanes do not succeed on process exit alone. They must leave at
 least one in-scope changed file unless `allow_no_changes: true` was explicitly
 approved. Review lanes use `kind: review` and may finish without edits. A run
 with no change-producing lanes ends as `reviewed` after an accepted Delivery
-Review; it never opens an empty Ship Gate.
+Review; it never opens an empty Ship Gate. A run whose lanes *did* write files
+but whose output is the deliverable is closed with `agent-manager closeout` and
+ends as `filed`.
 `expected_outputs` lists concrete required file paths; validation rejects an
 output not covered by the lane scope, including extension mismatches such as a
 `.tsx` output under a `.ts`-only pattern. Status and Delivery Review also report
@@ -832,6 +873,8 @@ agent-manager watch-signal <runId>
 agent-manager reply <runId> <laneId> --message <text>
 agent-manager review <runId> [--pass 1|2]
 agent-manager review <runId> --pass 1 --verdict accept|accept-with-notes|revise|relaunch|reject --reviewer <id> [--notes <text>]
+agent-manager closeout <runId> --operator <id> [--reason <text>] [--no-artifacts]
+agent-manager file-artifacts <runId> [--json]
 agent-manager next-action <runId> [--json]
 agent-manager delivery-ready <runId> [--require merged|released]
 agent-manager integrate <runId>

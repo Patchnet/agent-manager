@@ -1,12 +1,18 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { readStatus, writeStatus } from "./status.mjs";
-import { assertPathInside, runDir } from "./paths.mjs";
+import { BRAIN_ROOT, assertPathInside, assertSafeSlug, runDir } from "./paths.mjs";
 import { branchOf } from "./worktree.mjs";
-import { writePrivateFile } from "./fs-safe.mjs";
+import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 import { formatRuntime } from "./runtime.mjs";
-import { recordReviewDecision, recordReviewPresentation } from "./delivery.mjs";
+import {
+  recordFiled,
+  recordReviewDecision,
+  recordReviewPresentation,
+  staleGoalHints,
+} from "./delivery.mjs";
+import { GoalModelError, linkGoalArtifact, updateArtifactLink } from "./goals.mjs";
 import { writeReport } from "./report.mjs";
 
 export function buildDeliveryReview(runId, {
@@ -191,6 +197,241 @@ export function inspectDeliveryStructure(status) {
   return { ok: errors.length === 0, errors };
 }
 
+/*
+ * Run closeout — filing run outputs as durable brain artifacts.
+ *
+ * A research or accept-without-ship run still produces evidence worth keeping
+ * after its run directory is cleaned. Closeout copies that evidence into a
+ * bundle under the brain root and records one `artifact_link` per declared
+ * goal reference, so the goal graph can point at the outputs later.
+ */
+
+const ARTIFACT_STATE_BY_RUN_STATE = Object.freeze({
+  filed: "delivered",
+  reviewed: "delivered",
+  merged: "delivered",
+  released: "delivered",
+  rejected: "cancelled",
+  cancelled: "cancelled",
+  failed: "blocked",
+});
+
+export function runArtifactBundleRoot(runId, { root = BRAIN_ROOT } = {}) {
+  return join(root, ".artifacts", assertSafeSlug(runId, "run id"));
+}
+
+export function runArtifactRef(runId) {
+  return `run-artifact:${assertSafeSlug(runId, "run id")}`;
+}
+
+/**
+ * Run outputs worth filing: the run's own reports and telemetry, every
+ * recorded Delivery Review, and each lane's declared expected outputs. Lane
+ * logs are deliberately excluded — they are large and not the deliverable.
+ */
+export function collectRunArtifacts(status, { warnings = [] } = {}) {
+  const root = runDir(status.runId);
+  const artifacts = [];
+  const seen = new Set();
+
+  const add = (source, relPath, label, origin) => {
+    if (seen.has(relPath) || !existsSync(source)) return;
+    const stats = statSync(source);
+    if (!stats.isFile()) return;
+    seen.add(relPath);
+    artifacts.push({ source, relPath, label, origin, bytes: stats.size });
+  };
+
+  add(join(root, "report.md"), "report.md", "run report", "run");
+  add(join(root, "status.json"), "status.json", "run telemetry", "run");
+  for (const pass of [1, 2]) {
+    add(
+      join(root, `delivery-review-pass-${pass}.md`),
+      `delivery-review-pass-${pass}.md`,
+      `Delivery Review pass ${pass}`,
+      "review",
+    );
+    add(
+      join(root, `delivery-review-pass-${pass}.json`),
+      `delivery-review-pass-${pass}.json`,
+      `Delivery Review pass ${pass} decision`,
+      "review",
+    );
+  }
+
+  for (const lane of status.lanes || []) {
+    if (!lane.worktree) continue;
+    for (const output of lane.expectedOutputs || []) {
+      const normalized = String(output).replace(/\\/g, "/").replace(/^\.\//, "");
+      let source;
+      try {
+        source = assertPathInside(lane.worktree, join(lane.worktree, normalized), `lane ${lane.id} output`);
+      } catch (error) {
+        warnings.push(String(error?.message || error));
+        continue;
+      }
+      if (!existsSync(source)) {
+        warnings.push(`lane ${lane.id} expected output is missing: ${normalized}`);
+        continue;
+      }
+      add(source, `lanes/${lane.id}/${normalized}`, `${lane.id} output`, "lane");
+    }
+  }
+
+  return artifacts;
+}
+
+/**
+ * Copy this run's outputs into the brain artifact bundle and link the bundle
+ * to every goal the run declared. Idempotent: re-filing refreshes the bundle
+ * and updates the existing links instead of duplicating them.
+ */
+export async function fileRunArtifacts(runId, {
+  root = BRAIN_ROOT,
+  now = new Date(),
+  write = true,
+} = {}) {
+  let status = readStatus(runId);
+  if (!status) throw new Error(`no status for ${runId}`);
+  const bundleRoot = runArtifactBundleRoot(runId, { root });
+  const warnings = [];
+  const artifacts = collectRunArtifacts(status, { warnings });
+  ensurePrivateDir(bundleRoot);
+
+  const filed = [];
+  for (const artifact of artifacts) {
+    const destination = assertPathInside(
+      bundleRoot,
+      join(bundleRoot, ...artifact.relPath.split("/")),
+      `run artifact ${artifact.relPath}`,
+    );
+    ensurePrivateDir(dirname(destination));
+    const contents = readFileSync(artifact.source);
+    writePrivateFile(destination, contents);
+    filed.push({
+      path: artifact.relPath,
+      label: artifact.label,
+      origin: artifact.origin,
+      bytes: contents.length,
+      sha256: createHash("sha256").update(contents).digest("hex"),
+    });
+  }
+
+  const filedAt = now.toISOString();
+  const artifactRef = runArtifactRef(runId);
+  const goalRefs = status.goalRefs || [];
+  const manifestPath = join(bundleRoot, "manifest.json");
+  writePrivateFile(manifestPath, JSON.stringify({
+    schema: "agent-manager.run-artifact-bundle.v1",
+    runId,
+    runState: status.state,
+    repo: status.repo,
+    title: status.identity?.displayTitle || null,
+    artifactRef,
+    goalRefs,
+    filedAt,
+    artifacts: filed,
+    warnings,
+  }, null, 2) + "\n", "utf8");
+
+  const linkState = ARTIFACT_STATE_BY_RUN_STATE[status.state] || "active";
+  const label = `${runId} run outputs (${filed.length} file${filed.length === 1 ? "" : "s"})`;
+  const links = [];
+  const errors = [];
+  for (const goalId of goalRefs) {
+    try {
+      const link = await linkGoalArtifact({
+        goalId,
+        artifactType: "other",
+        artifactRef,
+        relationship: "delivers",
+        state: linkState,
+        label,
+      }, { root, now });
+      links.push({ goalId, linkId: link.id, action: "created" });
+    } catch (error) {
+      const duplicateId = error instanceof GoalModelError
+        && error.code === "DUPLICATE_ARTIFACT_LINK"
+        ? error.details?.linkId
+        : null;
+      if (!duplicateId) {
+        errors.push({ goalId, message: String(error?.message || error) });
+        continue;
+      }
+      try {
+        const link = await updateArtifactLink(duplicateId, { state: linkState, label }, { root, now });
+        links.push({ goalId, linkId: link.id, action: "updated" });
+      } catch (updateError) {
+        errors.push({ goalId, message: String(updateError?.message || updateError) });
+      }
+    }
+  }
+
+  const closeout = {
+    schema: "agent-manager.run-closeout.v1",
+    state: errors.length ? "partial" : "filed",
+    filedAt,
+    bundleRoot,
+    manifest: manifestPath,
+    artifactRef,
+    artifactCount: filed.length,
+    goalRefs,
+    links,
+    warnings,
+    errors,
+  };
+  status.closeout = closeout;
+  if (write) {
+    status = writeStatus(runId, status);
+    writeReport(runId, status);
+  }
+  return { runId, ...closeout, artifacts: filed };
+}
+
+/**
+ * Terminate an accepted run that will not be shipped: file its outputs, then
+ * record the `filed` terminal state. Never use `cancel` for this — filing is
+ * a successful outcome, not abandonment.
+ */
+export async function closeoutRun(runId, {
+  operator,
+  reason = null,
+  fileArtifacts = true,
+  root = BRAIN_ROOT,
+  now = new Date(),
+} = {}) {
+  let status = readStatus(runId);
+  if (!status) throw new Error(`no status for ${runId}`);
+  recordFiled(status, { operator, reason, at: now.toISOString() });
+  status = writeStatus(runId, status);
+  writeReport(runId, status);
+
+  let closeout = null;
+  if (fileArtifacts) {
+    try {
+      closeout = await fileRunArtifacts(runId, { root, now });
+    } catch (error) {
+      closeout = {
+        schema: "agent-manager.run-closeout.v1",
+        state: "failed",
+        errors: [{ goalId: null, message: String(error?.message || error) }],
+      };
+      status.closeout = closeout;
+      status = writeStatus(runId, status);
+      writeReport(runId, status);
+    }
+  }
+
+  return {
+    schema: "agent-manager.run-filed.v1",
+    runId,
+    state: status.state,
+    filed: status.delivery?.filed || null,
+    closeout,
+    goalHints: staleGoalHints(status),
+  };
+}
+
 function reviewTransition(decision, pass, status) {
   if (!decision) {
     return {
@@ -211,7 +452,7 @@ function reviewTransition(decision, pass, status) {
     }
     return {
       mode: "AUTO_CONTINUE",
-      nextAction: "Present the matching Ship Gate in this turn.",
+      nextAction: "Present the matching Ship Gate in this turn. If the accepted work will not be shipped, close it with `agent-manager closeout` (terminal `filed`), never `cancel`.",
       input: "`none`",
     };
   }

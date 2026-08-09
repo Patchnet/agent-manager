@@ -3,9 +3,11 @@ import { join } from "node:path";
 import { runDir } from "./paths.mjs";
 import { formatRuntime } from "./runtime.mjs";
 import { deriveOperatorCadence } from "./cadence.mjs";
+import { isOverallTerminalState, staleGoalHints } from "./delivery.mjs";
 
 export function writeReport(runId, status) {
   const cadence = deriveOperatorCadence(status);
+  const goalHints = staleGoalHints(status);
   const lines = [
     `# agent-manager run report`,
     "",
@@ -50,6 +52,11 @@ export function writeReport(runId, status) {
     `- **artifact links:** ${status.goals?.artifactLinks?.length ?? 0}`,
     `- **context SHA-256:** ${status.goals?.contextDigest || "-"}`,
     `- **context snapshot:** ${status.goals?.contextSnapshot || "-"}`,
+    `- **goals awaiting advancement:** ${
+      goalHints.length
+        ? goalHints.map((hint) => `${hint.id} (${hint.lifecycle})`).join(", ")
+        : "none"
+    }`,
     "",
     "## Cross-run awareness",
     "",
@@ -117,6 +124,13 @@ export function writeReport(runId, status) {
     lines.push(`- review: ${status.delivery.review?.state || "-"}`);
     lines.push(`- verdict: ${status.delivery.review?.verdict || "-"}`);
     lines.push(`- review pass: ${status.delivery.review?.latestPass || 0}`);
+    if (status.delivery.filed) {
+      lines.push(`- filed: ${status.delivery.filed.filedAt || "-"} by ${status.delivery.filed.operator || "-"}`);
+      lines.push(`- filing reason: ${status.delivery.filed.reason || "-"}`);
+      if (status.delivery.filed.unshippedTargets?.length) {
+        lines.push(`- accepted but unshipped targets: ${status.delivery.filed.unshippedTargets.join(", ")}`);
+      }
+    }
     for (const target of status.delivery.targets || []) {
       lines.push(`- target ${target.order}. ${target.id}: ${target.state} · lane ${target.laneId} · branch ${target.branch || "-"} · PR ${target.prUrl || target.pr || "-"} · merge ${target.mergeSha || "-"}`);
     }
@@ -141,8 +155,15 @@ export function writeReport(runId, status) {
   } else if (status.state === "ship_gate_pending") {
     lines.push("- **Ship Gate pending:** Delivery Review is accepted; obtain explicit shipping approval.");
     lines.push("- For a train, ship each target in order with `--target <id>`.");
+    lines.push(`- Accepting without shipping: \`agent-manager closeout ${runId} --operator <id>\` files the outputs and ends the run as \`filed\`. Do not use \`cancel\` for accepted work.`);
   } else if (status.state === "release_pending") {
     lines.push("- **Release pending:** all delivery targets merged; verify ancestry and publish the approved release.");
+  } else if (status.state === "filed") {
+    lines.push("- **Filed:** the accepted work was closed without shipping; this is a delivered outcome, not an abandoned run.");
+    lines.push(status.closeout?.bundleRoot
+      ? `- Artifact bundle: ${status.closeout.bundleRoot}`
+      : `- Artifact bundle: not filed — run \`agent-manager file-artifacts ${runId}\``);
+    lines.push("- Nothing was committed, pushed, merged, or tagged by this run.");
   } else if (["reviewed", "released", "merged"].includes(status.state)) {
     lines.push(`- **Delivery complete:** ${status.delivery?.release?.tag || status.ship?.prUrl || status.ship?.branch || status.state}`);
     lines.push("- Review the Ship outcome board and clean retained run artifacts when appropriate.");
@@ -168,7 +189,39 @@ export function writeReport(runId, status) {
     lines.push("- Answer any needs-input escalations in Master Dev chat.");
     lines.push("- Present Ship Gate before commit/push/PR/merge/tag.");
   }
+  if (isOverallTerminalState(status.state) && goalHints.length) {
+    lines.push("- **Goal advancement (hint only):** this run ended while the following declared goals were still open.");
+    for (const hint of goalHints) {
+      lines.push(`  - \`${hint.id}\` — ${hint.lifecycle}${hint.title ? ` · ${hint.title}` : ""}`);
+    }
+    lines.push("- Agent Manager never advances a goal. Master decides and runs `agent-manager goal update <id> --lifecycle <value>`.");
+  }
   lines.push("");
+
+  if (status.closeout) {
+    lines.push("## Closeout");
+    lines.push("");
+    lines.push(`- state: ${status.closeout.state}`);
+    lines.push(`- filed: ${status.closeout.filedAt || "-"}`);
+    lines.push(`- artifact reference: ${status.closeout.artifactRef || "-"}`);
+    lines.push(`- artifacts filed: ${status.closeout.artifactCount ?? 0}`);
+    lines.push(`- bundle: ${status.closeout.bundleRoot || "-"}`);
+    lines.push(`- manifest: ${status.closeout.manifest || "-"}`);
+    lines.push(
+      `- goal links: ${
+        status.closeout.links?.length
+          ? status.closeout.links.map((link) => `${link.goalId} → ${link.linkId} (${link.action})`).join(", ")
+          : "none"
+      }`,
+    );
+    for (const warning of status.closeout.warnings || []) {
+      lines.push(`- **warning:** ${warning}`);
+    }
+    for (const error of status.closeout.errors || []) {
+      lines.push(`- **error:** ${error.goalId ? `${error.goalId}: ` : ""}${error.message}`);
+    }
+    lines.push("");
+  }
 
   if (status.integrate) {
     lines.push("## Integrate");

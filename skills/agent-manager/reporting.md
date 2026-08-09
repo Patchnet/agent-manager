@@ -118,7 +118,7 @@ Post once when a run starts, then again on meaningful updates
 | **repo** | `<repo>` |
 | **Manager Harness** | `<identity.manager.harness or n/a>` |
 | **Manager Model** | `<identity.manager.model or n/a>` |
-| **state** | `running \| delivery_review_pending \| correction_pending \| ship_gate_pending \| shipping \| blocked \| release_pending \| reviewed \| merged \| released \| rejected \| failed \| cancelled` |
+| **state** | `running \| delivery_review_pending \| correction_pending \| ship_gate_pending \| shipping \| blocked \| release_pending \| reviewed \| filed \| merged \| released \| rejected \| failed \| cancelled` |
 | **target_dev_flow** | `simple \| formal` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **workflow** | `<path>` |
@@ -372,7 +372,11 @@ Pass 2: operator `accept` | `accept-with-notes` | `reject` (or operator-ordered 
 
 ## Template — Final outcome
 
-Post for overall `reviewed`, `merged`, `released`, `rejected`, `failed`, or `cancelled`.
+Post for overall `reviewed`, `filed`, `merged`, `released`, `rejected`, `failed`, or `cancelled`.
+
+`goals awaiting advancement` comes from `next-action --json` (`goalHints`) or the
+report's **Goal advancement** block. It is a hint for the operator — never
+advance a goal automatically.
 
 ```markdown
 ## Agent Manager · Final outcome
@@ -380,8 +384,10 @@ Post for overall `reviewed`, `merged`, `released`, `rejected`, `failed`, or `can
 | | |
 |---|---|
 | **runId** | `<runId>` |
-| **state** | `reviewed \| merged \| released \| rejected \| failed \| cancelled` |
-| **evidence** | `<PR / merge SHA / release SHA / tag / error>` |
+| **state** | `reviewed \| filed \| merged \| released \| rejected \| failed \| cancelled` |
+| **evidence** | `<PR / merge SHA / release SHA / tag / artifact bundle / error>` |
+| **artifacts filed** | `<closeout.artifactRef + count, or n/a>` |
+| **goals awaiting advancement** | `<goal ids with lifecycle, or none>` |
 | **remaining risk** | `<none or exact item>` |
 | **source closeout** | `<updated \| pending with owner>` |
 
@@ -391,6 +397,44 @@ Post for overall `reviewed`, `merged`, `released`, `rejected`, `failed`, or `can
 |---|---|
 | **Mode** | `TERMINAL` |
 | **Next action** | Complete source-system closeout and stop watching. |
+| **Operator input required** | `none` |
+```
+
+---
+
+## Template — Filed (accepted, not shipped)
+
+Post instead of Ship Gate when the operator accepts work that will not ship —
+research, audits, investigations. Never use `cancel` for this: `filed` is a
+delivered outcome, `cancelled` means abandoned.
+
+```markdown
+## Agent Manager · Filed
+
+| | |
+|---|---|
+| **runId** | `<runId>` |
+| **state** | `filed` |
+| **filed by / when** | `<delivery.filed.operator>` · `<delivery.filed.filedAt>` |
+| **reason** | `<delivery.filed.reason>` |
+| **accepted but unshipped** | `<delivery.filed.unshippedTargets, or none>` |
+| **artifact bundle** | `<closeout.bundleRoot>` |
+| **artifact reference** | `<closeout.artifactRef>` · `<closeout.artifactCount>` files |
+| **goal links** | `<goalId → linkId, or none>` |
+| **goals awaiting advancement** | `<goal ids with lifecycle, or none>` |
+
+### Command used
+
+```bash
+agent-manager closeout <runId> --operator <id> --reason "<why>"
+```
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `TERMINAL` |
+| **Next action** | Advance any listed goals, complete source-system closeout, and stop watching. |
 | **Operator input required** | `none` |
 ```
 
@@ -408,7 +452,8 @@ Post for overall `reviewed`, `merged`, `released`, `rejected`, `failed`, or `can
 | Operator says `revise` / `relaunch` | Persist it, post **Correction kickoff**, and launch the one correction without another prompt |
 | After one correction completes | Post **Delivery Review · Pass 2** to the operator — **no further Master eval** |
 | Delivery Review accepted | Persist it and present **Ship Gate** in the same turn |
-| Overall terminal | Post **Final outcome**, close the source record, and stop watching |
+| Accepted work will not ship | Run `agent-manager closeout` and post **Filed** — never `cancel` accepted work |
+| Overall terminal | Post **Final outcome**, list any goals awaiting advancement, close the source record, and stop watching |
 | Operator says “status?” | Re-read JSON; post **Run board** (current) |
 | Operator says “review” / after outcome | Post Pass 1 if not yet posted; if Pass 2 already posted, do **not** open Pass 3 |
 

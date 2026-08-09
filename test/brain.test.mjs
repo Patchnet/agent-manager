@@ -33,7 +33,7 @@ test.after(() => rmSync(root, { recursive: true, force: true }));
 
 test("brain initializes explicitly in Git-free feed mode", async () => {
   const result = await ensureBrain({ root: brainRoot });
-  assert.equal(result.schemaVersion, 2);
+  assert.equal(result.schemaVersion, 3);
   assert.equal(result.historyMode, "feed");
   assert.equal(existsSync(join(brainRoot, ".git")), false);
   assert.equal(existsSync(join(brainRoot, "_registry", "object_types.yaml")), true);
@@ -66,10 +66,10 @@ test("schema-v1 brains migrate explicitly without changing run-intent records", 
   }, null, 2));
 
   const migrated = await ensureBrain({ root: migrationRoot });
-  assert.equal(migrated.schemaVersion, 2);
+  assert.equal(migrated.schemaVersion, 3);
   assert.equal(migrated.migratedFrom, 1);
   const marker = JSON.parse(readFileSync(join(migrationRoot, ".agent-manager-brain.json"), "utf8"));
-  assert.equal(marker.schema, "agent-manager.brain.v2");
+  assert.equal(marker.schema, "agent-manager.brain.v3");
   const migratedRegistry = YAML.parse(readFileSync(registryPath, "utf8"));
   assert.equal(migratedRegistry.types.run_intent.schema, "run_intent.v1");
   assert.equal(migratedRegistry.types.goal.schema, "goal.v1");
@@ -78,6 +78,57 @@ test("schema-v1 brains migrate explicitly without changing run-intent records", 
   assert.equal(intents.length, 1);
   assert.equal(intents[0].docId, awareness.intentId);
   assert.deepEqual(intents[0].goalRefs, ["goal-future"]);
+});
+
+test("a narrower stored state enum widens in place; an incompatible field still fails", async () => {
+  const widenRoot = join(root, "widen-brain");
+  await ensureBrain({ root: widenRoot });
+  const schemaPath = join(widenRoot, "_schema", "run_intent.v1.yaml");
+  const stored = YAML.parse(readFileSync(schemaPath, "utf8"));
+  assert.equal(stored.fields.state.values.includes("filed"), true);
+
+  stored.fields.state.values = stored.fields.state.values.filter((value) => value !== "filed");
+  writeFileSync(schemaPath, YAML.stringify(stored));
+  writeFileSync(join(widenRoot, ".agent-manager-brain.json"), JSON.stringify({
+    schema: "agent-manager.brain.v2",
+    schemaVersion: 2,
+    historyMode: "feed",
+  }, null, 2));
+
+  const widened = await ensureBrain({ root: widenRoot });
+  assert.equal(widened.schemaVersion, 3);
+  assert.equal(widened.migratedFrom, 2);
+  const upgraded = YAML.parse(readFileSync(schemaPath, "utf8"));
+  assert.equal(upgraded.fields.state.values.includes("filed"), true);
+
+  // A value the running code does not know about is a real incompatibility.
+  upgraded.fields.state.values = [...upgraded.fields.state.values, "teleported"];
+  writeFileSync(schemaPath, YAML.stringify(upgraded));
+  await assert.rejects(
+    ensureBrain({ root: widenRoot }),
+    /run_intent field is incompatible: state/,
+  );
+});
+
+test("a run filed without shipping reaches the brain as a terminal intent", async () => {
+  const filedRoot = join(root, "filed-brain");
+  await ensureBrain({ root: filedRoot });
+  const awareness = await admitRun({
+    runId: "run-20260808-120000-66666666",
+    repoRoot: repoOne,
+    lanes: [{ scope: ["docs/research/**"] }],
+    root: filedRoot,
+  });
+  await syncBrainStatus({
+    runId: awareness.runId,
+    state: "filed",
+    endedAt: "2026-08-08T12:30:00.000Z",
+    awareness: { intentId: awareness.intentId },
+  }, { root: filedRoot });
+  const [intent] = await listBrainIntents({ root: filedRoot });
+  assert.equal(intent.state, "filed");
+  assert.equal(intent.phase, "terminal");
+  assert.equal(intent.endedAt?.startsWith("2026-08-08"), true);
 });
 
 test("canonical repository identity follows the remote across local paths", () => {

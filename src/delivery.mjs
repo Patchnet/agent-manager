@@ -6,6 +6,9 @@ const REVIEW_VERDICTS = new Set([
   "reject",
 ]);
 
+/** Goal lifecycles that no longer need Master advancement after a run ends. */
+const ADVANCED_GOAL_LIFECYCLES = new Set(["delivered", "superseded", "cancelled"]);
+
 export function createDeliveryStatus(workflow, laneStates) {
   const targets = (workflow.delivery?.targets || []).map((target, index) => {
     const lane = laneStates.find((candidate) => candidate.id === target.lane);
@@ -213,6 +216,70 @@ export function assertAcceptedReview(status) {
   return review;
 }
 
+/**
+ * Accept-without-ship terminal. An accepted run whose outputs are kept as
+ * filed evidence instead of being shipped ends in `filed`, never `cancelled`:
+ * successful filing is delivery, not abandonment.
+ */
+export function recordFiled(status, {
+  operator,
+  reason = null,
+  at = new Date().toISOString(),
+} = {}) {
+  if (!operator || !String(operator).trim()) throw new Error("filing requires an operator id");
+  status.delivery ||= legacyDelivery(status);
+  const review = status.delivery.review;
+  if (review?.state !== "accepted" || !ACCEPTED_VERDICTS.has(review.verdict)) {
+    throw new Error("filing requires a persisted accepted Delivery Review");
+  }
+  if (!["ship_gate_pending", "blocked"].includes(status.state)) {
+    throw new Error(
+      `run ${status.runId} cannot be filed from state ${status.state}; filing closes an accepted run that is not being shipped`,
+    );
+  }
+  const merged = (status.delivery.targets || []).filter((target) => target.state === "merged");
+  if (merged.length) {
+    throw new Error(
+      `run ${status.runId} already merged ${merged.map((target) => target.id).join(", ")}; finish the delivery instead of filing it`,
+    );
+  }
+  status.delivery.state = "filed";
+  status.delivery.filed = {
+    state: "filed",
+    operator: String(operator).trim(),
+    reason: reason ? String(reason).trim() : null,
+    filedAt: at,
+    unshippedTargets: (status.delivery.targets || [])
+      .filter((target) => (target.changedFiles || []).length)
+      .map((target) => target.id),
+  };
+  status.state = "filed";
+  status.endedAt = at;
+  return status;
+}
+
+/**
+ * Goal references this run declared that the frozen goal snapshot still shows
+ * in a pre-delivery lifecycle. Advisory only — Agent Manager never advances a
+ * goal on the operator's behalf.
+ */
+export function staleGoalHints(status) {
+  const refs = status?.goalRefs || [];
+  if (!refs.length) return [];
+  const frozen = new Map((status?.goals?.goals || []).map((goal) => [goal.id, goal]));
+  return refs
+    .map((id) => {
+      const goal = frozen.get(id) || null;
+      return {
+        id,
+        title: goal?.title || null,
+        lifecycle: goal?.lifecycle || "unknown",
+        source: goal ? "frozen-goal-snapshot" : "declared-goal-ref",
+      };
+    })
+    .filter((hint) => !ADVANCED_GOAL_LIFECYCLES.has(hint.lifecycle));
+}
+
 export function selectDeliveryTarget(status, targetId = null, { allowMerged = false } = {}) {
   const targets = status.delivery?.targets || [];
   if (!targets.length) return null;
@@ -284,7 +351,7 @@ export function expectedMergeShas(status, currentShip = null) {
 }
 
 export function isOverallTerminalState(state) {
-  return ["reviewed", "merged", "released", "rejected", "failed", "cancelled"].includes(state);
+  return ["reviewed", "filed", "merged", "released", "rejected", "failed", "cancelled"].includes(state);
 }
 
 export function deliveryReadiness(status, { require = "released" } = {}) {

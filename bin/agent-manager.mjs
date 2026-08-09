@@ -15,7 +15,7 @@ import { assertSafeSlug, runDir } from "../src/paths.mjs";
 import { preflightWorkflow, validateRepository } from "../src/preflight.mjs";
 import { assertPlanningReady } from "../src/planning.mjs";
 import { prepareReply, resumeLane } from "../src/reply.mjs";
-import { buildDeliveryReview } from "../src/review.mjs";
+import { buildDeliveryReview, closeoutRun, fileRunArtifacts } from "../src/review.mjs";
 import { newRunId, runWorkflow } from "../src/run.mjs";
 import {
   blockQueuedShip,
@@ -111,6 +111,9 @@ function usage() {
     "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000]",
     "  agent-manager reply <runId> <laneId> --message <text> [--json]",
     "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--notes <text>]] [--json]",
+    "  agent-manager closeout <runId> --operator <id> [--reason <text>] [--no-artifacts] [--json]",
+    "    accept-without-ship terminal: files run outputs, ends the run as `filed`",
+    "  agent-manager file-artifacts <runId> [--json]",
     "  agent-manager next-action <runId> [--json]",
     "  agent-manager delivery-ready <runId> [--require merged|released] [--json]",
     "  agent-manager ship <runId> --approve all|through-pr --detach [options] [--json]",
@@ -984,6 +987,62 @@ async function main() {
     return;
   }
 
+  if (cmd === "closeout") {
+    const runId = firstPositional(args.slice(1), ["--operator", "--reason"]) || latestRunId();
+    if (!runId) throw new Error("closeout requires <runId>");
+    const operator = flagValue("--operator");
+    if (!operator) throw new Error("closeout requires --operator <id>");
+    const result = await closeoutRun(runId, {
+      operator,
+      reason: flagValue("--reason"),
+      fileArtifacts: !args.includes("--no-artifacts"),
+    });
+    const filedStatus = readStatus(runId);
+    await syncBrainStatus(filedStatus).catch((error) => {
+      filedStatus.awareness.lastError = String(error?.message || error);
+      writeStatus(runId, filedStatus);
+    });
+    console.log(args.includes("--json") ? JSON.stringify(result) : [
+      `runId: ${result.runId}`,
+      `state: ${result.state}`,
+      `operator: ${result.filed?.operator || "-"}`,
+      `reason: ${result.filed?.reason || "-"}`,
+      `closeout: ${result.closeout?.state || "skipped"}`,
+      `artifacts: ${result.closeout?.artifactCount ?? 0}`,
+      `bundle: ${result.closeout?.bundleRoot || "-"}`,
+      `goal links: ${result.closeout?.links?.length
+        ? result.closeout.links.map((link) => `${link.goalId} -> ${link.linkId}`).join(", ")
+        : "none"}`,
+      `goals awaiting advancement: ${result.goalHints.length
+        ? result.goalHints.map((hint) => `${hint.id} (${hint.lifecycle})`).join(", ")
+        : "none"}`,
+      ...(result.closeout?.errors || []).map((error) => `error: ${error.goalId ? `${error.goalId}: ` : ""}${error.message}`),
+    ].join("\n"));
+    if (result.closeout?.errors?.length) process.exitCode = 1;
+    return;
+  }
+
+  if (cmd === "file-artifacts") {
+    const runId = args[1] || latestRunId();
+    if (!runId) throw new Error("file-artifacts requires <runId>");
+    const result = await fileRunArtifacts(runId);
+    console.log(args.includes("--json") ? JSON.stringify(result) : [
+      `runId: ${result.runId}`,
+      `closeout: ${result.state}`,
+      `artifact reference: ${result.artifactRef}`,
+      `artifacts: ${result.artifactCount}`,
+      `bundle: ${result.bundleRoot}`,
+      `manifest: ${result.manifest}`,
+      `goal links: ${result.links.length
+        ? result.links.map((link) => `${link.goalId} -> ${link.linkId} (${link.action})`).join(", ")
+        : "none"}`,
+      ...result.warnings.map((warning) => `warning: ${warning}`),
+      ...result.errors.map((error) => `error: ${error.goalId ? `${error.goalId}: ` : ""}${error.message}`),
+    ].join("\n"));
+    if (result.errors.length) process.exitCode = 1;
+    return;
+  }
+
   if (cmd === "delivery-ready") {
     const runId = args[1] || latestRunId();
     if (!runId) throw new Error("delivery-ready requires <runId>");
@@ -1014,6 +1073,9 @@ async function main() {
       `next: ${result.nextAction}`,
       `operator input: ${result.operatorInputRequired.length ? result.operatorInputRequired.join(" | ") : "none"}`,
       `template: ${result.template}`,
+      `goals awaiting advancement: ${result.goalHints.length
+        ? result.goalHints.map((hint) => `${hint.id} (${hint.lifecycle})`).join(", ")
+        : "none"}`,
     ].join("\n"));
     return;
   }

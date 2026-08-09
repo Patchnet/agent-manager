@@ -1,4 +1,14 @@
-const TERMINAL_STATES = new Set(["reviewed", "merged", "released", "rejected", "failed", "cancelled"]);
+import { staleGoalHints } from "./delivery.mjs";
+
+const TERMINAL_STATES = new Set([
+  "reviewed",
+  "filed",
+  "merged",
+  "released",
+  "rejected",
+  "failed",
+  "cancelled",
+]);
 
 export const OPERATOR_TRANSITIONS = Object.freeze({
   AUTO_CONTINUE: "AUTO_CONTINUE",
@@ -13,12 +23,19 @@ export function deriveOperatorCadence(status, { wakeReason = "state_change" } = 
   }
 
   if (TERMINAL_STATES.has(status.state)) {
+    const goalHints = staleGoalHints(status);
+    const goalNote = goalHints.length
+      ? ` Goals still needing Master advancement (hint only, never automatic): ${
+        goalHints.map((hint) => `${hint.id} (${hint.lifecycle})`).join(", ")
+      }.`
+      : "";
     return cadence(
       `delivery_${status.state}`,
       OPERATOR_TRANSITIONS.TERMINAL,
-      "Post the final evidence-backed outcome, complete source-system closeout, and stop watching.",
+      `Post the final evidence-backed outcome, complete source-system closeout, and stop watching.${goalNote}`,
       [],
       "Final outcome",
+      goalHints,
     );
   }
 
@@ -90,14 +107,14 @@ export function deriveOperatorCadence(status, { wakeReason = "state_change" } = 
           "ship_gate_decision",
           OPERATOR_TRANSITIONS.WAIT_OPERATOR,
           "Wait for the exact Ship Gate approval already presented.",
-          ["through-pr", "all", "reject"],
+          ["through-pr", "all", "file", "reject"],
           "Ship Gate",
         );
       }
       return cadence(
         "ship_gate_ready",
         OPERATOR_TRANSITIONS.AUTO_CONTINUE,
-        "Persist the accepted review if needed, present the matching Ship Gate, and then wait for exact shipping authority.",
+        "Persist the accepted review if needed, present the matching Ship Gate, and then wait for exact shipping authority. Accepted work that will not be shipped is closed with `agent-manager closeout`, never `cancel`.",
         [],
         "Ship Gate",
       );
@@ -139,7 +156,7 @@ export function deriveOperatorCadence(status, { wakeReason = "state_change" } = 
   }
 }
 
-function cadence(stage, transition, nextAction, operatorInputRequired, template) {
+function cadence(stage, transition, nextAction, operatorInputRequired, template, goalHints = []) {
   return {
     schema: "agent-manager.operator-cadence.v1",
     stage,
@@ -147,5 +164,6 @@ function cadence(stage, transition, nextAction, operatorInputRequired, template)
     nextAction,
     operatorInputRequired,
     template,
+    goalHints,
   };
 }

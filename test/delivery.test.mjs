@@ -1,24 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = mkdtempSync(join(tmpdir(), "agent-manager-delivery-"));
 const repo = join(root, "repo");
+const runsRoot = join(root, "runs");
+const brainRoot = join(root, "brain");
 mkdirSync(repo, { recursive: true });
+mkdirSync(runsRoot, { recursive: true });
 writeFileSync(join(repo, "README.md"), "fixture\n");
 process.env.AGENT_MANAGER_DEV_ROOT = root;
+process.env.AGENT_MANAGER_RUNS_ROOT = runsRoot;
+process.env.AGENT_MANAGER_BRAIN_ROOT = brainRoot;
 
 const {
   createDeliveryStatus,
   deliveryReadiness,
   markWorkersComplete,
+  recordFiled,
   recordMergedTarget,
   recordRelease,
   recordReviewDecision,
+  staleGoalHints,
 } = await import("../src/delivery.mjs?delivery-test");
 const { loadWorkflow } = await import("../src/workflow.mjs?delivery-test");
+const {
+  closeoutRun,
+  fileRunArtifacts,
+  runArtifactBundleRoot,
+} = await import("../src/review.mjs?delivery-test");
+const { readStatus, writeStatus } = await import("../src/status.mjs?delivery-test");
+const { createGoal, listGoalArtifactLinks } = await import("../src/goals.mjs?delivery-test");
+const { deriveOperatorCadence } = await import("../src/cadence.mjs?delivery-test");
 
 test.after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -172,4 +187,184 @@ test("Delivery Review permits one correction decision and one final pass", () =>
   });
   assert.equal(status.state, "reviewed");
   assert.equal(status.delivery.state, "reviewed");
+});
+
+function acceptedShipGateStatus(runId) {
+  const laneStates = [{
+    id: "research",
+    branch: `am/${runId}/research`,
+    worktree: join(root, `${runId}-wt`),
+    changedFiles: ["docs/research.md"],
+  }];
+  const status = {
+    runId,
+    state: "running",
+    repo,
+    lanes: laneStates,
+    delivery: createDeliveryStatus({
+      base_ref: "origin/main",
+      remote: "origin",
+      delivery: {
+        mode: "single",
+        targets: [{ id: "research-pr", lane: "research", branch: "feature/research", base: "main" }],
+      },
+    }, laneStates),
+    endedAt: null,
+  };
+  markWorkersComplete(status, "2026-08-08T00:00:00.000Z");
+  recordReviewDecision(status, {
+    pass: 1,
+    verdict: "accept",
+    reviewer: "master-dev",
+    at: "2026-08-08T00:01:00.000Z",
+  });
+  assert.equal(status.state, "ship_gate_pending");
+  return status;
+}
+
+test("accepted work that will not be shipped ends in filed, not cancelled", () => {
+  const status = acceptedShipGateStatus("run-filed-terminal");
+
+  recordFiled(status, {
+    operator: "master-dev",
+    reason: "research accepted; nothing to ship",
+    at: "2026-08-08T00:02:00.000Z",
+  });
+  assert.equal(status.state, "filed");
+  assert.equal(status.delivery.state, "filed");
+  assert.equal(status.endedAt, "2026-08-08T00:02:00.000Z");
+  assert.deepEqual(status.delivery.filed.unshippedTargets, ["research-pr"]);
+  assert.equal(deriveOperatorCadence(status).transition, "TERMINAL");
+  // Filing is a terminal outcome, not a merged or released delivery.
+  assert.equal(deliveryReadiness(status, { require: "merged" }).ready, false);
+  assert.equal(deliveryReadiness(status).ready, false);
+});
+
+test("filing refuses an unaccepted run, a wrong state, and merged work", () => {
+  const unreviewed = acceptedShipGateStatus("run-filed-guards");
+  unreviewed.delivery.review.state = "awaiting_operator";
+  assert.throws(
+    () => recordFiled(unreviewed, { operator: "master-dev" }),
+    /requires a persisted accepted Delivery Review/,
+  );
+
+  const accepted = acceptedShipGateStatus("run-filed-guards-2");
+  assert.throws(() => recordFiled(accepted, { operator: "" }), /requires an operator id/);
+
+  // A half-shipped train must be finished, not filed: the first merge is real.
+  const laneStates = [
+    { id: "api", branch: "am/train/api", worktree: "api-wt", changedFiles: ["src/api/a.ts"] },
+    { id: "ui", branch: "am/train/ui", worktree: "ui-wt", changedFiles: ["src/ui/a.tsx"] },
+  ];
+  const train = {
+    runId: "run-filed-guards-train",
+    state: "running",
+    repo,
+    lanes: laneStates,
+    delivery: createDeliveryStatus({
+      base_ref: "origin/main",
+      remote: "origin",
+      delivery: {
+        mode: "train",
+        targets: [
+          { id: "api-pr", lane: "api", branch: "feature/api", base: "main" },
+          { id: "ui-pr", lane: "ui", branch: "feature/ui", base: "main" },
+        ],
+      },
+    }, laneStates),
+    endedAt: null,
+  };
+  markWorkersComplete(train, "2026-08-08T00:00:00.000Z");
+  recordReviewDecision(train, {
+    pass: 1,
+    verdict: "accept",
+    reviewer: "master-dev",
+    at: "2026-08-08T00:01:00.000Z",
+  });
+  recordMergedTarget(train, {
+    targetId: "api-pr",
+    prUrl: "https://example.invalid/pull/1",
+    mergeSha: "d".repeat(40),
+    at: "2026-08-08T00:03:00.000Z",
+  });
+  assert.equal(train.state, "ship_gate_pending");
+  assert.throws(
+    () => recordFiled(train, { operator: "master-dev" }),
+    /already merged api-pr/,
+  );
+});
+
+test("stale goal references are hinted at terminal delivery and never advanced", () => {
+  const status = acceptedShipGateStatus("run-filed-hints");
+  status.goalRefs = ["goal-open", "goal-done", "goal-unknown"];
+  status.goals = {
+    goals: [
+      { id: "goal-open", title: "Still open", lifecycle: "active" },
+      { id: "goal-done", title: "Already delivered", lifecycle: "delivered" },
+    ],
+  };
+  recordFiled(status, { operator: "master-dev", at: "2026-08-08T00:02:00.000Z" });
+
+  assert.deepEqual(staleGoalHints(status).map((hint) => [hint.id, hint.lifecycle]), [
+    ["goal-open", "active"],
+    ["goal-unknown", "unknown"],
+  ]);
+  const cadence = deriveOperatorCadence(status);
+  assert.deepEqual(cadence.goalHints.map((hint) => hint.id), ["goal-open", "goal-unknown"]);
+  assert.match(cadence.nextAction, /goal-open \(active\)/);
+  // Lifecycles are reported, never rewritten.
+  assert.equal(status.goals.goals[0].lifecycle, "active");
+});
+
+test("closeout files run outputs into the brain and links them to every declared goal", async () => {
+  const runId = "run-filed-closeout";
+  const status = acceptedShipGateStatus(runId);
+  await createGoal({ id: "goal-closeout", title: "Closeout goal", lifecycle: "active" });
+  status.goalRefs = ["goal-closeout"];
+  status.goals = { goals: [{ id: "goal-closeout", title: "Closeout goal", lifecycle: "active" }] };
+  status.lanes[0].expectedOutputs = ["docs/research.md", "docs/missing.md"];
+  mkdirSync(join(status.lanes[0].worktree, "docs"), { recursive: true });
+  writeFileSync(join(status.lanes[0].worktree, "docs", "research.md"), "# findings\n");
+  writeStatus(runId, status);
+
+  const filed = await closeoutRun(runId, {
+    operator: "master-dev",
+    reason: "accepted research; nothing to ship",
+  });
+  assert.equal(filed.state, "filed");
+  assert.equal(filed.closeout.state, "filed");
+  assert.deepEqual(filed.goalHints.map((hint) => hint.id), ["goal-closeout"]);
+
+  const bundleRoot = runArtifactBundleRoot(runId);
+  assert.equal(filed.closeout.bundleRoot, bundleRoot);
+  assert.equal(existsSync(join(bundleRoot, "report.md")), true);
+  assert.equal(existsSync(join(bundleRoot, "lanes", "research", "docs", "research.md")), true);
+  const manifest = JSON.parse(readFileSync(join(bundleRoot, "manifest.json"), "utf8"));
+  assert.equal(manifest.runState, "filed");
+  assert.equal(manifest.artifactRef, `run-artifact:${runId}`);
+  assert.equal(
+    manifest.artifacts.some((artifact) => artifact.path === "lanes/research/docs/research.md"),
+    true,
+  );
+  assert.equal(manifest.artifacts.every((artifact) => /^[0-9a-f]{64}$/.test(artifact.sha256)), true);
+  assert.equal(manifest.warnings.some((warning) => warning.includes("docs/missing.md")), true);
+
+  const links = await listGoalArtifactLinks({ goalId: "goal-closeout" });
+  assert.equal(links.length, 1);
+  assert.equal(links[0].artifactRef, `run-artifact:${runId}`);
+  assert.equal(links[0].state, "delivered");
+  assert.deepEqual(filed.closeout.links.map((link) => link.action), ["created"]);
+
+  // Re-filing refreshes the existing link instead of duplicating it.
+  const refiled = await fileRunArtifacts(runId);
+  assert.deepEqual(refiled.links.map((link) => link.action), ["updated"]);
+  assert.equal((await listGoalArtifactLinks({ goalId: "goal-closeout" })).length, 1);
+
+  const persisted = readStatus(runId);
+  assert.equal(persisted.state, "filed");
+  assert.equal(persisted.closeout.artifactRef, `run-artifact:${runId}`);
+  assert.match(
+    readFileSync(join(runsRoot, runId, "report.md"), "utf8"),
+    /goals awaiting advancement:.*goal-closeout \(active\)/,
+  );
 });
