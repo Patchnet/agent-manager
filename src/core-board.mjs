@@ -1,32 +1,59 @@
 import { listBrainIntents } from "./brain.mjs";
-import { listGoalArtifactLinks, listGoals } from "./goals.mjs";
+import { computeGoalProgress } from "./goal-progress.mjs";
+import { inspectGoalGraph, listGoalArtifactLinks, listGoals } from "./goals.mjs";
+import { humanizeAge, progressBar, shortRunId } from "./goals-board.mjs";
 import { BRAIN_ROOT, BRAIN_ROOT_SOURCE } from "./paths.mjs";
 import { currentVersionInfo } from "./version.mjs";
 
-const COLORS = {
-  reset: "\u001b[0m",
-  bold: "\u001b[1m",
-  dim: "\u001b[2m",
-  cyan: "\u001b[36m",
-  brightCyan: "\u001b[96m",
-  green: "\u001b[92m",
-  yellow: "\u001b[93m",
-  magenta: "\u001b[95m",
-  blue: "\u001b[94m",
-  red: "\u001b[91m",
-  gray: "\u001b[90m",
-  white: "\u001b[97m",
+export const CORE_BOARD_SCHEMA = "agent-manager.core-board.v2";
+export const CORE_FEED_PAGE_SIZE = 10;
+
+const FEED_CAP = 200;
+
+const CSI = String.fromCodePoint(27) + "[";
+const SGR = {
+  reset: 0,
+  bold: 1,
+  dim: 2,
+  gray: 90,
+  cyan: 36,
+  yellow: 93,
+  white: 97,
+  brightCyan: 96,
 };
+
+// Same restraint as the Goals tab: the accent family means "live", settled
+// rows fall back to gray.
+const STATE_COLOR = {
+  blocked: "yellow",
+  pending_delivery: "yellow",
+  active: "brightCyan",
+  planned: "gray",
+  delivered: "gray",
+  cancelled: "gray",
+  superseded: "gray",
+};
+
+const LIVE_RUN_STATES = new Set(["admitted", "running", "shipping"]);
+const ATTENTION_RUN_STATES = new Set(["needs_input", "blocked", "failed", "rejected", "pending_delivery"]);
 
 function style(enabled, ...codes) {
   const text = codes.pop();
-  return enabled ? codes.map((code) => COLORS[code] || code).join("") + text + COLORS.reset : text;
+  if (!enabled) return text;
+  const prefix = codes.map((code) => `${CSI}${SGR[code] ?? 0}m`).join("");
+  return `${prefix}${text}${CSI}${SGR.reset}m`;
 }
 
-function pad(value, width) {
+function pad(value, width, align = "left") {
   let text = String(value ?? "-");
   if (text.length > width) text = width <= 1 ? text.slice(0, width) : `${text.slice(0, width - 1)}…`;
-  return text + " ".repeat(Math.max(0, width - text.length));
+  const missing = " ".repeat(Math.max(0, width - text.length));
+  return align === "right" ? missing + text : text + missing;
+}
+
+function parseTime(value) {
+  const parsed = Date.parse(value || "");
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function countBy(items, keyFn) {
@@ -38,215 +65,259 @@ function countBy(items, keyFn) {
   return counts;
 }
 
-function formatCountMap(counts, { limit = 6 } = {}) {
+function formatCountMap(counts, { limit = 5 } = {}) {
   return Object.entries(counts)
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
     .slice(0, limit)
-    .map(([key, count]) => `${key}:${count}`)
+    .map(([key, count]) => `${key} ${count}`)
     .join(" · ") || "none";
 }
 
-function shortId(value, width = 18) {
-  const text = String(value || "-");
-  if (text.length <= width) return text;
-  return `${text.slice(0, Math.max(1, width - 1))}…`;
+function goalLabel(goalId) {
+  return String(goalId || "").replace(/^goal-/, "") || "-";
 }
 
-function relationshipArrow(relationship) {
-  if (relationship === "blocks") return "-X->";
-  if (relationship === "delivers") return "==>";
-  if (relationship === "supports") return "-~>";
-  if (relationship === "tracks") return "-*>";
-  return "--->";
+function stateLabel(state) {
+  return String(state || "unknown").replace(/_/g, " ").toUpperCase();
+}
+
+function runStateColor(state) {
+  if (ATTENTION_RUN_STATES.has(state)) return "yellow";
+  if (LIVE_RUN_STATES.has(state)) return "brightCyan";
+  return "gray";
 }
 
 export async function buildCoreSnapshot({
   root = BRAIN_ROOT,
   rootSource = BRAIN_ROOT_SOURCE,
   limit = 12,
+  now = Date.now(),
 } = {}) {
   const [goals, links, intents] = await Promise.all([
     listGoals({ root }),
     listGoalArtifactLinks({ root }),
     listBrainIntents({ root }),
   ]);
+  return composeCoreSnapshot({ goals, artifactLinks: links, runIntents: intents, root, rootSource, limit, now });
+}
 
+/** Pure view model so the Core tab can be exercised without a brain on disk. */
+export function composeCoreSnapshot({
+  goals = [],
+  artifactLinks = [],
+  runIntents = [],
+  root = BRAIN_ROOT,
+  rootSource = BRAIN_ROOT_SOURCE,
+  limit = 12,
+  now = Date.now(),
+  viewer = null,
+} = {}) {
   const roots = goals.filter((goal) => !goal.parentId);
-  const goalsById = new Map(goals.map((goal) => [goal.id, goal]));
   const intentsByGoal = new Map();
-  for (const intent of intents) {
+  for (const intent of runIntents) {
     for (const goalId of intent.goalRefs || []) {
-      if (!intentsByGoal.has(goalId)) intentsByGoal.set(goalId, []);
-      intentsByGoal.get(goalId).push(intent);
+      const attached = intentsByGoal.get(goalId) || [];
+      attached.push(intent);
+      intentsByGoal.set(goalId, attached);
     }
   }
 
-  const endpoints = [];
-  for (const link of links) {
-    endpoints.push({
-      kind: "artifact",
-      left: link.goalId,
-      leftTitle: goalsById.get(link.goalId)?.title || link.goalId,
-      edge: relationshipArrow(link.relationship),
-      relationship: link.relationship,
-      right: `${link.artifactType}:${link.artifactRef}`,
-      rightState: link.state,
-      sortKey: `${link.goalId}\u0000${link.artifactType}\u0000${link.artifactRef}`,
-    });
-  }
-  for (const intent of intents) {
-    const refs = intent.goalRefs?.length ? intent.goalRefs : [null];
-    for (const goalId of refs) {
-      endpoints.push({
-        kind: "run",
-        left: goalId || "(unlinked)",
-        leftTitle: goalId ? (goalsById.get(goalId)?.title || goalId) : "no goal_refs",
-        edge: goalId ? "-run->" : "-run·",
-        relationship: "run",
-        right: intent.runId,
-        rightState: `${intent.phase}/${intent.state}`,
-        sortKey: `${goalId || "~"}\u0000run\u0000${intent.startedAt || ""}\u0000${intent.runId}`,
-      });
+  const degraded = !inspectGoalGraph({ goals, artifactLinks }).valid;
+  const progressFor = (goal) => {
+    if (!degraded) {
+      try {
+        const computed = computeGoalProgress(goal.id, { goals, artifactLinks, runIntents });
+        return {
+          numerator: computed.completedLeafRatio.numerator,
+          denominator: computed.completedLeafRatio.denominator,
+          effectiveState: computed.effectiveState,
+        };
+      } catch {
+        // fall through to the stored lifecycle
+      }
     }
-  }
-  endpoints.sort((left, right) => String(left.sortKey).localeCompare(String(right.sortKey)));
+    return { numerator: 0, denominator: 0, effectiveState: goal.lifecycle };
+  };
 
-  const orphanIntents = intents.filter((intent) => !(intent.goalRefs || []).length);
+  const orphanIntents = runIntents.filter((intent) => !(intent.goalRefs || []).length);
   const linkedGoalIds = new Set([
-    ...links.map((link) => link.goalId),
-    ...intents.flatMap((intent) => intent.goalRefs || []),
+    ...artifactLinks.map((link) => link.goalId),
+    ...runIntents.flatMap((intent) => intent.goalRefs || []),
   ]);
   const isolatedGoals = goals.filter((goal) => !linkedGoalIds.has(goal.id));
 
+  const feed = [...runIntents]
+    .sort((left, right) => parseTime(right.startedAt) - parseTime(left.startedAt)
+      || String(right.runId).localeCompare(String(left.runId)))
+    .slice(0, FEED_CAP)
+    .map((intent) => ({
+      runId: intent.runId,
+      shortId: shortRunId(intent.runId),
+      title: intent.title || null,
+      repoLabel: intent.repoLabel || null,
+      phase: intent.phase || "unknown",
+      state: intent.state || "unknown",
+      goalRefs: [...(intent.goalRefs || [])],
+      startedAt: intent.startedAt || null,
+      ageMs: parseTime(intent.startedAt) ? Math.max(0, now - parseTime(intent.startedAt)) : null,
+    }));
+
   return {
-    schema: "agent-manager.core-board.v1",
-    viewer: currentVersionInfo(),
+    schema: CORE_BOARD_SCHEMA,
+    viewer: viewer || currentVersionInfo(),
     knowledge: { root, source: rootSource },
-    at: new Date().toISOString(),
+    at: new Date(now).toISOString(),
+    degraded,
     objectTypes: [
       { id: "goal", label: "goals", count: goals.length },
-      { id: "artifact_link", label: "artifact links", count: links.length },
-      { id: "run_intent", label: "run intents", count: intents.length },
+      { id: "artifact_link", label: "artifact links", count: artifactLinks.length },
+      { id: "run_intent", label: "run intents", count: runIntents.length },
     ],
     counts: {
       goals: goals.length,
       roots: roots.length,
-      links: links.length,
-      intents: intents.length,
+      links: artifactLinks.length,
+      intents: runIntents.length,
       orphanIntents: orphanIntents.length,
       isolatedGoals: isolatedGoals.length,
-      endpoints: endpoints.length,
       goalsByLifecycle: countBy(goals, (goal) => goal.lifecycle),
-      linksByType: countBy(links, (link) => link.artifactType),
-      linksByRelationship: countBy(links, (link) => link.relationship),
-      intentsByPhase: countBy(intents, (intent) => intent.phase),
-      intentsByState: countBy(intents, (intent) => intent.state),
+      linksByType: countBy(artifactLinks, (link) => link.artifactType),
+      intentsByPhase: countBy(runIntents, (intent) => intent.phase),
+      intentsByState: countBy(runIntents, (intent) => intent.state),
     },
-    roots: roots.slice(0, limit).map((goal) => ({
-      id: goal.id,
-      title: goal.title,
-      lifecycle: goal.lifecycle,
-      children: goals.filter((child) => child.parentId === goal.id).length,
-      links: links.filter((link) => link.goalId === goal.id).length,
-      runs: (intentsByGoal.get(goal.id) || []).length,
-    })),
-    endpoints: endpoints.slice(0, Math.max(limit, 16)),
-    recentIntents: intents.slice(0, limit).map((intent) => ({
-      runId: intent.runId,
-      title: intent.title,
-      repoLabel: intent.repoLabel,
-      phase: intent.phase,
-      state: intent.state,
-      goalRefs: [...(intent.goalRefs || [])],
-      startedAt: intent.startedAt,
-    })),
+    roots: roots
+      .map((goal) => {
+        const progress = progressFor(goal);
+        return {
+          id: goal.id,
+          title: goal.title,
+          lifecycle: goal.lifecycle,
+          effectiveState: progress.effectiveState,
+          completed: progress.numerator,
+          leaves: progress.denominator,
+          children: goals.filter((child) => child.parentId === goal.id).length,
+          links: artifactLinks.filter((link) => link.goalId === goal.id).length,
+          runs: (intentsByGoal.get(goal.id) || []).length,
+        };
+      })
+      .slice(0, limit),
+    feed,
+    feedTotal: runIntents.length,
   };
 }
 
 export function formatCoreBoard(snapshot, {
   color = false,
   width = 120,
+  page = 1,
+  pageSize = CORE_FEED_PAGE_SIZE,
 } = {}) {
   const terminalWidth = Math.max(72, width || 120);
   const contentWidth = terminalWidth - 2;
   const lines = [];
   const version = snapshot.viewer?.runtimeVersion || "unknown";
-  const types = snapshot.objectTypes.map((type) => `${type.count} ${type.label}`).join(" · ");
+  const counts = snapshot.counts;
 
-  lines.push(`${style(color, "bold", "◆ AGENT MANAGER")} ${style(color, "gray", `v${version} · CORE`)}  ${style(color, "brightCyan", types)}`);
+  lines.push([
+    `${style(color, "brightCyan", "▦")} ${style(color, "bold", "AGENT MANAGER")}`,
+    style(color, "gray", `v${version} · CORE`),
+    ` ${style(color, "brightCyan", `${counts.goals} goals`)}`,
+    style(color, "gray", `· ${counts.links} links · ${counts.intents} run intents`),
+  ].join(" "));
   if (snapshot.knowledge?.root) {
     lines.push(style(color, "gray", `Knowledge root: ${snapshot.knowledge.root} [${snapshot.knowledge.source || "unknown"}]`));
   }
+  if (snapshot.degraded) {
+    lines.push(style(color, "yellow", "Goal graph failed its integrity check — showing stored lifecycles only."));
+  }
   lines.push(style(color, "gray", "─".repeat(contentWidth)));
 
-  lines.push(style(color, "bold", "STORE"));
-  lines.push(style(color, "gray", `  goals ${snapshot.counts.goals} (${snapshot.counts.roots} roots) · links ${snapshot.counts.links} · run intents ${snapshot.counts.intents}`));
-  lines.push(style(color, "gray", `  lifecycle  ${formatCountMap(snapshot.counts.goalsByLifecycle)}`));
-  lines.push(style(color, "gray", `  link types ${formatCountMap(snapshot.counts.linksByType)}`));
-  lines.push(style(color, "gray", `  intent ph. ${formatCountMap(snapshot.counts.intentsByPhase)}`));
-  if (snapshot.counts.orphanIntents || snapshot.counts.isolatedGoals) {
+  // ── Region 1: the goal map ────────────────────────────────────────────────
+  lines.push(`${style(color, "bold", "GOAL MAP")} ${style(color, "gray", `${counts.roots} roots · lifecycle ${formatCountMap(counts.goalsByLifecycle)}`)}`);
+  if (!snapshot.roots.length) {
+    lines.push(style(color, "gray", "  (none — use the Goals tab or ask the harness to create a wave goal)"));
+  } else {
+    const stateWidth = 16;
+    const barWidth = 8;
+    const ratioWidth = 7;
+    const metaWidth = 20;
+    const titleWidth = Math.max(24, contentWidth - (2 + stateWidth + barWidth + 1 + ratioWidth + metaWidth + 5));
+    lines.push(style(color, "gray", [
+      "  ",
+      pad("GOAL", titleWidth),
+      pad("STATE", stateWidth),
+      pad("PROGRESS", barWidth + 1 + ratioWidth),
+      "LINKAGE",
+    ].join(" ")));
+    for (const root of snapshot.roots) {
+      const line = [
+        "  ",
+        pad(root.title, titleWidth),
+        pad(stateLabel(root.effectiveState), stateWidth),
+        `${progressBar(root.completed, root.leaves, barWidth)} ${pad(root.leaves ? `${root.completed}/${root.leaves}` : "—", ratioWidth)}`,
+        pad(`ch ${root.children} · ln ${root.links} · run ${root.runs}`, metaWidth),
+      ].join(" ").trimEnd();
+      lines.push(style(color, STATE_COLOR[root.effectiveState] || "gray", line));
+    }
+  }
+  if (counts.orphanIntents || counts.isolatedGoals) {
     lines.push(style(
       color,
       "yellow",
-      `  gaps  ${snapshot.counts.orphanIntents} runs without goal_refs · ${snapshot.counts.isolatedGoals} goals with no links/runs`,
+      `  gaps  ${counts.orphanIntents} runs without goal_refs · ${counts.isolatedGoals} goals with no links or runs`,
     ));
   }
 
+  // ── Region 2: the run-intent feed ─────────────────────────────────────────
   lines.push("");
-  lines.push(style(color, "bold", "GRAPH ENDPOINTS"));
-  if (!snapshot.endpoints.length) {
-    lines.push(style(color, "yellow", "  No linked endpoints yet."));
-    lines.push(style(color, "gray", "  Create goals, attach goal_refs on runs, or link artifacts to populate this graph."));
-  } else {
-    lines.push(style(color, "dim", `  ${pad("FROM", 22)}  EDGE   ${pad("TO", 34)}  STATE`));
-    for (const endpoint of snapshot.endpoints) {
-      const leftColor = endpoint.kind === "run" && endpoint.left === "(unlinked)" ? "yellow" : "cyan";
-      const edgeColor = endpoint.relationship === "blocks" ? "red"
-        : endpoint.relationship === "delivers" ? "green"
-          : endpoint.kind === "run" ? "magenta"
-            : "blue";
-      lines.push([
-        " ",
-        style(color, leftColor, pad(shortId(endpoint.left, 22), 22)),
-        style(color, edgeColor, pad(endpoint.edge, 6)),
-        style(color, "white", pad(shortId(endpoint.right, 34), 34)),
-        style(color, "gray", shortId(endpoint.rightState, 18)),
-      ].join(" "));
-    }
-  }
+  lines.push(style(color, "gray", "─".repeat(contentWidth)));
+  const size = Math.max(1, pageSize);
+  const pages = Math.max(1, Math.ceil(snapshot.feed.length / size));
+  const current = Math.min(Math.max(1, Math.trunc(page) || 1), pages);
+  const start = (current - 1) * size;
+  const slice = snapshot.feed.slice(start, start + size);
 
-  lines.push("");
-  lines.push(style(color, "bold", "GOAL ROOTS"));
-  if (!snapshot.roots.length) {
-    lines.push(style(color, "gray", "  (none — use Goals tab or ask the harness to create a wave goal)"));
-  } else {
-    for (const root of snapshot.roots) {
-      lines.push([
-        style(color, "cyan", `  ${pad(root.id, 24)}`),
-        style(color, "gray", pad(root.lifecycle, 12)),
-        style(color, "white", shortId(root.title, 36)),
-        style(color, "dim", `ch:${root.children} ln:${root.links} run:${root.runs}`),
-      ].join(" "));
-    }
-  }
+  lines.push([
+    style(color, "bold", "RUN INTENTS"),
+    style(color, "gray", `page ${current}/${pages} · ${snapshot.feedTotal} recorded`),
+    style(color, "gray", "· n next · p prev"),
+  ].join(" "));
 
-  lines.push("");
-  lines.push(style(color, "bold", "RECENT RUN INTENTS"));
-  if (!snapshot.recentIntents.length) {
+  if (!slice.length) {
     lines.push(style(color, "gray", "  (none recorded in the knowledge store yet)"));
   } else {
-    for (const intent of snapshot.recentIntents) {
-      const goalText = intent.goalRefs.length ? intent.goalRefs.join(",") : "unlinked";
-      lines.push([
-        style(color, "magenta", `  ${pad(shortId(intent.runId, 28), 28)}`),
-        style(color, "gray", pad(`${intent.phase}/${intent.state}`, 22)),
-        style(color, "white", pad(shortId(intent.repoLabel || "-", 16), 16)),
-        style(color, intent.goalRefs.length ? "cyan" : "yellow", shortId(goalText, 24)),
-      ].join(" "));
+    const runWidth = 10;
+    const stateWidth = 20;
+    const repoWidth = 18;
+    const ageWidth = 6;
+    const goalWidth = Math.max(16, contentWidth - (2 + runWidth + stateWidth + repoWidth + ageWidth + 5));
+    lines.push(style(color, "gray", [
+      "  ",
+      pad("RUN", runWidth),
+      pad("STATE", stateWidth),
+      pad("REPO", repoWidth),
+      pad("AGE", ageWidth, "right"),
+      pad("GOAL", goalWidth),
+    ].join(" ")));
+    for (const intent of slice) {
+      const goals = intent.goalRefs.map(goalLabel);
+      const goalText = goals.length
+        ? (goals.length > 1 ? `${goals[0]} +${goals.length - 1}` : goals[0])
+        : "unlinked";
+      const line = [
+        "  ",
+        pad(intent.shortId, runWidth),
+        pad(`${intent.phase}/${intent.state}`, stateWidth),
+        pad(intent.repoLabel || "-", repoWidth),
+        pad(intent.ageMs === null ? "-" : humanizeAge(intent.ageMs), ageWidth, "right"),
+        pad(goalText, goalWidth),
+      ].join(" ").trimEnd();
+      const tone = intent.goalRefs.length ? runStateColor(intent.state) : "yellow";
+      lines.push(style(color, tone, line));
     }
   }
 
   lines.push("");
-  lines.push(style(color, "gray", "  Keys: 1 Runs · 2 Goals · 3 Core · 4 Tokens · Tab cycle · r refresh · q quit"));
+  lines.push(style(color, "gray", "  Keys: 1 Runs · 2 Goals · 3 Core · 4 Tokens · Tab cycle · n/p page · r refresh · q quit"));
   return lines.join("\n");
 }

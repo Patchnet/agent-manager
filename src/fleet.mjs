@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import { BRAIN_ROOT, BRAIN_ROOT_SOURCE, RUNS_ROOT, RUNS_ROOT_SOURCE } from "./paths.mjs";
 import { isTerminalState } from "./status.mjs";
 import { currentVersionInfo } from "./version.mjs";
@@ -16,8 +17,9 @@ import {
   buildGoalsSnapshot,
   enrichSelectedGoal,
   formatGoalsBoard,
+  visibleGoalRows,
 } from "./goals-board.mjs";
-import { buildCoreSnapshot, formatCoreBoard } from "./core-board.mjs";
+import { buildCoreSnapshot, CORE_FEED_PAGE_SIZE, formatCoreBoard } from "./core-board.mjs";
 import { buildTokensSnapshot, formatTokensBoard } from "./tokens.mjs";
 
 const DEFAULT_INTERVAL_MS = 1_000;
@@ -26,6 +28,14 @@ const DEFAULT_LIMIT = 12;
 const DEFAULT_EVENT_LIMIT = 8;
 const LOG_TAIL_BYTES = 256 * 1_024;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const ESC = String.fromCodePoint(27);
+const SPLASH_MS = 900;
+const SPLASH_MIN_WIDTH = 60;
+const SPLASH_MIN_ROWS = 20;
+const LOGOMARK_PATH = fileURLToPath(new URL("../assets/patch-mark.txt", import.meta.url));
+
+/** Compact stand-in for the mark, used inline in every board header. */
+export const LOGOMARK_GLYPH = "▦";
 const ANSI_RE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
 export const FLEET_VIEWS = Object.freeze(["runs", "goals", "core", "tokens"]);
@@ -50,10 +60,14 @@ export function fleetUsage() {
     "  --json               print one machine-readable snapshot and exit",
     "  --no-color           disable ANSI colors",
     "  --no-effects         disable animation and alternate-screen rendering",
+    "  --no-splash          skip the startup logomark",
     "  -h, --help           show this help",
     "",
     "Live tabs: 1/f Runs · 2/g Goals · 3/c Core · 4/t Tokens · Tab cycle",
-    "Live keys: ↑/↓ or j/k select · a active filter (Runs) · r refresh · q quit",
+    "Live keys: ↑/↓ or j/k select · r refresh · q quit",
+    "  Runs   a  toggle the active-only filter",
+    "  Goals  o  open-only filter · x show planned children",
+    "  Core   n/p  page the run-intent feed",
   ].join("\n");
 }
 
@@ -117,6 +131,7 @@ export function parseFleetArgs(argv = []) {
     json: false,
     color: process.env.NO_COLOR === undefined,
     effects: true,
+    splash: true,
     help: false,
   };
 
@@ -146,6 +161,7 @@ export function parseFleetArgs(argv = []) {
       options.once = true;
     } else if (arg === "--no-color") options.color = false;
     else if (arg === "--no-effects") options.effects = false;
+    else if (arg === "--no-splash") options.splash = false;
     else if (arg === "-h" || arg === "--help") options.help = true;
     else if (arg.startsWith("-")) throw new Error(`unknown fleet option: ${arg}`);
     else if (!options.runId) options.runId = arg;
@@ -538,6 +554,10 @@ export function buildFleetSnapshot(options = {}, dependencies = {}) {
   };
 }
 
+// The board deliberately spends only four tones: cyan for motion, yellow for
+// "waiting on you", red for failure, gray for anything settled. Reaching for
+// another entry in this table means adding a competitor for the operator's
+// attention — retune a call site instead.
 const COLORS = {
   reset: "\u001b[0m",
   bold: "\u001b[1m",
@@ -578,6 +598,74 @@ function pad(value, width, align = "left") {
   return align === "right" ? " ".repeat(missing) + text : text + " ".repeat(missing);
 }
 
+/**
+ * Read the committed logomark asset.
+ *
+ * The asset carries both the palette (as `# key = #rrggbb` comments) and the
+ * grid, so the mark can be retouched without editing this renderer. A missing
+ * or malformed asset is not an error: the splash is simply skipped.
+ */
+export function loadLogomark(path = LOGOMARK_PATH) {
+  let text;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  const palette = {};
+  const grid = [];
+  for (const line of text.split(/\r?\n/)) {
+    const swatch = /^#\s+([a-z])\s*=\s*#([0-9a-fA-F]{6})\b/.exec(line);
+    if (swatch) {
+      palette[swatch[1]] = swatch[2];
+      continue;
+    }
+    if (line.startsWith("#") || !line.trim()) continue;
+    grid.push(line.replace(/\s+$/, ""));
+  }
+  if (!grid.length) return null;
+  return { grid, palette, width: Math.max(...grid.map((row) => row.length)) };
+}
+
+function truecolor(hex) {
+  const value = Number.parseInt(hex, 16);
+  return `${ESC}[38;2;${(value >> 16) & 255};${(value >> 8) & 255};${value & 255}m`;
+}
+
+/** Paint the grid as full blocks, collapsing runs of one colour into one escape. */
+export function renderLogomark(mark, { color = false, indent = 2 } = {}) {
+  if (!mark?.grid?.length) return [];
+  const prefix = " ".repeat(Math.max(0, indent));
+  return mark.grid.map((row) => {
+    let line = prefix;
+    let index = 0;
+    while (index < row.length) {
+      const key = row[index];
+      let run = 1;
+      while (row[index + run] === key) run += 1;
+      const blocks = "█".repeat(run);
+      const hex = mark.palette[key];
+      if (key === ".") line += " ".repeat(run);
+      else if (color && hex) line += `${truecolor(hex)}${blocks}${ESC}[0m`;
+      else line += blocks;
+      index += run;
+    }
+    return line.replace(/\s+$/, "");
+  });
+}
+
+export function formatSplash(mark, { color = false, version = "unknown" } = {}) {
+  return [
+    "",
+    ...renderLogomark(mark, { color, indent: 2 }),
+    "",
+    `  ${style(color, "bold", "AGENT MANAGER")} ${style(color, "gray", `v${version}`)}`,
+    style(color, "gray", "  multi-lane supervision · reading telemetry…"),
+    "",
+    style(color, "dim", "  any key to skip"),
+  ].join("\n");
+}
+
 function formatDuration(seconds) {
   const value = Math.max(0, Number(seconds || 0));
   if (value < 60) return `${Math.round(value)}s`;
@@ -599,24 +687,31 @@ function clockTime(value) {
     : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
+/**
+ * Hierarchy through restraint.
+ *
+ * Cyan means "in motion", yellow means "this is waiting on you", red is kept
+ * for outright failure, and everything that has settled goes gray. Success is
+ * carried by the ✓ glyph rather than a competing colour.
+ */
 function statePresentation(state, frame = 0) {
   const presentations = {
     running: [SPINNER[frame % SPINNER.length], "RUNNING", "brightCyan"],
     blocked: ["!", "NEEDS INPUT", "yellow"],
-    delivery_review_pending: ["◆", "DELIVERY REVIEW", "magenta"],
-    correction_pending: ["◆", "CORRECTION", "magenta"],
+    delivery_review_pending: ["◆", "DELIVERY REVIEW", "yellow"],
+    correction_pending: ["◆", "CORRECTION", "yellow"],
     ship_gate_pending: ["◆", "SHIP GATE", "yellow"],
-    shipping: [SPINNER[frame % SPINNER.length], "SHIPPING", "blue"],
+    shipping: [SPINNER[frame % SPINNER.length], "SHIPPING", "brightCyan"],
     release_pending: ["◆", "RELEASE GATE", "yellow"],
-    reviewed: ["✓", "REVIEWED", "green"],
-    merged: ["✓", "MERGED", "green"],
-    released: ["✓", "RELEASED", "green"],
+    reviewed: ["✓", "REVIEWED", "gray"],
+    merged: ["✓", "MERGED", "gray"],
+    released: ["✓", "RELEASED", "gray"],
     rejected: ["×", "REJECTED", "red"],
     failed: ["×", "FAILED", "red"],
     cancelled: ["×", "CANCELLED", "gray"],
     queued: ["○", "QUEUED", "gray"],
     "dependency-waiting": ["○", "WAITING", "gray"],
-    done: ["✓", "DONE", "green"],
+    done: ["✓", "DONE", "gray"],
   };
   return presentations[state] || ["·", String(state || "UNKNOWN").toUpperCase(), "white"];
 }
@@ -629,7 +724,7 @@ function progressBar(counts, width, frame, color) {
   let bar = "━".repeat(filled);
   if (active) bar += frame % 2 === 0 ? "╸" : "╺";
   bar += "─".repeat(Math.max(0, width - visibleLength(bar)));
-  return style(color, counts.blocked ? "yellow" : counts.failed ? "red" : "cyan", bar);
+  return style(color, counts.blocked ? "yellow" : counts.failed ? "red" : "brightCyan", bar);
 }
 
 function wrapText(value, width, maxLines = 3) {
@@ -666,8 +761,8 @@ function changedRunIds(previous, next) {
 
 function gradientTitle(text, color) {
   if (!color) return text;
-  const palette = ["brightCyan", "cyan", "blue", "magenta"];
-  return [...text].map((character, index) => style(true, palette[Math.floor(index / 5) % palette.length], character)).join("");
+  const palette = ["brightCyan", "cyan"];
+  return [...text].map((character, index) => style(true, palette[Math.floor(index / 7) % palette.length], character)).join("");
 }
 
 export function formatFleetBoard(snapshot, {
@@ -688,14 +783,14 @@ export function formatFleetBoard(snapshot, {
   const pulseCode = effects && frame % 8 < 4 ? "bold" : "white";
   const title = gradientTitle("AGENT MANAGER", color);
   const badges = [
-    style(color, "brightCyan", `active ${snapshot.counts.active}`),
+    style(color, snapshot.counts.active ? "brightCyan" : "gray", `active ${snapshot.counts.active}`),
     style(color, snapshot.counts.blocked ? "yellow" : "gray", `blocked ${snapshot.counts.blocked}`),
-    style(color, snapshot.counts.review ? "magenta" : "gray", `review ${snapshot.counts.review}`),
-    style(color, snapshot.counts.shipping ? "blue" : "gray", `shipping ${snapshot.counts.shipping}`),
+    style(color, snapshot.counts.review ? "yellow" : "gray", `review ${snapshot.counts.review}`),
+    style(color, snapshot.counts.shipping ? "brightCyan" : "gray", `shipping ${snapshot.counts.shipping}`),
   ].join(style(color, "gray", " · "));
-  const frameIcon = snapshot.counts.active ? SPINNER[frame % SPINNER.length] : "◆";
+  const frameIcon = snapshot.counts.active ? SPINNER[frame % SPINNER.length] : " ";
   const viewerVersion = snapshot.viewer?.runtimeVersion || "unknown";
-  lines.push(`${style(color, pulseCode, frameIcon)} ${style(color, "bold", title)} ${style(color, "gray", `v${viewerVersion} · FLEET`)}  ${badges}`);
+  lines.push(`${style(color, pulseCode, frameIcon)} ${style(color, "brightCyan", LOGOMARK_GLYPH)} ${style(color, "bold", title)} ${style(color, "gray", `v${viewerVersion} · FLEET`)}  ${badges}`);
   if (snapshot.telemetry?.runsRoot) {
     lines.push(style(color, "gray", `Telemetry: ${snapshot.telemetry.runsRoot} [${snapshot.telemetry.source || "unknown"}]`));
   }
@@ -796,7 +891,7 @@ export function formatFleetBoard(snapshot, {
     if (selected.ship) {
       const ship = selected.ship;
       lines.push("");
-      lines.push(`${style(color, "bold", "SHIPPING PROGRESS")} ${style(color, "blue", String(ship.phase || "preflight").toUpperCase())}`);
+      lines.push(`${style(color, "bold", "SHIPPING PROGRESS")} ${style(color, "brightCyan", String(ship.phase || "preflight").toUpperCase())}`);
       lines.push(style(color, "gray", `  ${ship.lastActivity || "waiting for ship telemetry"}`));
       if (ship.prUrl) lines.push(style(color, "gray", `  PR ${ship.prUrl}`));
       if (ship.targetId || ship.version || ship.plannedTag) {
@@ -808,7 +903,7 @@ export function formatFleetBoard(snapshot, {
           return `${icon} ${item.name}`;
         }).join("  →  ");
         for (const line of wrapText(progress, Math.max(30, contentWidth - 4), 3)) {
-          lines.push(style(color, "blue", `  ${line}`));
+          lines.push(style(color, "brightCyan", `  ${line}`));
         }
       }
       const actionRuns = ship.ci?.runs || [];
@@ -820,7 +915,7 @@ export function formatFleetBoard(snapshot, {
         for (const item of checks.slice(0, 6)) {
           const name = item.workflow || item.name || `run ${item.id || "?"}`;
           const result = item.conclusion || item.status || "pending";
-          lines.push(style(color, result === "success" ? "green" : /fail|cancel|timed/.test(result) ? "red" : "yellow", `  ${name} · ${result}`));
+          lines.push(style(color, result === "success" ? "gray" : /fail|cancel|timed/.test(result) ? "red" : "yellow", `  ${name} · ${result}`));
         }
       }
     }
@@ -843,7 +938,7 @@ export function formatFleetBoard(snapshot, {
     lines.push("");
     lines.push(style(color, "bold", "RECENT TRANSITIONS"));
     for (const event of snapshot.recentEvents) {
-      const eventColor = event.kind === "needs_input" ? "yellow" : event.kind === "ship" ? "blue" : "gray";
+      const eventColor = event.kind === "needs_input" ? "yellow" : event.kind === "ship" ? "brightCyan" : "gray";
       lines.push(`${style(color, "gray", clockTime(event.at))}  ${style(color, "cyan", event.shortId)}  ${style(color, eventColor, truncate(event.text, Math.max(20, contentWidth - 22)))}`);
     }
   }
@@ -902,7 +997,7 @@ export function formatFleetStreamEvent(event, { color = false } = {}) {
       ? "brightCyan"
       : /failed|cancelled|rejected/.test(event.text)
         ? "red"
-        : "green";
+        : "gray";
   return `${style(color, "gray", clockTime(event.at))}  ${style(color, "cyan", event.shortId)}  ${style(color, eventColor, event.text)}`;
 }
 
@@ -927,6 +1022,7 @@ export async function runFleet(options = {}, {
     json: false,
     color: process.env.NO_COLOR === undefined,
     effects: true,
+    splash: true,
     ...options,
   };
   const isTty = Boolean(output.isTTY);
@@ -988,6 +1084,9 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
   let selectedGoalId = null;
   let selectedGoalIndex = 0;
   let goalProgressGoalId = null;
+  let goalsOpenOnly = true;
+  let goalsExpandPlanned = false;
+  let corePage = 1;
   let activeOnly = config.activeOnly;
   let view = normalizeFleetView(config.view || "runs");
   let runsSnapshot = null;
@@ -1006,6 +1105,14 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
   const interactive = Boolean(input.isTTY && typeof input.setRawMode === "function");
   const writeRaw = (value) => output.write(String(value));
   const width = () => output.columns || 120;
+  const logomark = loadLogomark();
+  const splashAllowed = config.splash !== false
+    && effects
+    && Boolean(logomark)
+    && width() >= SPLASH_MIN_WIDTH
+    && (output.rows || SPLASH_MIN_ROWS) >= SPLASH_MIN_ROWS;
+  let splashUntil = splashAllowed ? now() + SPLASH_MS : 0;
+  const splashActive = () => Boolean(splashUntil) && now() < splashUntil;
 
   const refreshRunSelection = () => {
     if (!runsSnapshot?.runs.length) {
@@ -1019,16 +1126,37 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
     selectedRunId = runsSnapshot.runs[selectedRunIndex]?.runId || null;
   };
 
+  // Rows depend on the current selection (children expand under the selected
+  // root), so they are projected on demand rather than cached in the snapshot.
+  const goalRows = () => (goalsSnapshot
+    ? visibleGoalRows(goalsSnapshot, {
+      openOnly: goalsOpenOnly,
+      selectedGoalId,
+      expandPlanned: goalsExpandPlanned,
+    })
+    : []);
+
   const syncGoalSelection = () => {
-    if (!goalsSnapshot?.rows.length) {
+    const rows = goalRows();
+    if (!rows.length) {
       selectedGoalId = null;
       selectedGoalIndex = 0;
       return;
     }
-    const existing = goalsSnapshot.rows.findIndex((row) => row.goal.id === selectedGoalId);
+    const existing = rows.findIndex((row) => row.goal.id === selectedGoalId);
     if (existing >= 0) selectedGoalIndex = existing;
-    else selectedGoalIndex = Math.min(selectedGoalIndex, goalsSnapshot.rows.length - 1);
-    selectedGoalId = goalsSnapshot.rows[selectedGoalIndex]?.goal.id || null;
+    else selectedGoalIndex = Math.min(selectedGoalIndex, rows.length - 1);
+    selectedGoalId = rows[selectedGoalIndex]?.goal.id || null;
+  };
+
+  const moveGoalSelection = (delta) => {
+    const rows = goalRows();
+    if (!rows.length) return;
+    const current = rows.findIndex((row) => row.goal.id === selectedGoalId);
+    const next = Math.min(rows.length - 1, Math.max(0, (current < 0 ? 0 : current) + delta));
+    selectedGoalIndex = next;
+    selectedGoalId = rows[next].goal.id;
+    needsPaint = true;
   };
 
   const setView = (nextView) => {
@@ -1042,6 +1170,10 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
     if (key.ctrl && key.name === "c" || key.name === "q") {
       stopped = true;
       return;
+    }
+    if (splashUntil) {
+      splashUntil = 0;
+      needsPaint = true;
     }
     if (key.name === "tab") {
       const index = FLEET_VIEWS.indexOf(view);
@@ -1074,13 +1206,27 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
       return;
     }
     if (view === "goals") {
-      if (["down", "j"].includes(key.name) && goalsSnapshot?.rows.length) {
-        selectedGoalIndex = Math.min(goalsSnapshot.rows.length - 1, selectedGoalIndex + 1);
-        selectedGoalId = goalsSnapshot.rows[selectedGoalIndex].goal.id;
+      if (["down", "j"].includes(key.name)) moveGoalSelection(1);
+      else if (["up", "k"].includes(key.name)) moveGoalSelection(-1);
+      else if (key.name === "o") {
+        goalsOpenOnly = !goalsOpenOnly;
+        syncGoalSelection();
         needsPaint = true;
-      } else if (["up", "k"].includes(key.name) && goalsSnapshot?.rows.length) {
-        selectedGoalIndex = Math.max(0, selectedGoalIndex - 1);
-        selectedGoalId = goalsSnapshot.rows[selectedGoalIndex].goal.id;
+      } else if (key.name === "x") {
+        goalsExpandPlanned = !goalsExpandPlanned;
+        needsPaint = true;
+      }
+      return;
+    }
+    if (view === "core") {
+      const pages = coreSnapshot
+        ? Math.max(1, Math.ceil(coreSnapshot.feed.length / CORE_FEED_PAGE_SIZE))
+        : 1;
+      if (key.name === "n") {
+        corePage = Math.min(pages, corePage + 1);
+        needsPaint = true;
+      } else if (key.name === "p") {
+        corePage = Math.max(1, corePage - 1);
         needsPaint = true;
       }
     }
@@ -1090,7 +1236,7 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
   const interruptibleSleep = async (ms) => {
     const step = 40;
     let left = Math.max(0, ms);
-    while (left > 0 && !stopped && !needsPaint && !forceReload[view]) {
+    while (left > 0 && !stopped && !needsPaint && !forceReload[view] && !(splashUntil && !splashActive())) {
       const slice = Math.min(step, left);
       await sleep(slice);
       left -= slice;
@@ -1118,6 +1264,7 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
           root: BRAIN_ROOT,
           rootSource: BRAIN_ROOT_SOURCE,
           limit: config.limit,
+          now: time,
         });
         cacheAt.goals = time;
         forceReload.goals = false;
@@ -1142,7 +1289,10 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
         root: BRAIN_ROOT,
         rootSource: BRAIN_ROOT_SOURCE,
         limit: config.limit,
+        now: time,
       });
+      const corePages = Math.max(1, Math.ceil(coreSnapshot.feed.length / CORE_FEED_PAGE_SIZE));
+      corePage = Math.min(corePage, corePages);
       cacheAt.core = time;
       forceReload.core = false;
       return true;
@@ -1162,6 +1312,16 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
   };
 
   const paint = () => {
+    if (splashActive()) {
+      const splash = formatSplash(logomark, {
+        color,
+        version: currentVersionInfo().runtimeVersion || "unknown",
+      });
+      writeRaw(`${ESC}[H${ESC}[2J${splash}`);
+      frame += 1;
+      needsPaint = false;
+      return;
+    }
     const tabBar = formatViewerTabBar(view, { color, width: width() });
     let board = "";
     if (view === "runs") {
@@ -1184,11 +1344,13 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
           color,
           selectedGoalId,
           progress: goalProgress,
+          openOnly: goalsOpenOnly,
+          expandPlanned: goalsExpandPlanned,
         })
         : style(color, "gray", "  Loading goals…");
     } else if (view === "core") {
       board = coreSnapshot
-        ? formatCoreBoard(coreSnapshot, { width: width(), color })
+        ? formatCoreBoard(coreSnapshot, { width: width(), color, page: corePage })
         : style(color, "gray", "  Loading core knowledge graph…");
     } else if (tokensSnapshot) {
       board = formatTokensBoard(tokensSnapshot, {
@@ -1221,6 +1383,11 @@ async function runInteractiveFleet(config, { runsRoot, runsRootSource, output, i
       ticks += 1;
       const time = now();
       const activeView = view;
+
+      if (splashUntil && !splashActive()) {
+        splashUntil = 0;
+        needsPaint = true;
+      }
 
       // Paint cached tab immediately on switch; refresh heavy data afterward.
       if (needsPaint) paint();
