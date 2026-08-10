@@ -8,15 +8,19 @@ const root = mkdtempSync(join(tmpdir(), "agent-manager-fleet-"));
 const runsRoot = join(root, "runs");
 mkdirSync(runsRoot, { recursive: true });
 
+const ESC = String.fromCodePoint(27);
 const {
   buildFleetSnapshot,
   describeCommand,
   diffFleetSnapshots,
   formatFleetBoard,
+  formatSplash,
   formatViewerTabBar,
+  loadLogomark,
   parseDuration,
   parseFleetArgs,
   parseHarnessLog,
+  renderLogomark,
   runFleet,
 } = await import("../src/fleet.mjs?fleet-test");
 const {
@@ -120,7 +124,7 @@ test("goals board empty state guides first-time setup", async () => {
   assert.match(board, /Use agent-manager for/);
 });
 
-test("core board shows store counts and endpoint guidance", async () => {
+test("core board splits the goal map from the run-intent feed", async () => {
   const {
     buildCoreSnapshot,
     formatCoreBoard,
@@ -132,9 +136,40 @@ test("core board shows store counts and endpoint guidance", async () => {
   assert.equal(snapshot.counts.intents, 0);
   const board = formatCoreBoard(snapshot, { color: false });
   assert.match(board, /CORE/);
-  assert.match(board, /GRAPH ENDPOINTS/);
+  assert.match(board, /GOAL MAP/);
+  assert.match(board, /RUN INTENTS/);
   assert.match(board, /Knowledge root/);
-  assert.match(board, /No linked endpoints yet/);
+  assert.match(board, /none recorded in the knowledge store yet/);
+});
+
+test("the logomark asset renders as block art and degrades without color", () => {
+  const mark = loadLogomark();
+  assert.ok(mark, "assets/patch-mark.txt is readable");
+  assert.equal(mark.grid.length, 8, "the mark stays inside the 8-row splash budget");
+  assert.ok(mark.grid.every((row) => row.length === mark.width), "every grid row is the same width");
+  assert.deepEqual(Object.keys(mark.palette).sort(), ["b", "d", "o"]);
+
+  const plain = renderLogomark(mark, { color: false });
+  assert.equal(plain.length, 8);
+  assert.ok(plain.some((row) => row.includes("█")));
+  assert.equal(plain.join("").includes(ESC), false);
+
+  const colored = renderLogomark(mark, { color: true });
+  assert.ok(colored.join("").includes(`${ESC}[38;2;61;168;220m`), "the signal blue swatch is emitted as truecolor");
+
+  assert.deepEqual(renderLogomark(null), []);
+  assert.equal(loadLogomark(join(root, "missing-asset.txt")), null);
+});
+
+test("the splash is opt-out and never blocks the board", () => {
+  assert.equal(parseFleetArgs([]).splash, true);
+  assert.equal(parseFleetArgs(["--no-splash"]).splash, false);
+
+  const splash = formatSplash(loadLogomark(), { color: false, version: "9.9.9" });
+  assert.match(splash, /AGENT MANAGER/);
+  assert.match(splash, /v9\.9\.9/);
+  assert.match(splash, /any key to skip/);
+  assert.equal(splash.includes(ESC), false);
 });
 
 test("harness log parsing keeps worker narrative separate from command activity", () => {

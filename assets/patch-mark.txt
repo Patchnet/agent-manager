@@ -1,0 +1,22 @@
+# Agent Manager logomark — the Patchnet mark as terminal block art.
+#
+# Hand-authored from the vector mark (a 3x3 grid of rounded squares). There is
+# no image-processing step and no binary asset in this repository: the grid
+# below is the source of truth, and src/fleet.mjs turns it into ANSI at render
+# time. Each grid character is one terminal cell painted with U+2588 FULL BLOCK.
+#
+# palette:
+#   d = #2a2620   deep warm charcoal
+#   b = #3da8dc   signal blue
+#   o = #d97757   ember
+#   . = transparent (terminal background)
+#
+# Edit the grid, not the renderer. Keep every row the same width.
+dddddd.bbbbbb.dddddd
+dddddd.bbbbbb.dddddd
+....................
+bbbbbb.oooooo.bbbbbb
+bbbbbb.oooooo.bbbbbb
+....................
+dddddd.bbbbbb.dddddd
+dddddd.bbbbbb.dddddd
