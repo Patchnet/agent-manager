@@ -1,6 +1,7 @@
 import { RUNS_ROOT } from "./paths.mjs";
 import { isTerminalState, latestRunId, readStatus } from "./status.mjs";
 import { deriveOperatorCadence, OPERATOR_TRANSITIONS } from "./cadence.mjs";
+import { createNotifier, notifyEnabled } from "./notify.mjs";
 
 const DEFAULT_POLL_MS = 2_000;
 const DEFAULT_HEARTBEAT_SEC = 180;
@@ -164,9 +165,20 @@ export async function runWatchSignal(runId, {
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
   maxTicks = Infinity,
+  notify = null,
+  notifier = null,
+  env = process.env,
 } = {}) {
   const id = runId || latestRunId();
   if (!id) throw new Error(`no runs found under ${RUNS_ROOT}`);
+
+  // Opt-in OS toasts: the same wakes that print a sentinel also raise a
+  // desktop notification for the four events an operator must not miss.
+  const sink = notifier || createNotifier({
+    enabled: notifyEnabled({ notify }, env),
+    env,
+    log: (line) => write(line),
+  });
 
   let previous = null;
   let lastHeartbeatAt = 0;
@@ -174,10 +186,11 @@ export async function runWatchSignal(runId, {
 
   const emitWake = async (payload, status) => {
     write(formatWakeLine(id, payload));
+    sink?.notify?.(payload, status); // the sink swallows its own failures
     if (onWake) await onWake(payload, status);
   };
 
-  write(`watch-signal ${id} heartbeat=${heartbeatSec}s poll=${pollMs}ms`);
+  write(`watch-signal ${id} heartbeat=${heartbeatSec}s poll=${pollMs}ms notify=${sink?.enabled ? "on" : "off"}`);
 
   while (ticks < maxTicks) {
     ticks += 1;

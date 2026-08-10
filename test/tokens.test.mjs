@@ -49,8 +49,10 @@ const {
   formatProvidersTable,
   formatTokenCount,
   formatTokensBoard,
+  formatUsageWindows,
   parseTokensArgs,
   parseTokensDuration,
+  summarizeUsageWindows,
 } = await import("../src/tokens.mjs?tokens-test");
 
 test.after(() => rmSync(root, { recursive: true, force: true }));
@@ -513,7 +515,7 @@ test("buildTokensSnapshot and formatTokensBoard render a stable board", () => {
 
   const board = formatTokensBoard(snapshot, { color: false, limit: 12 });
   assert.match(board, /TOKENS/);
-  assert.match(board, /TOTALS/);
+  assert.match(board, /LOGGED USAGE/);
   assert.match(board, /BY DAY/);
   assert.match(board, /BY MODEL/);
   assert.match(board, /claude-opus-5/);
@@ -522,6 +524,80 @@ test("buildTokensSnapshot and formatTokensBoard render a stable board", () => {
 
   const repoBoard = formatTokensBoard(snapshot, { color: false, limit: 12, by: "source" });
   assert.match(repoBoard, /BY SOURCE/);
+});
+
+const WINDOW_DAYS = [
+  // NOW is 2026-08-07T12:00Z, so the 7d window opens on 2026-08-01.
+  { key: "2026-07-01", records: 1, input: 1_000, output: 10, cacheRead: 0, cacheWrite: 0, cost: 1, unpriced: 0 },
+  { key: "2026-07-31", records: 1, input: 100, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.5, unpriced: 1 },
+  { key: "2026-08-06", records: 2, input: 20, output: 2, cacheRead: 5, cacheWrite: 7, cost: 0.25, unpriced: 0 },
+  { key: "2026-08-07", records: 3, input: 3, output: 4, cacheRead: 6, cacheWrite: 8, cost: 0.125, unpriced: 0 },
+];
+
+test("summarizeUsageWindows labels the all-logged row and adds today plus last-7d", () => {
+  const summary = summarizeUsageWindows(WINDOW_DAYS, { now: NOW, sinceMs: Infinity });
+  assert.equal(summary.earliest, "2026-07-01");
+  assert.equal(summary.today, "2026-08-07");
+  assert.equal(summary.weekStart, "2026-08-01");
+  assert.deepEqual(summary.rows.map((row) => row.key), ["all", "today", "last7d"]);
+
+  const [all, today, week] = summary.rows;
+  assert.equal(all.label, "ALL LOGGED (since 2026-07-01)");
+  assert.equal(all.input, 1_123);
+  assert.equal(all.records, 7);
+  assert.equal(all.unpriced, 1, "unpriced messages carry through the summary");
+
+  assert.equal(today.label, "TODAY (2026-08-07 UTC)");
+  assert.equal(today.input, 3);
+  assert.equal(today.records, 3);
+
+  assert.equal(week.label, "LAST 7D (2026-08-01 → 2026-08-07)");
+  assert.equal(week.input, 23, "only 08-06 and 08-07 fall inside the rolling week");
+  assert.equal(week.cost, 0.375);
+});
+
+test("summarizeUsageWindows omits a rolling row the collection window cannot cover", () => {
+  const dayOnly = summarizeUsageWindows(WINDOW_DAYS, { now: NOW, sinceMs: 86_400_000 });
+  assert.deepEqual(dayOnly.rows.map((row) => row.key), ["all", "today"], "a 24h read cannot report a 7d window");
+
+  const tooShort = summarizeUsageWindows(WINDOW_DAYS, { now: NOW, sinceMs: 30 * 60_000 });
+  assert.deepEqual(tooShort.rows.map((row) => row.key), ["all"], "a 30m read does not cover today either");
+
+  assert.equal(summarizeUsageWindows([], { now: NOW }), null);
+});
+
+test("formatUsageWindows renders the summary rows and the semantics footnote", () => {
+  const block = formatUsageWindows(summarizeUsageWindows(WINDOW_DAYS, { now: NOW, sinceMs: Infinity }), { color: false }).join("\n");
+  assert.match(block, /LOGGED USAGE/);
+  assert.match(block, /WINDOW/);
+  assert.match(block, /ALL LOGGED \(since 2026-07-01\)/);
+  assert.match(block, /TODAY \(2026-08-07 UTC\)/);
+  assert.match(block, /LAST 7D \(2026-08-01 → 2026-08-07\)/);
+  assert.match(block, /not a balance/);
+  assert.doesNotMatch(block, /… \d+ more rows/, "summary rows are never truncated by --limit");
+
+  const empty = formatUsageWindows(null, { color: false }).join("\n");
+  assert.match(empty, /no usage in window/);
+  assert.match(empty, /not a balance/);
+});
+
+test("formatTokensBoard replaces the old TOTALS row with the labelled windows", () => {
+  const snapshot = buildTokensSnapshot({ sinceMs: Infinity, now: NOW, claudeRoot, codexRoot });
+  assert.equal(snapshot.windows.earliest, "2026-07-01");
+  assert.equal(snapshot.windows.rows[0].input, snapshot.totals.input, "all-logged matches the raw totals");
+
+  const board = formatTokensBoard(snapshot, { color: false, limit: 12 });
+  assert.match(board, /ALL LOGGED \(since 2026-07-01\)/);
+  assert.match(board, /TODAY \(2026-08-07 UTC\)/);
+  assert.match(board, /LAST 7D/);
+  assert.doesNotMatch(board, /^TOTALS/m, "the ambiguous TOTALS row is gone");
+
+  const dayBoard = formatTokensBoard(
+    buildTokensSnapshot({ sinceMs: 86_400_000, now: NOW, claudeRoot, codexRoot }),
+    { color: false, limit: 12 },
+  );
+  assert.match(dayBoard, /TODAY \(2026-08-07 UTC\)/);
+  assert.doesNotMatch(dayBoard, /LAST 7D/, "a 24h read does not claim a 7d window");
 });
 
 test("buildDailyHeatmap builds a Monday-aligned grid with scaled levels", () => {

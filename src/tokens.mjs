@@ -143,6 +143,7 @@ export function buildTokensSnapshot(options = {}) {
     sources,
     warnings,
     totals: usageTotals(records),
+    windows: summarizeUsageWindows(aggregateUsage(records, { by: "day" }), { now, sinceMs: collectOptions.sinceMs }),
     byDay: aggregateUsage(records, { by: "day" }),
     byModel: aggregateUsage(records, { by: "model" }),
     byRepo: aggregateUsage(records, { by: "repo" }),
@@ -199,6 +200,75 @@ function formatWindow(sinceMs) {
 
 const DAY_MS = 86_400_000;
 const HEATMAP_MAX_WEEKS = 26;
+
+function dayKeyOf(timestamp) {
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+function sumDays(rows, key, label) {
+  const row = { key, label, records: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unpriced: 0, days: rows.length };
+  for (const day of rows) {
+    row.records += day.records || 0;
+    row.input += day.input || 0;
+    row.output += day.output || 0;
+    row.cacheRead += day.cacheRead || 0;
+    row.cacheWrite += day.cacheWrite || 0;
+    row.cost += day.cost || 0;
+    row.unpriced += day.unpriced || 0;
+  }
+  return row;
+}
+
+// Summary windows for the board. The long-standing confusion is that the top
+// row sums every parsed session log rather than a rolling window or a quota
+// balance, so the widest row says so in its own label and the two rolling
+// windows sit beside it. Day keys are UTC (see aggregateUsage), so the
+// windows are UTC too and labelled that way.
+//
+// A rolling window is only offered when the collection window actually covers
+// it: with `--since 24h` a "LAST 7D" row would be a 24h number wearing a 7d
+// label.
+export function summarizeUsageWindows(byDay = [], { now = Date.now(), sinceMs = Infinity } = {}) {
+  const days = [...byDay]
+    .filter((row) => typeof row?.key === "string")
+    .sort((left, right) => left.key.localeCompare(right.key));
+  if (!days.length) return null;
+
+  const earliest = days[0].key;
+  const todayKey = dayKeyOf(now);
+  const weekStartKey = dayKeyOf(now - 6 * DAY_MS);
+  const midnight = Date.parse(`${todayKey}T00:00:00.000Z`);
+
+  const rows = [sumDays(days, "all", `ALL LOGGED (since ${earliest})`)];
+  if (sinceMs >= now - midnight) {
+    rows.push(sumDays(days.filter((day) => day.key === todayKey), "today", `TODAY (${todayKey} UTC)`));
+  }
+  if (sinceMs >= 7 * DAY_MS) {
+    rows.push(sumDays(days.filter((day) => day.key >= weekStartKey), "last7d", `LAST 7D (${weekStartKey} → ${todayKey})`));
+  }
+  return { earliest, latest: days[days.length - 1].key, today: todayKey, weekStart: weekStartKey, rows };
+}
+
+const WINDOW_LABEL_WIDTH = 36;
+const WINDOW_FOOTNOTE =
+  "sums every session log found under the provider roots — spend already incurred, not a balance; subscription plans do not expose remaining quota";
+
+export function formatUsageWindows(summary, { color = false } = {}) {
+  if (!summary) {
+    return [
+      style(color, "bold", "LOGGED USAGE"),
+      style(color, "dim", "  (no usage in window)"),
+      style(color, "dim", `  ${WINDOW_FOOTNOTE}`),
+    ];
+  }
+  const lines = usageTable(
+    "LOGGED USAGE",
+    summary.rows.map((row) => ({ ...row, key: row.label })),
+    { keyHeader: "WINDOW", keyWidth: WINDOW_LABEL_WIDTH, limit: summary.rows.length, color },
+  );
+  lines.push(style(color, "dim", `  ${WINDOW_FOOTNOTE}`));
+  return lines;
+}
 
 // Contribution-style heatmap grid: columns are weeks (Monday-aligned, UTC),
 // rows are weekdays. Cell level 0-4 scales each day's total tokens against
@@ -342,14 +412,13 @@ export function formatTokensBoard(snapshot, { color = false, limit = DEFAULT_LIM
   }
   lines.push(style(color, "gray", "─".repeat(88)));
   const totals = snapshot.totals;
-  lines.push([
-    style(color, "bold", "TOTALS"),
-    style(color, "white", `input ${formatTokenCount(totals.input)}`),
-    style(color, "white", `output ${formatTokenCount(totals.output)}`),
-    style(color, "gray", `cache-r ${formatTokenCount(totals.cacheRead)}`),
-    style(color, "gray", `cache-w ${formatTokenCount(totals.cacheWrite)}`),
-    style(color, "green", `est ${formatCost(totals.cost)}`),
-  ].join("  "));
+  // A serialized snapshot turns `sinceMs: Infinity` into null, so an absent
+  // window means "all time" rather than "no window covered".
+  const windows = snapshot.windows ?? summarizeUsageWindows(snapshot.byDay, {
+    now: Date.parse(snapshot.at),
+    sinceMs: Number.isFinite(snapshot.sinceMs) ? snapshot.sinceMs : Infinity,
+  });
+  lines.push(...formatUsageWindows(windows, { color }));
   if (totals.unpriced) {
     lines.push(style(color, "yellow", `  * ${totals.unpriced} messages from unpriced models excluded from cost — add rates via AGENT_MANAGER_TOKEN_PRICING`));
   }

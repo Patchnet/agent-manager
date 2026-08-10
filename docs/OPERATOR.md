@@ -181,6 +181,38 @@ notice; quit and restart Fleet to load the new viewer. Restarting `fleet` or
 continue on their original engine version. Stop an existing `watch-signal`
 process before starting its replacement to avoid duplicate notifications.
 
+## Desktop notifications
+
+`watch-signal` can raise an OS notification alongside the wake sentinel:
+
+```bash
+agent-manager watch-signal <runId> --heartbeat-sec 180 --notify
+```
+
+```powershell
+$env:AGENT_MANAGER_NOTIFY = "1"   # same effect, per shell
+```
+
+Opt-in only, and off by default. A toast fires on exactly four events:
+
+| Event | Fires when |
+|---|---|
+| `needs input` | the run or the ship channel is waiting on an operator reply |
+| `blocked` | the run state is `blocked`, or a lane blocked |
+| `finished` | the run reached a terminal state |
+| `ship outcome` | the ship channel reached `done`, `failed`, or `cancelled` |
+
+Each toast carries the short run id and the event in its title, and the run
+title, a one-line state, and the thing to open — the PR URL when there is one,
+otherwise the path to that run's `status.json` — in its body. Routine
+`state_change` and `heartbeat` wakes stay in the terminal. Repeats of the same
+event are suppressed, so a poll loop cannot spam the desktop.
+
+No daemon and no extra dependency: Windows uses a PowerShell toast, macOS uses
+`osascript`, and Linux uses `notify-send` when the desktop provides it. If the
+platform notifier is missing or refuses to run, the watcher logs one line and
+keeps watching — notifications never gate the run.
+
 ## Track token usage
 
 ```bash
@@ -197,6 +229,22 @@ source, and prices it from the rate table in `src/token-usage.mjs`. Nothing is
 uploaded; models missing from the pricing table are counted but flagged as
 unpriced instead of guessed. `--since` controls the window (`7d` default,
 `all` for everything); `--watch` redraws on an interval for a side terminal.
+
+### Reading the LOGGED USAGE block
+
+The board opens with up to three summary rows, in UTC:
+
+| Row | Means |
+|---|---|
+| `ALL LOGGED (since <date>)` | every session log read in this pass, back to the earliest record found |
+| `TODAY (<date> UTC)` | usage stamped with today's UTC date |
+| `LAST 7D (<from> → <to>)` | the rolling seven-day window ending today |
+
+These are **spend already incurred**, not a quota balance: subscription plans
+do not expose remaining allowance anywhere on the machine, so nothing here can
+tell you how much is left. A rolling row is omitted when `--since` is too
+narrow to cover it — `--since 24h` prints `ALL LOGGED` and `TODAY` only,
+rather than labelling a day of data as a week.
 
 ### Token providers
 
