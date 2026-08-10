@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.18.0
+current: 1.19.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.19.0 - 2026-08-10
+
+Redesigned Fleet goals/core boards with progress and goal staleness context, clarified token totals, added an opt-in OS notification sink, a startup logomark, and a read-only localhost dashboard.
 
 ## 1.18.0 - 2026-08-09
 
