@@ -860,8 +860,9 @@ agent-manager fleet [runId] [--active] [--since 24h] [--repo <name>]
   [--stream | --once | --json] [--no-color] [--no-effects]
 agent-manager tokens [--since 7d] [--by day|model|repo|source] [--limit <n>]
   [--watch [--interval <sec>]] [--json] [--no-color]
+agent-manager ui [--port 4317] [--host 127.0.0.1] [--no-open] [--json]
 agent-manager events <runId> --jsonl
-agent-manager watch-signal <runId>
+agent-manager watch-signal <runId> [--heartbeat-sec 180] [--poll-ms 2000] [--notify]
 agent-manager reply <runId> <laneId> --message <text>
 agent-manager review <runId> [--pass 1|2]
 agent-manager review <runId> --pass 1 --verdict accept|accept-with-notes|revise|relaunch|reject --reviewer <id> [--notes <text>]
@@ -898,6 +899,37 @@ agent-manager ship <runId> --approve through-pr|all [--target <delivery-target-i
 ```
 
 Dangerous permission bypass requires two independent inputs: `policy.dangerously_skip_permissions: true` in the workflow and `--allow-dangerous-permissions` on that invocation (or the matching environment confirmation).
+
+## 🖥️ Dashboard (optional, read-only)
+
+The CLI is the product. `agent-manager ui` is **optional read-only glass** over
+the same telemetry the terminal boards read — useful when a browser beats a TUI
+(a wide goal graph, a long event history, a second monitor left open while
+lanes run).
+
+```bash
+cd ui && npm install && npm run build   # once
+agent-manager ui                        # from the repository root
+```
+
+Four properties define the boundary, and none of them are configurable:
+
+- **Read-only** — every route is a reader; anything other than `GET`/`HEAD` is
+  rejected with `405`. No endpoint can start, reply to, ship, or cancel a run.
+- **No daemon** — the server lives only while the command is in the foreground.
+- **Localhost only** — it binds a loopback address and refuses anything else.
+  `--host 0.0.0.0` is a hard error. No auth layer, because the socket never
+  leaves the machine.
+- **No new core dependencies** — the server is `node:http`. The SPA has its own
+  `package.json` under `ui/`, and the CLI works identically unbuilt: without
+  `ui/dist`, the command still serves the API and a page explaining how to
+  build it.
+
+Views: a Runs board with live SSE updates and needs-input cards front and
+centre, a Goal graph with progress and temporal context (age, last touched,
+`stale`), and Tokens windows matching `agent-manager tokens`.
+
+Full reference and API surface: **`docs/UI.md`**.
 
 ## 📦 PR Manager: detached shipping
 
