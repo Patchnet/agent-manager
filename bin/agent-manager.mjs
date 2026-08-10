@@ -34,6 +34,7 @@ import { deliveryReadiness } from "../src/delivery.mjs";
 import { deriveOperatorCadence } from "../src/cadence.mjs";
 import { fleetUsage, parseFleetArgs, runFleet } from "../src/fleet.mjs";
 import { parseTokensArgs, runTokens, tokensUsage } from "../src/tokens.mjs";
+import { parseUiArgs, runUi, uiUsage } from "../src/ui-server.mjs";
 import { buildRunIdentity } from "../src/identity.mjs";
 import { AGENT_MANAGER_VERSION, currentVersionInfo } from "../src/version.mjs";
 import {
@@ -95,6 +96,8 @@ function usage() {
     "  agent-manager monitor [runId] [--interval <sec>]",
     "  agent-manager fleet [runId] [--active] [--since 24h] [--stream|--once|--json]",
     "  agent-manager tokens [--since 7d] [--by day|model|repo|source] [--watch] [--json]",
+    "  agent-manager ui [--port 4317] [--host 127.0.0.1] [--no-open] [--json]",
+    "    optional read-only dashboard; localhost only, no daemon",
     "  agent-manager config init [--dev-root <path>] [--runs-root <path>] [--claims-root <path>] [--brain-root <path>]",
     "  agent-manager config show [--json]",
     "  agent-manager director validate --policy <file> [--repo <path>] [--json]",
@@ -109,7 +112,8 @@ function usage() {
     "  agent-manager goal status <id> [--json]",
     "  agent-manager goal map <id> [--output <file>] [--json]",
     "  agent-manager goal link <id> --type <type> --ref <ref> [options] [--json]",
-    "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000]",
+    "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000] [--notify]",
+    "    --notify: OS toast on needs-input, blocked, terminal, and ship events",
     "  agent-manager reply <runId> <laneId> --message <text> [--json]",
     "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--notes <text>]] [--json]",
     "  agent-manager closeout <runId> --operator <id> [--reason <text>] [--no-artifacts] [--json]",
@@ -894,6 +898,16 @@ async function main() {
     return;
   }
 
+  if (cmd === "ui") {
+    const options = parseUiArgs(args.slice(1));
+    if (options.help) {
+      console.log(uiUsage());
+      return;
+    }
+    await runUi(options);
+    return;
+  }
+
   if (cmd === "config") {
     const action = args[1];
     const configPath = flagValue("--config");
@@ -951,7 +965,7 @@ async function main() {
   }
 
   if (cmd === "monitor") { await runMonitor(firstPositional(args.slice(1), ["--interval"]) || latestRunId(), { intervalMs: Math.max(0.5, Number(flagValue("--interval") || 2)) * 1000 }); return; }
-  if (cmd === "watch-signal") { await runWatchSignal(firstPositional(args.slice(1), ["--heartbeat-sec", "--poll-ms"]) || latestRunId(), { heartbeatSec: Math.max(5, Number(flagValue("--heartbeat-sec") || 180)), pollMs: Math.max(200, Number(flagValue("--poll-ms") || 2000)) }); return; }
+  if (cmd === "watch-signal") { await runWatchSignal(firstPositional(args.slice(1), ["--heartbeat-sec", "--poll-ms"]) || latestRunId(), { heartbeatSec: Math.max(5, Number(flagValue("--heartbeat-sec") || 180)), pollMs: Math.max(200, Number(flagValue("--poll-ms") || 2000)), notify: args.includes("--notify") ? true : null }); return; }
 
   if (cmd === "_watch-master-return") {
     const runId = args[1];
