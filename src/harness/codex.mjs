@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync } from "node:fs";
-import { join, win32 as win32Path } from "node:path";
+import { createWriteStream, existsSync, readFileSync } from "node:fs";
+import { join, posix as posixPath, win32 as win32Path } from "node:path";
 import { buildHarnessEnv } from "../environment.mjs";
 import { resolveSpawnCommand } from "../command.mjs";
 import { terminateProcessTree } from "../process.mjs";
@@ -103,6 +103,121 @@ export function resolveCodexInstallation({
   return { command: "codex", source: "path", sandboxHelper: null, sandboxReady: null };
 }
 
+export const CODEX_MODELS_CACHE_FILE = "models_cache.json";
+
+/**
+ * Fields codex requires when it deserializes the models cache. A cache missing
+ * one of these makes every run log `failed to load models cache: missing field
+ * <name>` plus `failed to renew cache TTL` — degraded, not fatal, which is why
+ * the doctor check warns rather than fails.
+ */
+export const CODEX_MODELS_CACHE_REQUIRED_FIELDS = ["base_instructions"];
+
+export function codexHomeDir({ env = process.env, platform = process.platform } = {}) {
+  if (typeof env.CODEX_HOME === "string" && env.CODEX_HOME.trim()) {
+    return env.CODEX_HOME.trim();
+  }
+  const home = platform === "win32" ? env.USERPROFILE : env.HOME;
+  if (typeof home !== "string" || !home.trim()) return null;
+  const pathJoin = platform === "win32" ? win32Path.join : posixPath.join;
+  return pathJoin(home.trim(), ".codex");
+}
+
+export function codexModelsCachePath({ env = process.env, platform = process.platform } = {}) {
+  const home = codexHomeDir({ env, platform });
+  if (!home) return null;
+  const pathJoin = platform === "win32" ? win32Path.join : posixPath.join;
+  return pathJoin(home, CODEX_MODELS_CACHE_FILE);
+}
+
+function hasFieldDeep(value, field, depth = 0) {
+  if (depth > 8 || !value || typeof value !== "object") return false;
+  if (!Array.isArray(value) && Object.hasOwn(value, field)) return true;
+  const children = Array.isArray(value) ? value : Object.values(value);
+  return children.some((child) => hasFieldDeep(child, field, depth + 1));
+}
+
+function renameAsideCommand(path, platform) {
+  return platform === "win32"
+    ? `Rename-Item "${path}" "${CODEX_MODELS_CACHE_FILE}.bak"`
+    : `mv "${path}" "${path}.bak"`;
+}
+
+/**
+ * Inspect ~/.codex/models_cache.json. Fails soft: an absent cache is healthy
+ * (codex regenerates it on demand); only a file that exists and cannot be used
+ * is reported, with a rename-aside recommendation.
+ */
+export function inspectCodexModelsCache({
+  env = process.env,
+  platform = process.platform,
+  exists = existsSync,
+  readFile = readFileSync,
+} = {}) {
+  const name = "codex models cache";
+  const path = codexModelsCachePath({ env, platform });
+  if (!path) {
+    return { name, path: null, state: "skipped", ok: true, detail: "codex home not resolvable", recommendation: null };
+  }
+  if (!exists(path)) {
+    return { name, path, state: "absent", ok: true, detail: `${path}: not created yet`, recommendation: null };
+  }
+
+  let raw;
+  try {
+    raw = String(readFile(path, "utf8"));
+  } catch (error) {
+    return {
+      name,
+      path,
+      state: "unreadable",
+      ok: false,
+      detail: `${path}: ${error.message}`,
+      recommendation: `codex cannot read its models cache; ${renameAsideCommand(path, platform)} so codex regenerates it`,
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return {
+      name,
+      path,
+      state: "invalid-json",
+      ok: false,
+      detail: `${path}: invalid JSON (${error.message})`,
+      recommendation: `${renameAsideCommand(path, platform)} so codex regenerates it`,
+    };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      name,
+      path,
+      state: "invalid-json",
+      ok: false,
+      detail: `${path}: expected a JSON object`,
+      recommendation: `${renameAsideCommand(path, platform)} so codex regenerates it`,
+    };
+  }
+
+  const missing = CODEX_MODELS_CACHE_REQUIRED_FIELDS.filter((field) => !hasFieldDeep(parsed, field));
+  if (missing.length) {
+    return {
+      name,
+      path,
+      state: "missing-fields",
+      ok: false,
+      missingFields: missing,
+      detail: `${path}: missing field ${missing.join(", ")}`,
+      recommendation: `codex will log "failed to load models cache" every run; ${renameAsideCommand(path, platform)} so codex regenerates it`,
+    };
+  }
+
+  return { name, path, state: "healthy", ok: true, detail: path, recommendation: null };
+}
+
 export function codexWindowsSandboxArgs({
   platform = process.platform,
   dangerouslySkipPermissions = false,
@@ -111,12 +226,96 @@ export function codexWindowsSandboxArgs({
   return ["-c", "windows.sandbox_private_desktop=true"];
 }
 
-function sandboxForPermissionMode(permissionMode) {
+export function sandboxForPermissionMode(permissionMode) {
   const mode = String(permissionMode || "").toLowerCase();
   if (mode === "readonly" || mode === "read-only" || mode === "read_only") {
     return "read-only";
   }
   return "workspace-write";
+}
+
+/**
+ * Option contract recorded from the installed Codex CLI on 2026-08-15
+ * (`codex exec --help`, `codex exec resume --help`).
+ *
+ * `exec resume` is a clap subcommand with its own option set. It does NOT
+ * accept `-C/--cd` or `-s/--sandbox`: those are exec-only, and when they land
+ * after `resume` clap aborts the parse with exit 2 ("tip: to pass '-C' as a
+ * value, use '-- -C'") before any work starts. Every flag agent-manager emits
+ * must appear in the option set of the command it is attached to; the argv
+ * contract test enforces that, so a CLI change fails a test instead of a run.
+ *
+ * These sets list the options agent-manager may emit — verified accepted, not
+ * the CLI's full surface.
+ */
+export const CODEX_OPTION_CONTRACT = {
+  exec: new Set([
+    "--json",
+    "-C", "--cd",
+    "-m", "--model",
+    "-s", "--sandbox",
+    "-c", "--config",
+    "-i", "--image",
+    "--dangerously-bypass-approvals-and-sandbox",
+  ]),
+  "exec resume": new Set([
+    "--json",
+    "-m", "--model",
+    "-c", "--config",
+    "-i", "--image",
+    "--last",
+    "--dangerously-bypass-approvals-and-sandbox",
+  ]),
+};
+
+/**
+ * Build the argv for a fresh `codex exec` run or a `codex exec resume` run.
+ * Prompt rides on stdin via the trailing `-` in both cases — multiline argv is
+ * unreliable on Windows.
+ */
+export function buildCodexArgs({
+  cwd,
+  resumeSessionId = null,
+  model = null,
+  permissionMode = "acceptEdits",
+  dangerouslySkipPermissions = false,
+  platform = process.platform,
+  env = process.env,
+} = {}) {
+  const resolvedModel =
+    (typeof model === "string" && model.trim()) ||
+    (typeof env.CODEX_MODEL === "string" && env.CODEX_MODEL.trim()) ||
+    "";
+  const args = ["exec"];
+
+  if (resumeSessionId) {
+    // `resume` is a subcommand, and `-C/--cd` + `-s/--sandbox` belong to the
+    // parent `exec` command: after `resume` they abort the parse with exit 2.
+    // So cwd and sandbox policy bind ahead of the subcommand, and only options
+    // `exec resume` declares itself follow it.
+    args.push(...codexWindowsSandboxArgs({ platform, dangerouslySkipPermissions }));
+    args.push("-C", cwd);
+    if (dangerouslySkipPermissions) {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    } else {
+      args.push("-s", sandboxForPermissionMode(permissionMode));
+    }
+    args.push("resume", resumeSessionId, "--json");
+    if (resolvedModel) args.push("-m", resolvedModel);
+    args.push("-");
+    return args;
+  }
+
+  args.push(...codexWindowsSandboxArgs({ platform, dangerouslySkipPermissions }));
+  args.push("--json", "-C", cwd);
+  if (resolvedModel) args.push("-m", resolvedModel);
+  if (dangerouslySkipPermissions) {
+    args.push("--dangerously-bypass-approvals-and-sandbox");
+  } else {
+    args.push("-s", sandboxForPermissionMode(permissionMode));
+  }
+  args.push("-");
+  return args;
 }
 
 /**
@@ -159,26 +358,13 @@ function spawnCodexProcess({
   const logPath = join(laneDir, logName);
   const log = createWriteStream(logPath, { flags: "a", mode: 0o600 });
 
-  // Prompt on stdin via `-` — multiline argv is unreliable on Windows.
-  const args = ["exec"];
-  args.push(...codexWindowsSandboxArgs({ dangerouslySkipPermissions }));
-  if (resumeSessionId) {
-    args.push("resume", resumeSessionId);
-  }
-  args.push("--json", "-C", cwd);
-  const resolvedModel =
-    (typeof model === "string" && model.trim()) ||
-    (typeof process.env.CODEX_MODEL === "string" && process.env.CODEX_MODEL.trim()) ||
-    "";
-  if (resolvedModel) {
-    args.push("-m", resolvedModel);
-  }
-  if (dangerouslySkipPermissions) {
-    args.push("--dangerously-bypass-approvals-and-sandbox");
-  } else {
-    args.push("-s", sandboxForPermissionMode(permissionMode));
-  }
-  args.push("-");
+  const args = buildCodexArgs({
+    cwd,
+    resumeSessionId,
+    model,
+    permissionMode,
+    dangerouslySkipPermissions,
+  });
 
   const childEnv = env || buildHarnessEnv(envAllowlist);
   const cmd = resolveCodexBin({ env: childEnv });
