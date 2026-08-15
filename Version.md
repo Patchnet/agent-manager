@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.19.0
+current: 1.20.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.20.0 - 2026-08-15
+
+Resilience batch: codex `exec resume` argv contract (fixes the 3/3-fatal reply-resume crash) with a recorded option-contract test, doctor models-cache validation, reply allowed on failed lanes with a needs-input marker, `integrate --force-lanes done,failed-with-snapshot` surfaced through Delivery Review, wip snapshots for every writable lane at lane end, ship-poll retry/backoff + stale version-plan invalidation, and a validate-time cross-lane depends_on import advisory.
 
 ## 1.19.0 - 2026-08-10
 
