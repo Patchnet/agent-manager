@@ -40,6 +40,38 @@ const FAILURE_CONCLUSIONS = new Set([
   "timed_out",
 ]);
 
+const REMOTE_RETRY_ATTEMPTS = 5;
+const REMOTE_RETRY_BASE_MS = 1_000;
+const REMOTE_RETRY_MAX_MS = 30_000;
+const BLOCK_CONFIRM_MAX_MS = 15_000;
+
+/**
+ * Failures that mean "GitHub did not answer", not "GitHub answered no". A ship that
+ * reads these as a verdict parks an approved release in needs-input until an operator
+ * looks: one TLS handshake timeout held an already-merged pull request there for 23h.
+ */
+const TRANSIENT_REMOTE_PATTERNS = [
+  /\bE(?:CONNRESET|CONNABORTED|CONNREFUSED|PIPE|TIMEDOUT|AI_AGAIN|NOTFOUND|NETUNREACH|NETRESET|HOSTUNREACH)\b/i,
+  /connection (?:reset|refused|closed|timed out)/i,
+  /connection was (?:reset|aborted)/i,
+  /socket hang ?up/i,
+  /tls handshake timeout/i,
+  /handshake fail/i,
+  /unexpected eof/i,
+  /\btimed out\b/i,
+  /\btimeouts?\b/i,
+  /could not resolve host/i,
+  /temporary failure in name resolution/i,
+  /network is unreachable/i,
+  /remote end hung up/i,
+  /\brpc failed\b/i,
+  /early eof/i,
+  /\bhttp 5\d{2}\b/i,
+  /returned error: 5\d{2}\b/i,
+  /\b(?:bad gateway|service unavailable|gateway time-?out|internal server error)\b/i,
+  /\bserver error\b/i,
+];
+
 export class ShipBlockedError extends Error {
   constructor(message, options = []) {
     super(message);
@@ -166,6 +198,18 @@ export function prepareShipHandoff(runId, options = {}) {
     0,
     900,
   );
+  const retryAttempts = boundedNumber(
+    options.retryAttempts ?? REMOTE_RETRY_ATTEMPTS,
+    "remote retry attempts",
+    1,
+    10,
+  );
+  const retryBaseMs = boundedNumber(
+    options.retryBaseMs ?? REMOTE_RETRY_BASE_MS,
+    "remote retry base milliseconds",
+    100,
+    60_000,
+  );
   const prValue = options.pr || target?.pr || target?.prUrl || (!target ? status.ship?.prUrl : null) || null;
   const pr = prValue ? safeArgument(prValue, "pull request") : null;
 
@@ -189,6 +233,8 @@ export function prepareShipHandoff(runId, options = {}) {
     pollSec,
     timeoutSec,
     checkGraceSec,
+    retryAttempts,
+    retryBaseMs,
     runtime: detectRuntimeProfile(),
     requestedAt: new Date().toISOString(),
   };
@@ -277,6 +323,9 @@ export function queueShip(runId, handoff) {
     targetId: handoff.targetId || null,
     mergeSha: handoff.targetId ? null : status.ship?.mergeSha || null,
     version: handoff.version,
+    // Carried across attempts on purpose: a version plan stamped on an earlier attempt
+    // is what a resumed ship has to re-validate against the target repo's base branch.
+    versionPlan: status.ship?.versionPlan || null,
     plannedTag: handoff.version ? `v${handoff.version}` : null,
     tag: null,
     pid: null,
@@ -465,8 +514,14 @@ async function runFormal(runId, status, handoff, dependencies) {
   const { exec, sleep, now } = dependencies;
   status = phase(runId, status, "commit", "checking the approved ship branch");
   ensureCurrentBranch(exec, handoff.worktree, handoff.branch);
-  const recordedPr = handoff.pr ? viewPr(exec, handoff.worktree, handoff.pr) : null;
-  if (recordedPr) validatePrTarget(recordedPr, handoff);
+  const prContext = remoteOptions(runId, handoff, sleep, "pull request state");
+  let recordedPr = null;
+  if (handoff.pr) {
+    const recorded = await readPr(exec, handoff.worktree, handoff.pr, prContext);
+    recordedPr = recorded.pr;
+    status.ship.remoteRetries = addRetries(status, recorded.retries);
+    validatePrTarget(recordedPr, handoff);
+  }
   const dirty = must(exec, "git", ["status", "--porcelain=v1"], handoff.worktree, "inspect branch").stdout;
   if (recordedPr?.state === "MERGED" && dirty) {
     throw new ShipBlockedError("The recorded pull request is merged, but its worktree has new changes.", [
@@ -510,7 +565,14 @@ async function runFormal(runId, status, handoff, dependencies) {
 
   assertNotCancelled(runId);
   status = phase(runId, status, "pr", "finding or creating the pull request");
-  let pr = recordedPr || viewPr(exec, handoff.worktree, handoff.branch, false);
+  let pr = recordedPr;
+  if (!pr) {
+    // A transient failure here would read as "no pull request exists" and open a
+    // duplicate, so the discovery read gets the same bounded retry as the poll.
+    const discovered = await readPr(exec, handoff.worktree, handoff.branch, prContext, false);
+    pr = discovered.pr;
+    status.ship.remoteRetries = addRetries(status, discovered.retries);
+  }
   if (!pr) {
     const created = must(
       exec,
@@ -525,7 +587,9 @@ async function runFormal(runId, status, handoff, dependencies) {
         "Provide the pull request URL with --pr and rerun ship.",
       ]);
     }
-    pr = viewPr(exec, handoff.worktree, url);
+    const opened = await readPr(exec, handoff.worktree, url, prContext);
+    pr = opened.pr;
+    status.ship.remoteRetries = addRetries(status, opened.retries);
   }
   validatePrTarget(pr, handoff);
   status.ship.prUrl = pr.url || handoff.pr;
@@ -561,6 +625,7 @@ async function runSimple(runId, status, handoff, dependencies) {
   const simpleHandoff = { ...handoff, repoRoot: simpleRoot };
   ensureCurrentBranch(exec, simpleRoot, handoff.branch);
   status = phase(runId, status, "release", `stamping ${handoff.version}`);
+  status = await ensureVersionPlan(runId, status, handoff, simpleRoot, { exec, sleep });
   const stamp = applyVersionStamp(simpleRoot, handoff.version, handoff.summary, now());
   verifyVersionStamp(simpleRoot, handoff.version, exec);
   status = step(runId, status, "release", "done", stamp.files.join(", "));
@@ -597,6 +662,7 @@ async function releaseFormal(runId, status, handoff, dependencies) {
   status = save(runId, status);
   const baseSha = must(exec, "git", ["rev-parse", "HEAD"], releaseRoot, "read release base").stdout;
   status = verifyDeliveryAncestry(runId, status, releaseHandoff, baseSha, exec);
+  status = await ensureVersionPlan(runId, status, handoff, releaseRoot, { exec, sleep });
   const stamp = applyVersionStamp(releaseRoot, handoff.version, handoff.summary, now());
   verifyVersionStamp(releaseRoot, handoff.version, exec);
   must(exec, "git", ["add", ...stamp.files], releaseRoot, "stage release stamp");
@@ -691,49 +757,196 @@ export function verifyDeliveryAncestry(runId, status, handoff, releaseBaseSha, e
   return save(runId, status);
 }
 
+/**
+ * Judge an approved version plan against what the target repo's base branch carries now.
+ * A plan stamped on an earlier attempt is only good while the base still points at the
+ * commit it was computed on; when someone else releases in between, re-applying the
+ * approved number renumbers a release backwards or collides with a published tag.
+ *
+ * States: `unverified` (base unreadable — fail soft), `current` (base unmoved or no
+ * recorded plan), `applied` (the base moved because this ship already pushed its own
+ * stamp), `rebased` (base moved but the plan is still ahead), `stale` (base moved past
+ * the plan — the plan must be recomputed, never applied).
+ */
+export function evaluateVersionPlan(plan, observed) {
+  const version = String(plan?.version || "");
+  if (!observed?.available || !observed.baseSha) {
+    return { state: "unverified", version, recommended: null, bump: null };
+  }
+  if (!plan?.baseSha || plan.baseSha === observed.baseSha) {
+    return { state: "current", version, recommended: null, bump: null };
+  }
+  if (plan.releaseSha && plan.releaseSha === observed.baseSha) {
+    return { state: "applied", version, recommended: null, bump: null };
+  }
+  const current = observed.current;
+  if (current && SEMVER.test(current) && SEMVER.test(version) && compareSemver(version, current) <= 0) {
+    const bump = plan.baseVersion && SEMVER.test(plan.baseVersion)
+      ? semverBumpLevel(plan.baseVersion, version)
+      : null;
+    return {
+      state: "stale",
+      version,
+      bump,
+      recommended: bump ? nextVersion(current, bump) : null,
+    };
+  }
+  return { state: "rebased", version, recommended: null, bump: null };
+}
+
+/** Re-read the target repo's base branch: its head commit and the version it carries. */
+async function observeShipBase(handoff, cwd, { exec, sleep, runId }) {
+  const unavailable = { available: false, baseSha: null, current: null };
+  const fetched = await execRemote(
+    exec,
+    "git",
+    ["fetch", handoff.remote, handoff.base],
+    cwd,
+    remoteOptions(runId, handoff, sleep, `${handoff.remote}/${handoff.base}`),
+  );
+  if (!fetched.result.ok) return unavailable;
+  const head = exec("git", ["rev-parse", `${handoff.remote}/${handoff.base}`], { cwd });
+  if (!head.ok) return unavailable;
+  const shown = exec("git", ["show", `${handoff.remote}/${handoff.base}:Version.md`], { cwd });
+  return {
+    available: true,
+    baseSha: firstLine(head.stdout),
+    current: shown.ok ? shown.stdout.match(/^current:\s*(\d+\.\d+\.\d+)\s*$/m)?.[1] || null : null,
+  };
+}
+
+async function ensureVersionPlan(runId, status, handoff, cwd, { exec, sleep }) {
+  if (!handoff.version) return status;
+  const plan = status.ship.versionPlan || null;
+  const observed = await observeShipBase(handoff, cwd, { exec, sleep, runId });
+  const evaluation = evaluateVersionPlan(
+    {
+      version: handoff.version,
+      baseSha: plan?.baseSha || null,
+      baseVersion: plan?.baseVersion || null,
+      releaseSha: plan?.releaseSha || status.ship.releaseSha || null,
+    },
+    observed,
+  );
+  if (evaluation.state === "stale") {
+    throw new ShipBlockedError(
+      `The approved version plan ${handoff.version} is stale: ${handoff.remote}/${handoff.base} now carries ${observed.current}.`,
+      [
+        evaluation.recommended
+          ? `Rerun Delivery Review and Ship Gate, then ship with --version ${evaluation.recommended} (the ${evaluation.bump} bump you approved, applied to ${observed.current}).`
+          : `Recompute the release version against ${observed.current}, then rerun Ship Gate.`,
+        "Or confirm the release already shipped and cancel this ship phase.",
+      ],
+    );
+  }
+  status.ship.versionPlan = {
+    version: handoff.version,
+    baseVersion: plan?.baseVersion || observed.current || null,
+    baseSha: plan?.baseSha || observed.baseSha || null,
+    releaseSha: plan?.releaseSha || status.ship.releaseSha || null,
+    observedBaseSha: observed.baseSha,
+    observedVersion: observed.current,
+    state: evaluation.state,
+    plannedAt: plan?.plannedAt || new Date().toISOString(),
+  };
+  if (evaluation.state === "rebased") {
+    status.ship.lastActivity =
+      `${handoff.remote}/${handoff.base} advanced since the plan was stamped; ${handoff.version} is still ahead of ${observed.current || "its history"}`;
+  }
+  return save(runId, status);
+}
+
+/**
+ * Classify a single pull-request read into a blocker, or null to keep waiting. Split out
+ * of the poll loop so the same verdict can be recomputed against a second, fresher read
+ * before an approved ship is parked in needs-input.
+ */
+export function classifyPrBlock(pr, { exec, cwd, insideCheckGrace = false } = {}) {
+  if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") {
+    return new ShipBlockedError("The pull request has merge conflicts.", [
+      "Resolve the conflicts on the ship branch and rerun ship.",
+      "Abandon the ship phase.",
+    ]);
+  }
+  if (pr.reviewDecision === "CHANGES_REQUESTED") {
+    return new ShipBlockedError("A pull-request review requested changes.", [
+      "Address the review feedback on the ship branch and rerun ship.",
+      "Reject or abandon the release.",
+    ]);
+  }
+  const failed = failedChecks(pr.statusCheckRollup);
+  if (failed.length) {
+    return new ShipBlockedError(`Pull request checks failed: ${failed.join(", ")}`, [
+      "Fix the failing checks on the ship branch and rerun ship.",
+      "Reject or abandon the release.",
+    ]);
+  }
+  if (insideCheckGrace) return null;
+  return diagnoseBlockedMerge(pr, exec, cwd);
+}
+
 async function waitForPr(runId, status, handoff, { exec, sleep, now }) {
   const deadline = now() + handoff.timeoutSec * 1000;
   const checkRegistrationStartedAt = now();
+  const prContext = remoteOptions(runId, handoff, sleep, "pull request state");
+  const target = () => status.ship.prUrl || String(status.ship.prNumber);
+  const grace = (candidate) =>
+    isWithinCheckRegistrationGrace(
+      candidate,
+      now() - checkRegistrationStartedAt,
+      handoff.checkGraceSec ?? 90,
+    );
   let updatedBehind = false;
   while (now() <= deadline) {
     assertNotCancelled(runId);
-    const pr = viewPr(exec, handoff.worktree, status.ship.prUrl || String(status.ship.prNumber));
+    const poll = await readPr(exec, handoff.worktree, target(), prContext);
+    const pr = poll.pr;
     validatePrTarget(pr, handoff);
     status.ship.lastActivity = `PR ${pr.state || "UNKNOWN"} · ${pr.mergeStateStatus || "UNKNOWN"}`;
     status.ship.checks = summarizeChecks(pr.statusCheckRollup);
     status.ship.reviewDecision = pr.reviewDecision || null;
+    status.ship.remoteRetries = addRetries(status, poll.retries);
     status = save(runId, status);
     if (pr.state === "MERGED") return { status, pr };
-    if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") {
-      throw new ShipBlockedError("The pull request has merge conflicts.", [
-        "Resolve the conflicts on the ship branch and rerun ship.",
-        "Abandon the ship phase.",
-      ]);
+
+    const insideCheckGrace = grace(pr);
+    const suspected = classifyPrBlock(pr, { exec, cwd: handoff.worktree, insideCheckGrace });
+    if (suspected) {
+      // GitHub serves a stale mergeStateStatus for a few seconds after a push — BLOCKED
+      // before the required checks register. Confirm every state-derived blocker against
+      // a second read so a pre-CI stale answer cannot end an approved ship.
+      status.ship.lastActivity = `confirming a blocked pull request state: ${suspected.message}`;
+      status = save(runId, status);
+      await sleep(confirmDelayMs(handoff));
+      assertNotCancelled(runId);
+      const recheck = await readPr(exec, handoff.worktree, target(), prContext);
+      const confirmedPr = recheck.pr;
+      validatePrTarget(confirmedPr, handoff);
+      status.ship.checks = summarizeChecks(confirmedPr.statusCheckRollup);
+      status.ship.reviewDecision = confirmedPr.reviewDecision || null;
+      status.ship.remoteRetries = addRetries(status, recheck.retries);
+      if (confirmedPr.state === "MERGED") {
+        status.ship.lastActivity = `PR ${confirmedPr.state} · ${confirmedPr.mergeStateStatus || "UNKNOWN"}`;
+        status = save(runId, status);
+        return { status, pr: confirmedPr };
+      }
+      const confirmed = classifyPrBlock(confirmedPr, {
+        exec,
+        cwd: handoff.worktree,
+        insideCheckGrace: grace(confirmedPr),
+      });
+      if (confirmed) throw confirmed;
+      status.ship.staleBlockedReads = Number(status.ship.staleBlockedReads || 0) + 1;
+      status.ship.lastActivity =
+        `re-poll cleared a stale blocked read (PR ${confirmedPr.state || "UNKNOWN"} · ${confirmedPr.mergeStateStatus || "UNKNOWN"})`;
+      status = save(runId, status);
+      await sleep(handoff.pollSec * 1000);
+      continue;
     }
-    if (pr.reviewDecision === "CHANGES_REQUESTED") {
-      throw new ShipBlockedError("A pull-request review requested changes.", [
-        "Address the review feedback on the ship branch and rerun ship.",
-        "Reject or abandon the release.",
-      ]);
-    }
-    const failed = failedChecks(pr.statusCheckRollup);
-    if (failed.length) {
-      throw new ShipBlockedError(`Pull request checks failed: ${failed.join(", ")}`, [
-        "Fix the failing checks on the ship branch and rerun ship.",
-        "Reject or abandon the release.",
-      ]);
-    }
-    const insideCheckGrace = isWithinCheckRegistrationGrace(
-      pr,
-      now() - checkRegistrationStartedAt,
-      handoff.checkGraceSec ?? 90,
-    );
+
     if (insideCheckGrace && pr.mergeStateStatus === "BLOCKED") {
       status.ship.lastActivity = "waiting for GitHub to register required checks";
       status = save(runId, status);
-    } else {
-      const blockedDiag = diagnoseBlockedMerge(pr, exec, handoff.worktree);
-      if (blockedDiag) throw blockedDiag;
     }
     if (pr.mergeStateStatus === "BEHIND" && !updatedBehind) {
       must(
@@ -776,9 +989,10 @@ async function waitForCiIfConfigured(
   }
   status = phase(runId, status, "ci", `waiting for CI on ${sha.slice(0, 12)}`);
   const deadline = now() + handoff.timeoutSec * 1000;
+  const ciContext = remoteOptions(runId, handoff, sleep, "release CI");
   while (now() <= deadline) {
     assertNotCancelled(runId);
-    const result = must(
+    const poll = await execRemote(
       exec,
       "gh",
       [
@@ -792,8 +1006,16 @@ async function waitForCiIfConfigured(
         "databaseId,status,conclusion,url,workflowName,event,headSha",
       ],
       repoRoot,
-      "read release CI",
+      ciContext,
     );
+    const result = poll.result;
+    if (!result.ok) {
+      throw new ShipBlockedError(
+        `read release CI failed${poll.transient ? ` after ${poll.attempts} attempts` : ""}: ${result.stderr || result.stdout || "unknown error"}`,
+        ["Resolve the command failure and rerun ship.", "Abandon the ship phase."],
+      );
+    }
+    status.ship.remoteRetries = addRetries(status, poll.retries);
     const runs = parseJson(result.stdout, "GitHub Actions runs");
     if (!Array.isArray(runs)) {
       throw new ShipBlockedError("GitHub returned an invalid CI response.", [
@@ -1004,8 +1226,75 @@ function ensureCurrentBranch(exec, cwd, branch) {
   }
 }
 
-function viewPr(exec, cwd, target, required = true) {
-  const result = exec(
+/**
+ * True when a failed remote command carries a network-shaped error rather than an
+ * answer from GitHub. Only failed results qualify; a successful call is never transient.
+ */
+export function isTransientRemoteFailure(result) {
+  if (!result || result.ok) return false;
+  const text = `${result.stderr || ""}\n${result.stdout || ""}`;
+  return TRANSIENT_REMOTE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/** Exponential backoff, capped, deterministic — attempt 1 waits the base delay. */
+export function remoteBackoffMs(
+  attempt,
+  baseMs = REMOTE_RETRY_BASE_MS,
+  maxMs = REMOTE_RETRY_MAX_MS,
+) {
+  const step = Math.max(1, Number(attempt) || 1);
+  const base = Number(baseMs) || REMOTE_RETRY_BASE_MS;
+  return Math.min(maxMs, base * 2 ** (step - 1));
+}
+
+function remoteOptions(runId, handoff, sleep, label) {
+  return {
+    runId,
+    sleep,
+    label,
+    attempts: handoff.retryAttempts,
+    baseMs: handoff.retryBaseMs,
+  };
+}
+
+/**
+ * Run a network-facing command with bounded exponential backoff. Transient failures are
+ * retried in place so they never reach the caller as a verdict; a non-transient failure
+ * returns on the first attempt so the fail-closed handling above it is unchanged.
+ */
+async function execRemote(exec, command, args, cwd, context) {
+  const attempts = Math.max(1, Number(context.attempts) || REMOTE_RETRY_ATTEMPTS);
+  let attempt = 1;
+  let retries = 0;
+  let result = exec(command, args, { cwd });
+  while (!result.ok && isTransientRemoteFailure(result) && attempt < attempts) {
+    const delay = remoteBackoffMs(attempt, context.baseMs);
+    noteTransientRetry(context.runId, context.label, attempt, attempts, delay, result);
+    await context.sleep(delay);
+    attempt += 1;
+    retries += 1;
+    result = exec(command, args, { cwd });
+  }
+  return { result, retries, attempts: attempt, transient: isTransientRemoteFailure(result) };
+}
+
+function noteTransientRetry(runId, label, attempt, attempts, delay, result) {
+  if (!runId) return;
+  const current = readStatus(runId);
+  if (!current?.ship) return;
+  current.ship.remoteRetries = Number(current.ship.remoteRetries || 0) + 1;
+  current.ship.lastActivity =
+    `transient GitHub error reading ${label} (attempt ${attempt}/${attempts}, retrying in ${Math.round(delay / 1000)}s): ${firstLine(result.stderr || result.stdout)}`;
+  save(runId, current);
+}
+
+function addRetries(status, retries) {
+  return Number(status.ship.remoteRetries || 0) + Number(retries || 0);
+}
+
+async function readPr(exec, cwd, target, context, required = true) {
+  const { result, retries, transient, attempts } = await execRemote(
+    exec,
     "gh",
     [
       "pr",
@@ -1014,15 +1303,18 @@ function viewPr(exec, cwd, target, required = true) {
       "--json",
       "state,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup,mergedAt,mergeCommit,url,number,headRefName,baseRefName",
     ],
-    { cwd },
+    cwd,
+    context,
   );
   if (!result.ok) {
-    if (!required) return null;
-    throw new ShipBlockedError(`Unable to read pull request: ${result.stderr || result.stdout}`, [
-      "Verify GitHub authentication and the pull request reference, then rerun ship.",
-    ]);
+    if (!required) return { pr: null, retries };
+    const detail = result.stderr || result.stdout || "unknown error";
+    throw new ShipBlockedError(
+      `Unable to read pull request${transient ? ` after ${attempts} attempts` : ""}: ${detail}`,
+      ["Verify GitHub authentication and the pull request reference, then rerun ship."],
+    );
   }
-  return parseJson(result.stdout, "pull request");
+  return { pr: parseJson(result.stdout, "pull request"), retries };
 }
 
 function failedChecks(checks = []) {
@@ -1274,13 +1566,40 @@ function atomicWrite(path, content) {
 }
 
 function compareSemver(left, right) {
-  const parse = (value) => value.split(/[+-]/, 1)[0].split(".").map(Number);
-  const a = parse(left);
-  const b = parse(right);
+  const a = parseSemver(left);
+  const b = parseSemver(right);
   for (let index = 0; index < 3; index += 1) {
     if (a[index] !== b[index]) return a[index] > b[index] ? 1 : -1;
   }
   return 0;
+}
+
+function parseSemver(value) {
+  return String(value).split(/[+-]/, 1)[0].split(".").map(Number);
+}
+
+/** The bump the operator approved, read back off the plan they approved it on. */
+function semverBumpLevel(from, to) {
+  const a = parseSemver(from);
+  const b = parseSemver(to);
+  if (b[0] > a[0]) return "major";
+  if (b[1] > a[1]) return "minor";
+  return "patch";
+}
+
+function nextVersion(current, bump) {
+  const [major, minor, patch] = parseSemver(current);
+  if (bump === "major") return `${major + 1}.0.0`;
+  if (bump === "minor") return `${major}.${minor + 1}.0`;
+  return `${major}.${minor}.${patch + 1}`;
+}
+
+function confirmDelayMs(handoff) {
+  return Math.min(BLOCK_CONFIRM_MAX_MS, Math.max(0, Number(handoff.pollSec) || 0) * 1000);
+}
+
+function firstLine(value) {
+  return String(value || "").split(/\r?\n/)[0].trim();
 }
 
 function escapeRegex(value) {
