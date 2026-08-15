@@ -824,15 +824,20 @@ async function main() {
         depends_on: dependsOn,
       }) => ({ id, harness, scope, readOnly, dependsOn })),
       scopeOverrides: workflow.scope_overrides,
+      warnings: workflow.lint_warnings,
       verificationCommands: workflow.verification.commands.length,
       goalRefs: workflow.goal_refs,
       planning,
       delivery: workflow.delivery,
       runtime: workflow.runtime,
     };
-    console.log(args.includes("--json")
-      ? JSON.stringify(payload)
-      : `valid: ${file}\nrepo: ${payload.repo}\nruntime: ${formatRuntime(payload.runtime)}\nlanes: ${payload.lanes.length}`);
+    console.log(args.includes("--json") ? JSON.stringify(payload) : [
+      `valid: ${file}`,
+      `repo: ${payload.repo}`,
+      `runtime: ${formatRuntime(payload.runtime)}`,
+      `lanes: ${payload.lanes.length}`,
+      ...payload.warnings.map((warning) => `warning: ${warning.message}`),
+    ].join("\n"));
     return;
   }
 
