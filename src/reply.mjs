@@ -5,6 +5,7 @@ import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
 import { createPolicyEventInspector, validateLaneGuardrails } from "./guardrails.mjs";
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { integrateLanes } from "./integrate.mjs";
+import { restoreLaneSnapshot, snapshotLaneAtEnd } from "./lane-snapshot.mjs";
 import { assertPathInside, assertSafeSlug, runDir } from "./paths.mjs";
 import { writePrivateFile } from "./fs-safe.mjs";
 import { writeReport } from "./report.mjs";
@@ -32,6 +33,14 @@ const CORRECTION_POLL_MS = 250;
 const CORRECTION_TIMEOUT_MS = 60_000;
 const CORRECTION_SETTLE_MS = 15_000;
 const PAUSABLE_STATES = new Set(["running", "blocked"]);
+/**
+ * `blocked` is the ordinary reply target. `failed` is the recovery target: a
+ * lane that raised needs-input and then died — a crashed resume, a stalled
+ * harness — is `failed` while still holding its escalation and its worktree.
+ * That lane is answerable, so reply accepts it when the needs-input marker is
+ * still on record, or when the operator forces it.
+ */
+const REPLYABLE_STATES = new Set(["blocked", "failed"]);
 
 function processIsAlive(pid) {
   if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return false;
@@ -156,7 +165,7 @@ export async function prepareCorrection(runId, laneId, message, options = {}) {
   return { ...prepared, correction, interrupted: correction.interrupted };
 }
 
-export function prepareReply(runId, laneId, message) {
+export function prepareReply(runId, laneId, message, { force = false } = {}) {
   assertSafeSlug(runId, "run id");
   assertSafeSlug(laneId, "lane id");
   if (!message || !String(message).trim()) throw new Error("reply requires a non-empty message");
@@ -164,7 +173,22 @@ export function prepareReply(runId, laneId, message) {
   if (!status) throw new Error("no status for " + runId);
   const lane = (status.lanes || []).find((item) => item.id === laneId);
   if (!lane) throw new Error("no lane " + laneId + " in " + runId);
-  if (lane.state !== "blocked") throw new Error("lane " + laneId + " is not blocked");
+  if (!REPLYABLE_STATES.has(lane.state)) throw new Error("lane " + laneId + " is not blocked");
+  const previousLaneState = lane.state;
+  const previousRunState = status.state;
+  const recovering = previousLaneState === "failed";
+  const markerPaths = needsInputMarkerPaths(runId, lane);
+  const hasNeedsInput = markerPaths.some((path) => existsSync(path)) || !!lane.needsInput;
+  if (recovering) {
+    if (!hasNeedsInput && !force) {
+      throw new Error(
+        "lane " + laneId + " failed without a needs-input marker; rerun with --force to resume it anyway",
+      );
+    }
+    if (!lane.worktree || !existsSync(lane.worktree)) {
+      throw new Error("lane " + laneId + " has no worktree left to resume");
+    }
+  }
   if (!lane.sessionId) throw new Error("lane " + laneId + " has no harness session id to resume");
   const previousNeedsInput = lane.needsInput;
   const reacquired = claimLane({
@@ -177,15 +201,8 @@ export function prepareReply(runId, laneId, message) {
     mode: status.claimMode,
   });
 
-  const root = runDir(runId);
-  const laneDir = join(root, laneId);
-  const safeWorktree = lane.worktree ? assertPathInside(root, lane.worktree, `lane ${laneId} worktree`) : null;
-  for (const path of [
-    join(laneDir, "needs-input.json"),
-    safeWorktree ? join(safeWorktree, "needs-input.json") : null,
-  ].filter(Boolean)) {
-    rmSync(path, { force: true });
-  }
+  const laneDir = join(runDir(runId), laneId);
+  for (const path of markerPaths) rmSync(path, { force: true });
 
   lane.attempt = Number(lane.attempt || 1) + 1;
   const messagePath = join(laneDir, "reply-" + lane.attempt + ".txt");
@@ -194,6 +211,15 @@ export function prepareReply(runId, laneId, message) {
   lane.needsInput = null;
   lane.endedAt = null;
   lane.replyStartedAt = new Date().toISOString();
+  if (recovering) {
+    lane.exitCode = null;
+    lane.recovery = {
+      from: previousLaneState,
+      at: lane.replyStartedAt,
+      needsInputMarker: hasNeedsInput,
+      forced: !hasNeedsInput,
+    };
+  }
   status.supervisor = { pid: null, startedAt: lane.replyStartedAt, kind: "resume" };
   lane.lastActivity = "reply queued for harness resume";
   lane.claim = reacquired.skipped
@@ -212,8 +238,38 @@ export function prepareReply(runId, laneId, message) {
         };
   status.state = "running";
   status.endedAt = null;
+  // A recovered lane is running again, so the run is too: drop the terminal
+  // execution stamp, and the run-level failure once no lane is still failed.
+  if (status.execution && status.execution.state !== "running") {
+    status.execution = { ...status.execution, state: "running", endedAt: null };
+  }
+  const otherFailedLanes = (status.lanes || []).filter(
+    (item) => item.id !== laneId && item.state === "failed",
+  );
+  if (previousRunState === "failed" && !otherFailedLanes.length && status.error) {
+    delete status.error;
+  }
   writeStatus(runId, status);
-  return { status, lane, messagePath, previousNeedsInput };
+  return {
+    status,
+    lane,
+    messagePath,
+    previousNeedsInput,
+    previousLaneState,
+    previousRunState,
+    recovered: recovering,
+  };
+}
+
+function needsInputMarkerPaths(runId, lane) {
+  const root = runDir(runId);
+  const safeWorktree = lane.worktree
+    ? assertPathInside(root, lane.worktree, `lane ${lane.id} worktree`)
+    : null;
+  return [
+    join(root, lane.id, "needs-input.json"),
+    safeWorktree ? join(safeWorktree, "needs-input.json") : null,
+  ].filter(Boolean);
 }
 
 export async function resumeLane(runId, laneId, messagePath) {
@@ -258,6 +314,14 @@ export async function resumeLane(runId, laneId, messagePath) {
   const root = runDir(runId);
   const laneDir = join(root, laneId);
   lane.worktree = assertPathInside(root, lane.worktree, `lane ${laneId} worktree`);
+  // Hand the worker back the working tree it left, not a tree with the
+  // recovery snapshot already committed on top of it.
+  const restored = restoreLaneSnapshot(lane.worktree, lane.snapshot);
+  if (restored.restored) {
+    lane.snapshot = { ...lane.snapshot, state: "restored", restoredAt: new Date().toISOString() };
+  } else if (!restored.ok) {
+    lane.snapshot = { ...lane.snapshot, restoreError: restored.error };
+  }
   const prompt = readFileSync(safeMessagePath, "utf8");
   const inspectPolicyEvent = createPolicyEventInspector(workflow.policy);
   let runtimeViolation = null;
@@ -387,6 +451,8 @@ export async function resumeLane(runId, laneId, messagePath) {
     lane.state = "failed";
   }
 
+  // After guardrails, so the snapshot commit is never counted as a worker commit.
+  snapshotLaneAtEnd(lane);
   lane.endedAt = new Date().toISOString();
   if (
     lane.state !== "blocked" &&

@@ -69,9 +69,13 @@ export function buildDeliveryReview(runId, {
     "## Lane evidence",
     "",
   ];
+  const forcedLaneIds = new Set(status.integrate?.forcedLanes || []);
   for (const lane of status.lanes || []) {
     lines.push(`### ${lane.id} (${lane.harness})`, "");
     lines.push(`- State: ${lane.state}`);
+    if (forcedLaneIds.has(lane.id)) {
+      lines.push(`- **Force-included in integration:** lane ended \`${lane.state}\`; its snapshot commit was folded on operator instruction`);
+    }
     lines.push(`- Kind: ${lane.kind || "legacy/unspecified"}`);
     lines.push(`- Completion contract: ${lane.completion?.state || "legacy/unrecorded"}`);
     lines.push(`- Expected outputs: ${lane.expectedOutputs?.length ? lane.expectedOutputs.map((file) => `\`${file}\``).join(", ") : "none"}`);
@@ -90,6 +94,20 @@ export function buildDeliveryReview(runId, {
   lines.push(`- Dependency topology: ${status.topology?.fullySerialized ? "fully serialized" : "parallelizable"}`);
   if (status.topology?.recommendation) lines.push(`- Topology recommendation: ${status.topology.recommendation}`);
   lines.push(`- Structural preflight errors: ${structuralPreflight.errors.length ? structuralPreflight.errors.join("; ") : "none"}`);
+  if (structuralPreflight.forceIncluded?.length || status.integrate?.excludedLanes?.length) {
+    lines.push(
+      `- Force-included lanes (\`--force-lanes ${(status.integrate?.forceLaneSelectors || []).join(",")}\`): ${
+        structuralPreflight.forceIncluded?.length ? structuralPreflight.forceIncluded.join("; ") : "none"
+      }`,
+    );
+    lines.push(
+      `- Lanes excluded from the fold: ${
+        status.integrate?.excludedLanes?.length
+          ? status.integrate.excludedLanes.map((lane) => `${lane.id} (${lane.reason})`).join("; ")
+          : "none"
+      }`,
+    );
+  }
   lines.push(
     `- Changed-file overlaps: ${
       status.integrate?.changedFileOverlaps?.length
@@ -146,6 +164,11 @@ export function buildDeliveryReview(runId, {
 
 export function inspectDeliveryStructure(status) {
   const errors = [];
+  // Lanes the operator force-included via `integrate --force-lanes`. Their work
+  // is in the fold, so a failed state is recorded evidence rather than a
+  // structural error — but it is never silently read as `done`.
+  const forcedLanes = new Set(status.integrate?.forcedLanes || []);
+  const forceIncluded = [];
   const root = runDir(status.runId);
   if (status.planning?.state !== "verified") errors.push("planning evidence is not verified");
   if (!status.planning?.contextSnapshot || !existsSync(status.planning.contextSnapshot)) {
@@ -157,7 +180,10 @@ export function inspectDeliveryStructure(status) {
     if (digest !== status.planning.contextDigest) errors.push("frozen planning context digest mismatch");
   }
   for (const lane of status.lanes || []) {
-    if (lane.state !== "done") errors.push(`lane ${lane.id} is ${lane.state}`);
+    if (lane.state !== "done") {
+      if (forcedLanes.has(lane.id)) forceIncluded.push(`${lane.id} (${lane.state})`);
+      else errors.push(`lane ${lane.id} is ${lane.state}`);
+    }
     if (lane.completion && lane.completion.state !== "verified") {
       errors.push(`lane ${lane.id} completion is ${lane.completion.state}`);
     }
@@ -194,7 +220,7 @@ export function inspectDeliveryStructure(status) {
       );
     }
   }
-  return { ok: errors.length === 0, errors };
+  return { ok: errors.length === 0, errors, forceIncluded };
 }
 
 /*

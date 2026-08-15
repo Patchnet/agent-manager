@@ -33,7 +33,7 @@ import { AGENT_MANAGER_VERSION } from "./version.mjs";
 import { writeReport } from "./report.mjs";
 import { integrateLanes } from "./integrate.mjs";
 import { runVerification } from "./verification.mjs";
-import { mergeDependencyBranches } from "./lane-snapshot.mjs";
+import { mergeDependencyBranches, snapshotLaneAtEnd } from "./lane-snapshot.mjs";
 import { assertSafeSlug, runDir } from "./paths.mjs";
 import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
@@ -757,6 +757,8 @@ export async function runWorkflow(workflowPath, {
           laneState.state = "failed";
         }
 
+        // After guardrails, so the snapshot commit is never counted as a worker commit.
+        snapshotLaneAtEnd(laneState);
         laneState.endedAt = new Date().toISOString();
         if (laneState.state === "blocked") {
           laneState.claim = { ...laneState.claim, state: "retained", reason: "needs-input" };
@@ -778,6 +780,7 @@ export async function runWorkflow(workflowPath, {
         activeHandles.delete(lane.id);
         laneState.state = "failed";
         laneState.lastActivity = String(error?.message || error);
+        snapshotLaneAtEnd(laneState);
         laneState.endedAt = new Date().toISOString();
         releaseLaneClaim(status, laneState);
         persistStatus();

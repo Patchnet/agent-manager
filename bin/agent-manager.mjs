@@ -114,7 +114,8 @@ function usage() {
     "  agent-manager goal link <id> --type <type> --ref <ref> [options] [--json]",
     "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000] [--notify]",
     "    --notify: OS toast on needs-input, blocked, terminal, and ship events",
-    "  agent-manager reply <runId> <laneId> --message <text> [--json]",
+    "  agent-manager reply <runId> <laneId> --message <text> [--force] [--json]",
+    "    --force: answer a failed lane that kept no needs-input marker",
     "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--notes <text>]] [--json]",
     "  agent-manager closeout <runId> --operator <id> [--reason <text>] [--no-artifacts] [--json]",
     "    accept-without-ship terminal: files run outputs, ends the run as `filed`",
@@ -128,7 +129,8 @@ function usage() {
     "             --poll-sec <n> --timeout-sec <n> --check-grace-sec <n>",
     "  agent-manager cancel <runId> [--remove-worktrees]",
     "  agent-manager cleanup <runId> [--keep-logs] | --stale [--older-than-days 30]",
-    "  agent-manager integrate <runId> [--json]",
+    "  agent-manager integrate <runId> [--force-lanes done,failed-with-snapshot] [--json]",
+    "    --force-lanes: also fold failed lanes whose end-of-lane snapshot committed",
     "  agent-manager install cursor [--project <path>] [--force] [--json]",
     "  agent-manager harnesses [--json]",
     "  agent-manager version [--json]",
@@ -649,18 +651,18 @@ async function detachRun(flags) {
   return payload;
 }
 
-function detachReply(runId, laneId, message, json) {
-  const prepared = prepareReply(runId, laneId, message);
+function detachReply(runId, laneId, message, json, { force = false } = {}) {
+  const prepared = prepareReply(runId, laneId, message, { force });
   const laneDir = join(runDir(runId), assertSafeSlug(laneId, "lane id"));
   const logPath = join(laneDir, `resume-supervisor-${prepared.lane.attempt}.log`);
   let child;
   try {
     child = spawnDetached(["_resume-lane", runId, laneId, prepared.messagePath], logPath);
   } catch (error) {
-    prepared.lane.state = "blocked";
+    prepared.lane.state = prepared.previousLaneState || "blocked";
     prepared.lane.needsInput = prepared.previousNeedsInput;
     prepared.lane.lastActivity = "resume supervisor failed to start";
-    prepared.status.state = "blocked";
+    prepared.status.state = prepared.previousRunState || "blocked";
     prepared.status.endedAt = null;
     writeStatus(runId, prepared.status);
     throw error;
@@ -991,7 +993,9 @@ async function main() {
 
   if (cmd === "reply") {
     if (!args[1] || !args[2]) throw new Error("reply requires <runId> <laneId>");
-    detachReply(args[1], args[2], flagValue("--message"), args.includes("--json"));
+    detachReply(args[1], args[2], flagValue("--message"), args.includes("--json"), {
+      force: args.includes("--force"),
+    });
     return;
   }
   if (cmd === "_resume-lane") { await resumeLane(args[1], args[2], args[3]); return; }
@@ -1133,7 +1137,12 @@ async function main() {
     console.log(formatStatus(cleanupRun(args[1], { keepLogs: args.includes("--keep-logs") })));
     return;
   }
-  if (cmd === "integrate") { if (!args[1]) throw new Error("integrate requires <runId>"); const status = await integrateRun(args[1]); console.log(args.includes("--json") ? JSON.stringify(status) : formatStatus(status)); return; }
+  if (cmd === "integrate") {
+    if (!args[1]) throw new Error("integrate requires <runId>");
+    const status = await integrateRun(args[1], { forceLanes: flagValue("--force-lanes") || [] });
+    console.log(args.includes("--json") ? JSON.stringify(status) : formatStatus(status));
+    return;
+  }
 
   if (cmd === "install") {
     if (args[1] !== "cursor") throw new Error("install currently supports: cursor");
