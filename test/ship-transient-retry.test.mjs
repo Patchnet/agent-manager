@@ -390,7 +390,7 @@ test("a resumed ship refuses to stamp a version the base branch has passed", asy
 
   mkdirSync(repo, { recursive: true });
   execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
-  execFileSync("git", ["init", "--bare", remote], { stdio: "ignore" });
+  execFileSync("git", ["init", "--bare", "-b", "main", remote], { stdio: "ignore" });
   git(repo, "config", "user.name", "Test");
   git(repo, "config", "user.email", "test@example.invalid");
   git(repo, "remote", "add", "origin", remote);
@@ -510,7 +510,7 @@ test("a ship whose base advanced under it keeps a version that is still ahead", 
 
   mkdirSync(repo, { recursive: true });
   execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
-  execFileSync("git", ["init", "--bare", remote], { stdio: "ignore" });
+  execFileSync("git", ["init", "--bare", "-b", "main", remote], { stdio: "ignore" });
   git(repo, "config", "user.name", "Test");
   git(repo, "config", "user.email", "test@example.invalid");
   git(repo, "remote", "add", "origin", remote);
