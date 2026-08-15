@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { DEFAULT_MAX_CONCURRENCY, MAX_LANES } from "./constants.mjs";
@@ -6,8 +6,10 @@ import { normalizePlanning, planningPrompt } from "./planning.mjs";
 import { assertPathInside, assertSafeSlug, repoPath } from "./paths.mjs";
 import { detectRuntimeProfile, runtimePrompt } from "./runtime.mjs";
 import {
+  listScopedFiles,
   matchesScope,
   normalizeScopePath,
+  resolveImportPath,
   scopeConflictWitness,
   scopesMayOverlap,
 } from "./scope.mjs";
@@ -98,6 +100,7 @@ export function loadWorkflow(filePath, {
   assertShellPolicyCoherence(lanes, policy);
   const scopeOverrides = normalizeScopeOverrides(doc.scope_overrides, lanes);
   const sequentialOverlaps = applyScopeOwnership(lanes, scopeOverrides);
+  const lintWarnings = collectLintWarnings(lanes, repoRoot);
   const feed = normalizeFeed(doc.feed, basename(repoRoot));
   const claimMode = doc.claim_mode || "auto";
   if (!CLAIM_MODES.has(claimMode)) {
@@ -155,6 +158,7 @@ export function loadWorkflow(filePath, {
     topology,
     scope_overrides: scopeOverrides,
     sequential_overlaps: sequentialOverlaps,
+    lint_warnings: lintWarnings,
     verification,
     goal_refs: goalRefs,
     planning,
@@ -657,6 +661,138 @@ function applyScopeOwnership(lanes, overrides) {
     throw new Error(`workflow has overlapping write scopes: ${details}`);
   }
   return sequentialOverlaps;
+}
+
+// A lint that cannot read the tree still lets the workflow load: an advisory has no
+// standing to fail a run that every hard validation already accepted.
+function collectLintWarnings(lanes, repoRoot) {
+  try {
+    return lintCrossLaneImports(lanes, repoRoot);
+  } catch {
+    return [];
+  }
+}
+
+// Source files worth reading for import edges. Everything else in a lane scope
+// (fixtures, markdown, lockfiles) cannot express a code dependency this lint reads.
+const LINT_SOURCE_EXTENSIONS = new Set([
+  ".mjs", ".js", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".jsx",
+]);
+const LINT_MAX_FILES_PER_LANE = 2_000;
+const LINT_MAX_FILE_BYTES = 512 * 1_024;
+// Best-effort specifier extraction. A parser would be exact, but this lint only
+// raises advisories, so a missed edge costs nothing a reviewer was relying on.
+const LINT_IMPORT_PATTERNS = [
+  /(?:^|[\s;}])(?:import|export)\s+(?:[^'"();]*?\bfrom\s+)?["']([^"'\n]+)["']/g,
+  /\bimport\s*\(\s*["']([^"'\n]+)["']/g,
+  /\brequire\s*\(\s*["']([^"'\n]+)["']/g,
+];
+
+/**
+ * Advisory only: a lane whose files import from another writable lane's scope is
+ * ordered by that seam whether or not the workflow says so. The chip-reopen lane
+ * shipped green against a stale copy of its dependency and broke at the fold, which
+ * a declared depends_on would have prevented. Never an error — the scan is a
+ * best-effort read of the base tree and the operator owns the ordering call.
+ */
+export function lintCrossLaneImports(lanes, repoRoot) {
+  const writable = lanes.filter((lane) =>
+    lane.kind === "implementation" && !READ_ONLY_PERMISSION_MODES.has(lane.permission_mode));
+  if (writable.length < 2) return [];
+  const existsCache = new Map();
+  const exists = (path) => {
+    if (!existsCache.has(path)) existsCache.set(path, isRepoFile(repoRoot, path));
+    return existsCache.get(path);
+  };
+  const warnings = [];
+  for (const lane of writable) {
+    const candidates = writable.filter((other) =>
+      other.id !== lane.id && !laneDependsOn(lanes, lane.id, other.id));
+    if (!candidates.length) continue;
+    const crossings = new Map();
+    for (const file of listScopedFiles(repoRoot, lane.scope, { limit: LINT_MAX_FILES_PER_LANE })) {
+      if (!LINT_SOURCE_EXTENSIONS.has(extname(file).toLowerCase())) continue;
+      const source = readLintSource(repoRoot, file);
+      if (!source) continue;
+      for (const { specifier, line } of extractImportSpecifiers(source)) {
+        const target = resolveImportPath(file, specifier, exists);
+        if (!target) continue;
+        if (lane.scope.some((pattern) => matchesScope(target, pattern))) continue;
+        const owner = candidates.find((other) =>
+          other.scope.some((pattern) => matchesScope(target, pattern)));
+        if (!owner) continue;
+        const edges = crossings.get(owner.id) || [];
+        if (!edges.some((edge) => edge.file === file && edge.target === target)) {
+          edges.push({ file, line, specifier, target });
+        }
+        crossings.set(owner.id, edges);
+      }
+    }
+    for (const [dependency, edges] of [...crossings].sort(([left], [right]) => left.localeCompare(right))) {
+      const [first] = edges.sort((left, right) =>
+        left.file.localeCompare(right.file) || left.line - right.line);
+      const extra = edges.length - 1;
+      warnings.push({
+        type: "missing-depends-on",
+        lane: lane.id,
+        dependency,
+        file: first.file,
+        line: first.line,
+        specifier: first.specifier,
+        target: first.target,
+        crossings: edges.length,
+        message: `lane "${lane.id}" imports from lane "${dependency}" scope without depends_on: ` +
+          `${first.file}:${first.line} imports "${first.specifier}" (${first.target})` +
+          (extra ? ` and ${extra} more crossing import${extra > 1 ? "s" : ""}` : "") +
+          `; add depends_on: [${dependency}] if ${lane.id} needs that work first`,
+      });
+    }
+  }
+  return warnings;
+}
+
+function isRepoFile(repoRoot, relativePath) {
+  const abs = resolve(repoRoot, relativePath);
+  if (!existsSync(abs)) return false;
+  try {
+    return statSync(abs).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function readLintSource(repoRoot, relativePath) {
+  try {
+    const abs = resolve(repoRoot, relativePath);
+    if (statSync(abs).size > LINT_MAX_FILE_BYTES) return null;
+    return readFileSync(abs, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function extractImportSpecifiers(source) {
+  const found = [];
+  for (const pattern of LINT_IMPORT_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match = pattern.exec(source);
+    while (match) {
+      // The match opens on the boundary character before the keyword and a statement
+      // can span lines, so the specifier's own offset is the line worth reporting.
+      const offset = match.index + match[0].lastIndexOf(match[1]);
+      found.push({ specifier: match[1], line: lineNumberAt(source, offset) });
+      match = pattern.exec(source);
+    }
+  }
+  return found;
+}
+
+function lineNumberAt(source, index) {
+  let line = 1;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (source[cursor] === "\n") line += 1;
+  }
+  return line;
 }
 
 function normalizeVerification(input, label = "workflow.verification") {
