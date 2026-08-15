@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { RUNS_ROOT } from "./paths.mjs";
 import { checkCommand } from "./preflight.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
-import { resolveCodexInstallation } from "./harness/codex.mjs";
+import { inspectCodexModelsCache, resolveCodexInstallation } from "./harness/codex.mjs";
 import { resolveCursorBin } from "./harness/cursor.mjs";
 import { harnessFailureRecommendation, harnessSetup } from "./harness/setup.mjs";
 import { detectRuntimeProfile, formatRuntime } from "./runtime.mjs";
@@ -34,6 +34,7 @@ export function runDoctor({ repo = process.cwd() } = {}) {
         sandboxReady: codexInstallation.sandboxReady,
       },
     },
+    asModelsCacheCheck(inspectCodexModelsCache()),
     asHarnessCheck("cursor", checkCommand(resolveCursorBin()), runtime),
     { name: "repository", ok: existsSync(root), detail: root },
     writableCheck("runs root", RUNS_ROOT),
@@ -53,6 +54,19 @@ function asHarnessCheck(name, result, runtime) {
     recommendation: result.ok
       ? null
       : harnessFailureRecommendation(name, { platform: runtime.hostPlatform }),
+  };
+}
+
+// A broken models cache degrades codex (it re-fetches every run and logs
+// "failed to load models cache") without stopping it, so this warns.
+function asModelsCacheCheck(inspection) {
+  return {
+    name: inspection.name,
+    ok: inspection.ok,
+    optional: true,
+    detail: inspection.detail,
+    state: inspection.state,
+    recommendation: inspection.recommendation,
   };
 }
 
