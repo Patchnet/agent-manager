@@ -1,6 +1,7 @@
 import { accessSync, constants, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { RUNS_ROOT } from "./paths.mjs";
+import { hostNames, hostSkillsRoot } from "./install.mjs";
 import { checkCommand } from "./preflight.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
 import { inspectCodexModelsCache, resolveCodexInstallation } from "./harness/codex.mjs";
@@ -38,10 +39,27 @@ export function runDoctor({ repo = process.cwd() } = {}) {
     asHarnessCheck("cursor", checkCommand(resolveCursorBin()), runtime),
     { name: "repository", ok: existsSync(root), detail: root },
     writableCheck("runs root", RUNS_ROOT),
+    hostSkillCheck(),
   ];
   const coreReady = checks.filter((check) => !check.optional).every((check) => check.ok);
   const harnessReady = checks.filter((check) => check.harness).some((check) => check.ok);
   return { schema: "agent-manager.doctor.v1", version: AGENT_MANAGER_VERSION, ok: coreReady && harnessReady, runtime, checks };
+}
+
+// The CLI is the substrate; the host skill is how an operator actually drives
+// it. An install with no skill anywhere works, but leaves the operator reciting
+// commands, so say so rather than let them discover it.
+function hostSkillCheck() {
+  const found = hostNames().filter((host) => existsSync(join(hostSkillsRoot(host), "agent-manager")));
+  return {
+    name: "host skill",
+    ok: found.length > 0,
+    optional: true,
+    detail: found.length ? `installed for: ${found.join(", ")}` : "not installed for any known host",
+    recommendation: found.length
+      ? null
+      : `install the Master Dev skill so a host agent can drive Agent Manager: agent-manager install ${hostNames()[0]}`,
+  };
 }
 
 function asHarnessCheck(name, result, runtime) {

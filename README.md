@@ -681,23 +681,40 @@ The approval replies are intentionally narrow:
 
 ## Local demo without a model subscription
 
-The fake harness is restricted to an explicitly opted-in test process.
+One command, no configuration, no subscription, and nothing written to a
+repository you care about:
 
-PowerShell:
+```bash
+agent-manager demo
+```
 
-```powershell
-$env:AGENT_MANAGER_TEST_MODE="1"
-agent-manager run examples/fake-demo.yaml --detach --json
+It builds a throwaway Git repository under the system temporary directory,
+writes a workflow whose planning block is current for that repository, and
+launches two lanes on the fake harness. No model CLI is started. The demo does
+not skip the planning gate — it builds a repository the gate is satisfied by,
+so what you watch is the real pipeline.
+
+The run then walks the whole lifecycle. One lane finishes; the other stops to
+ask a question:
+
+```bash
 agent-manager status <runId>
 agent-manager reply <runId> demo-question --message "Use blue"
 agent-manager review <runId>
 ```
 
-bash or zsh:
+Add `--no-run` to scaffold without launching, `--dir <path>` to put the scratch
+repository somewhere specific, or `--json` for the machine-readable result.
+Re-running `demo` retires the previous demo run first, so it is repeatable.
 
-```bash
-AGENT_MANAGER_TEST_MODE=1 agent-manager run examples/fake-demo.yaml --detach --json
-```
+The fake harness stays opt-in. `agent-manager demo` is that opt-in and grants it
+to nothing else; `AGENT_MANAGER_TEST_MODE=1` remains the opt-in for test
+processes, and additionally redirects every root into a sandbox that is removed
+when the process exits.
+
+[`examples/fake-demo.yaml`](examples/fake-demo.yaml) is a reference template
+showing the shape. It is not directly runnable: a workflow needs a real
+repository and a base SHA current for it.
 
 ## 🎛️ Agent Manager: create a real workflow
 
@@ -800,23 +817,33 @@ output not covered by the lane scope, including extension mismatches such as a
 when the dependency graph is fully serialized and a single queued agent would
 be more efficient.
 
-## Install host skills (Cursor)
+## Install host skills
 
-Install the user-level agent-manager and PR Manager skills:
+**The CLI is the substrate; the host skill is the interface.** Without it an
+operator drives Agent Manager by reciting commands. With it, "fire up agent
+manager" is enough — the host agent plans the lanes, completes the planning
+attestations, launches detached, watches, and brings back the standard boards.
+Install it for the host you actually use:
 
 ```bash
+agent-manager install claude
+agent-manager install codex
 agent-manager install cursor
 ```
 
-Install both skills plus a project rule:
+Each installs the user-level Agent Manager and PR Manager skills. Add a project
+scope, which for Cursor also writes its project rule:
 
 ```bash
 agent-manager install cursor --project /path/to/repo
 ```
 
-This command installs the Agent Manager and PR Manager skills. Install or
-reference Ship Gate separately because approval policy belongs to the target
-repository, not to the orchestration runtime.
+`--force` replaces an existing copy; without it an installed skill is never
+overwritten. `agent-manager doctor` reports which hosts have the skill and warns
+when none do.
+
+Ship Gate is installed or referenced separately because approval policy belongs
+to the target repository, not to the orchestration runtime.
 
 Cursor launches runs with `--detach`, reads `status.json`, replies to blocking lanes, and generates Delivery Review. `watch-signal` and `events --jsonl` are the portable wake sources:
 
@@ -874,6 +901,8 @@ agent-manager integrate <runId>
 agent-manager cancel <runId>
 agent-manager cleanup <runId>
 agent-manager cleanup --stale --older-than-days 30
+agent-manager demo [--dir <path>] [--no-run]
+agent-manager install <claude|codex|cursor> [--project <path>] [--force]
 ```
 
 Every run has a harness-neutral identity:

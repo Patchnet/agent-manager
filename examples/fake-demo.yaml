@@ -1,14 +1,17 @@
-# Local orchestration demo. The fake harness is available only when the process
-# explicitly opts into test mode; it never launches a model CLI.
+# Reference template for the fake harness. This file is NOT directly runnable:
+# a workflow needs a real repository and a reviewed_base_sha that matches that
+# repository's current HEAD, and the placeholders below satisfy neither.
 #
-# PowerShell:
-#   $env:AGENT_MANAGER_TEST_MODE="1"
-#   node bin/agent-manager.mjs run examples/fake-demo.yaml --detach
+# To actually see a run, use the demo command. It builds a throwaway Git
+# repository, writes this same shape with a base SHA that is current for it, and
+# launches two lanes on the fake harness — no model CLI is started:
 #
-# bash/zsh:
-#   AGENT_MANAGER_TEST_MODE=1 node bin/agent-manager.mjs run examples/fake-demo.yaml --detach
+#   agent-manager demo
+#
+# Add --no-run to scaffold without launching, or --dir <path> to place the
+# scratch repository somewhere specific.
 
-repo: ..
+repo: replace-with-absolute-repository-path
 harness_default: fake
 claim_mode: off
 integrate: true
