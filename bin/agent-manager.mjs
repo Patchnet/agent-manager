@@ -9,9 +9,10 @@ import { formatDoctor, runDoctor } from "../src/doctor.mjs";
 import { ensurePrivateDir } from "../src/fs-safe.mjs";
 import { listHarnessAdapters } from "../src/harness/index.mjs";
 import { initWorkflow } from "../src/init.mjs";
-import { installCursor } from "../src/install.mjs";
+import { HOSTS, hostNames, installHost } from "../src/install.mjs";
+import { adoptDemoRun, createDemo, DEFAULT_DEMO_DIR, formatDemo, listDemoRuns, listRunIds, markDemoRun, TERMINAL_RUN_STATES } from "../src/demo.mjs";
 import { integrateRun } from "../src/integrate-run.mjs";
-import { assertSafeSlug, IGNORED_PATH_OVERRIDES, runDir } from "../src/paths.mjs";
+import { assertSafeSlug, IGNORED_PATH_OVERRIDES, RUNS_ROOT, runDir } from "../src/paths.mjs";
 import { preflightWorkflow, validateRepository } from "../src/preflight.mjs";
 import { assertPlanningReady } from "../src/planning.mjs";
 import { prepareReply, resumeLane } from "../src/reply.mjs";
@@ -131,7 +132,9 @@ function usage() {
     "  agent-manager cleanup <runId> [--keep-logs] | --stale [--older-than-days 30]",
     "  agent-manager integrate <runId> [--force-lanes done,failed-with-snapshot] [--json]",
     "    --force-lanes: also fold failed lanes whose end-of-lane snapshot committed",
-    "  agent-manager install cursor [--project <path>] [--force] [--json]",
+    "  agent-manager install <claude|codex|cursor> [--project <path>] [--force] [--json]",
+    "  agent-manager demo [--dir <path>] [--no-run] [--json]",
+    "    scaffolds a throwaway repo and runs two lanes on the fake harness",
     "  agent-manager harnesses [--json]",
     "  agent-manager version [--json]",
     "  agent-manager --version",
@@ -641,7 +644,8 @@ async function detachRun(flags) {
     statusCommand: `agent-manager status ${runId}`,
     masterReturn: returnWatcher,
   };
-  console.log(flags.json ? JSON.stringify(payload) : [
+  // `demo` reports the launch in its own words; everything else prints here.
+  if (!flags.quiet) console.log(flags.json ? JSON.stringify(payload) : [
     `runId: ${runId}`, `title: ${runIdentity.displayTitle}`, `agent-manager: v${AGENT_MANAGER_VERSION}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
     `runtime: ${formatRuntime(payload.runtime)}`,
     `supervisorLog: ${logPath}`, `status: ${payload.statusCommand}`,
@@ -998,12 +1002,17 @@ async function main() {
 
   if (cmd === "reply") {
     if (!args[1] || !args[2]) throw new Error("reply requires <runId> <laneId>");
+    adoptDemoRun(runDir(args[1]));
     detachReply(args[1], args[2], flagValue("--message"), args.includes("--json"), {
       force: args.includes("--force"),
     });
     return;
   }
-  if (cmd === "_resume-lane") { await resumeLane(args[1], args[2], args[3]); return; }
+  if (cmd === "_resume-lane") {
+    adoptDemoRun(runDir(args[1]));
+    await resumeLane(args[1], args[2], args[3]);
+    return;
+  }
 
   if (cmd === "review") {
     const runId = args[1] || latestRunId();
@@ -1150,9 +1159,62 @@ async function main() {
   }
 
   if (cmd === "install") {
-    if (args[1] !== "cursor") throw new Error("install currently supports: cursor");
-    const result = installCursor({ project: flagValue("--project"), force: args.includes("--force") });
-    console.log(args.includes("--json") ? JSON.stringify(result) : `installed Cursor integration:\n${result.installed.join("\n")}`);
+    const host = args[1];
+    if (!host || !hostNames().includes(host)) {
+      throw new Error(`install requires a host; supported: ${hostNames().join(", ")}`);
+    }
+    const result = installHost(host, { project: flagValue("--project"), force: args.includes("--force") });
+    console.log(args.includes("--json") ? JSON.stringify(result) : `installed ${HOSTS[host].label} integration:\n${result.installed.join("\n")}`);
+    return;
+  }
+
+  if (cmd === "demo") {
+    const demoRepo = resolve(flagValue("--dir") || DEFAULT_DEMO_DIR);
+    // The scratch repo is rebuilt every time, so any earlier run against it is
+    // stale. Left active it holds that repo's edit scopes and the new demo is
+    // refused admission. Match the marker and the repository: a run predating
+    // the marker, or one the operator interrupted, still has to be retired.
+    const stale = new Set(listDemoRuns(RUNS_ROOT));
+    for (const runId of listRunIds(RUNS_ROOT)) {
+      if (readStatus(runId)?.repo === demoRepo) stale.add(runId);
+    }
+    for (const previous of stale) {
+      if (TERMINAL_RUN_STATES.includes(readStatus(previous)?.state)) continue;
+      try {
+        await cancelRun(previous, { removeWorktrees: true });
+        console.log(`retired previous demo run: ${previous}`);
+      } catch {
+        // The scratch repository this run pointed at is already gone, so its
+        // worktrees cannot be detached. Cancelling still releases the intent,
+        // which is the part that would otherwise block the new demo.
+        try {
+          await cancelRun(previous);
+          console.log(`retired previous demo run: ${previous} (worktrees already gone)`);
+        } catch (error) {
+          console.log(`could not retire previous demo run ${previous}: ${error.message}`);
+        }
+      }
+    }
+    const scaffold = createDemo({ dir: flagValue("--dir") || undefined });
+    if (args.includes("--no-run")) {
+      console.log(args.includes("--json") ? JSON.stringify(scaffold) : formatDemo(scaffold));
+      return;
+    }
+    // The fake harness is opt-in by design. `demo` is the operator asking for
+    // it by name, so this invocation opts in — and nothing else does. Not
+    // TEST_MODE: that would sandbox the run into a directory deleted on exit,
+    // leaving nothing for fleet, status, or review to show.
+    process.env.AGENT_MANAGER_DEMO = "1";
+    const runFlags = parseRunFlags([scaffold.workflowPath, "--detach"]);
+    runFlags.quiet = true;
+    const launched = await detachRun(runFlags);
+    const runId = launched?.runId || null;
+    if (runId) markDemoRun(runDir(runId));
+    console.log(
+      args.includes("--json")
+        ? JSON.stringify({ ...scaffold, runId })
+        : formatDemo(scaffold, { launched: runId }),
+    );
     return;
   }
 
