@@ -14,6 +14,7 @@ import { integrateRun } from "../src/integrate-run.mjs";
 import { assertSafeSlug, IGNORED_PATH_OVERRIDES, runDir } from "../src/paths.mjs";
 import { preflightWorkflow, validateRepository } from "../src/preflight.mjs";
 import { assertPlanningReady } from "../src/planning.mjs";
+import { ratifyLane } from "../src/ratify.mjs";
 import { prepareReply, resumeLane } from "../src/reply.mjs";
 import { buildDeliveryReview, closeoutRun, fileRunArtifacts } from "../src/review.mjs";
 import { newRunId, runWorkflow } from "../src/run.mjs";
@@ -114,9 +115,14 @@ function usage() {
     "  agent-manager goal link <id> --type <type> --ref <ref> [options] [--json]",
     "  agent-manager watch-signal [runId] [--heartbeat-sec 180] [--poll-ms 2000] [--notify]",
     "    --notify: OS toast on needs-input, blocked, terminal, and ship events",
-    "  agent-manager reply <runId> <laneId> --message <text> [--force] [--json]",
+    "  agent-manager reply <runId> <laneId> --message <text> [--force] [--extend-scope <globs>] [--by <id>] [--json]",
     "    --force: answer a failed lane that kept no needs-input marker",
-    "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--notes <text>]] [--json]",
+    "    --extend-scope: grant extra comma-separated scope globs for the resumed lane",
+    "  agent-manager ratify <runId> <laneId> --reason <text> [--by <id>] [--json]",
+    "    records Master acceptance of a guardrail-failed lane's violations so",
+    "    `integrate --force-lanes failed-with-snapshot` may fold it",
+    "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--notes <text>]] [--recovered] [--json]",
+    "    --recovered: record a verdict on a blocked, failed, or cancelled run",
     "  agent-manager closeout <runId> --operator <id> [--reason <text>] [--no-artifacts] [--json]",
     "    accept-without-ship terminal: files run outputs, ends the run as `filed`",
     "  agent-manager file-artifacts <runId> [--json]",
@@ -131,6 +137,7 @@ function usage() {
     "  agent-manager cleanup <runId> [--keep-logs] | --stale [--older-than-days 30]",
     "  agent-manager integrate <runId> [--force-lanes done,failed-with-snapshot] [--json]",
     "    --force-lanes: also fold failed lanes whose end-of-lane snapshot committed",
+    "                   guardrail-failed lanes need `ratify` first",
     "  agent-manager install cursor [--project <path>] [--force] [--json]",
     "  agent-manager harnesses [--json]",
     "  agent-manager version [--json]",
@@ -651,8 +658,12 @@ async function detachRun(flags) {
   return payload;
 }
 
-function detachReply(runId, laneId, message, json, { force = false } = {}) {
-  const prepared = prepareReply(runId, laneId, message, { force });
+function detachReply(runId, laneId, message, json, {
+  force = false,
+  extendScope = [],
+  by = null,
+} = {}) {
+  const prepared = prepareReply(runId, laneId, message, { force, extendScope, by });
   const laneDir = join(runDir(runId), assertSafeSlug(laneId, "lane id"));
   const logPath = join(laneDir, `resume-supervisor-${prepared.lane.attempt}.log`);
   let child;
@@ -670,7 +681,7 @@ function detachReply(runId, laneId, message, json, { force = false } = {}) {
   prepared.lane.resumeSupervisorPid = child.pid;
   prepared.status.supervisor = { pid: child.pid, startedAt: new Date().toISOString(), kind: "resume" };
   writeStatus(runId, prepared.status);
-  const payload = { runId, laneId, state: "running", sessionId: prepared.lane.sessionId, attempt: prepared.lane.attempt, pid: child.pid, telemetry: join(runDir(runId), "status.json"), supervisorLog: logPath };
+  const payload = { runId, laneId, state: "running", sessionId: prepared.lane.sessionId, attempt: prepared.lane.attempt, pid: child.pid, scopeExtensions: prepared.scopeExtensions, telemetry: join(runDir(runId), "status.json"), supervisorLog: logPath };
   console.log(json ? JSON.stringify(payload) : [`runId: ${runId}`, `laneId: ${laneId}`, "state: running", `sessionId: ${prepared.lane.sessionId}`, `telemetry: ${payload.telemetry}`].join("\n"));
 }
 
@@ -1000,19 +1011,39 @@ async function main() {
     if (!args[1] || !args[2]) throw new Error("reply requires <runId> <laneId>");
     detachReply(args[1], args[2], flagValue("--message"), args.includes("--json"), {
       force: args.includes("--force"),
+      extendScope: flagValue("--extend-scope") || [],
+      by: flagValue("--by"),
     });
     return;
   }
   if (cmd === "_resume-lane") { await resumeLane(args[1], args[2], args[3]); return; }
 
+  if (cmd === "ratify") {
+    if (!args[1] || !args[2]) throw new Error("ratify requires <runId> <laneId>");
+    const reason = flagValue("--reason");
+    if (!reason) throw new Error("ratify requires --reason <text>");
+    const result = ratifyLane(args[1], args[2], { reason, by: flagValue("--by") });
+    console.log(args.includes("--json") ? JSON.stringify(result) : [
+      `runId: ${result.runId}`,
+      `laneId: ${result.laneId} (${result.laneState})`,
+      `ratified by: ${result.by} at ${result.at}`,
+      `reason: ${result.reason}`,
+      `violations: ${result.violations.join("; ")}`,
+      "next: agent-manager integrate " + result.runId + " --force-lanes done,failed-with-snapshot",
+    ].join("\n"));
+    return;
+  }
+
   if (cmd === "review") {
-    const runId = args[1] || latestRunId();
+    const runId = firstPositional(args.slice(1), ["--pass", "--verdict", "--reviewer", "--notes"])
+      || latestRunId();
     if (!runId) throw new Error("review requires <runId>");
     const result = buildDeliveryReview(runId, {
       pass: Number(flagValue("--pass") || 1),
       verdict: flagValue("--verdict"),
       reviewer: flagValue("--reviewer"),
       notes: flagValue("--notes"),
+      recovered: args.includes("--recovered"),
     });
     if (flagValue("--verdict")) {
       const reviewedStatus = readStatus(runId);

@@ -108,6 +108,9 @@ function assertId(value, pattern, field, prefix) {
   }
 }
 
+// Truncation can land mid-word, so the trailing-dash strip has to come after
+// the slice: `.slice(0, 64)` first minted ids ending in "-", which the document
+// id pattern rejects.
 function slug(value) {
   return String(value)
     .toLowerCase()
@@ -115,8 +118,9 @@ function slug(value) {
     .trim()
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 64) || "untitled";
+    .replace(/^-+/, "")
+    .slice(0, 64)
+    .replace(/-+$/, "") || "untitled";
 }
 
 function availableId(prefix, label, existingIds) {

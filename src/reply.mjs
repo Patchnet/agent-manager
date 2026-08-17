@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { claimLane, releaseLane } from "./claim.mjs";
+import { resolveMasterIdentity } from "./ratify.mjs";
+import { normalizeScopePath } from "./scope.mjs";
 import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
 import { createPolicyEventInspector, validateLaneGuardrails } from "./guardrails.mjs";
 import { getHarnessAdapter } from "./harness/index.mjs";
@@ -165,10 +167,37 @@ export async function prepareCorrection(runId, laneId, message, options = {}) {
   return { ...prepared, correction, interrupted: correction.interrupted };
 }
 
-export function prepareReply(runId, laneId, message, { force = false } = {}) {
+/**
+ * Scope patterns an operator may hand a lane along with the answer. Same shape
+ * rules as `lane.scope`: repository-relative, no traversal, no control
+ * characters. Validated before anything is recorded, so a typo cannot become a
+ * standing grant.
+ */
+export function normalizeScopeExtension(input) {
+  const values = (Array.isArray(input) ? input : String(input ?? "").split(","))
+    .map((value) => String(value).trim())
+    .filter(Boolean);
+  for (const pattern of values) {
+    if (/[\0\r\n]/.test(pattern)) {
+      throw new Error("--extend-scope contains invalid characters");
+    }
+    const normalized = normalizeScopePath(pattern);
+    if (isAbsolute(pattern) || normalized.startsWith("/") || normalized.split("/").includes("..")) {
+      throw new Error("--extend-scope must stay inside the repository: " + pattern);
+    }
+  }
+  return [...new Set(values.map((value) => normalizeScopePath(value)))];
+}
+
+export function prepareReply(runId, laneId, message, {
+  force = false,
+  extendScope = [],
+  by = null,
+} = {}) {
   assertSafeSlug(runId, "run id");
   assertSafeSlug(laneId, "lane id");
   if (!message || !String(message).trim()) throw new Error("reply requires a non-empty message");
+  const extensionPatterns = normalizeScopeExtension(extendScope);
   const status = readStatus(runId);
   if (!status) throw new Error("no status for " + runId);
   const lane = (status.lanes || []).find((item) => item.id === laneId);
@@ -190,6 +219,11 @@ export function prepareReply(runId, laneId, message, { force = false } = {}) {
     }
   }
   if (!lane.sessionId) throw new Error("lane " + laneId + " has no harness session id to resume");
+  // Resolved before anything is mutated: an unattributable grant must not leave
+  // the lane half-answered.
+  const extensionGrantedBy = extensionPatterns.length
+    ? resolveMasterIdentity(status, by, "a scope extension")
+    : null;
   const previousNeedsInput = lane.needsInput;
   const reacquired = claimLane({
     repo: status.repo,
@@ -211,6 +245,15 @@ export function prepareReply(runId, laneId, message, { force = false } = {}) {
   lane.needsInput = null;
   lane.endedAt = null;
   lane.replyStartedAt = new Date().toISOString();
+  // Recorded before the harness resumes, so work done under the grant is inside
+  // scope when guardrails run at lane exit. Grants append: an earlier extension
+  // is never dropped by a later reply.
+  if (extensionPatterns.length) {
+    lane.scopeExtensions = [
+      ...(lane.scopeExtensions || []),
+      { patterns: extensionPatterns, by: extensionGrantedBy, at: lane.replyStartedAt },
+    ];
+  }
   if (recovering) {
     lane.exitCode = null;
     lane.recovery = {
@@ -258,6 +301,7 @@ export function prepareReply(runId, laneId, message, { force = false } = {}) {
     previousLaneState,
     previousRunState,
     recovered: recovering,
+    scopeExtensions: lane.scopeExtensions || [],
   };
 }
 
@@ -424,6 +468,7 @@ export async function resumeLane(runId, laneId, messagePath) {
       const check = validateLaneGuardrails({
         worktree: lane.worktree,
         scope: lane.scope,
+        scopeExtensions: lane.scopeExtensions,
         readOnlyScope: lane.readOnly || laneConfig.read_only,
         baseCommit: lane.baseCommit,
         policy: workflow.policy,

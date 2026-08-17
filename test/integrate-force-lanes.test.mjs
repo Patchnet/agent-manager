@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createE2eFixture } from "../test-support/e2e-fixture.mjs";
 
@@ -82,6 +82,12 @@ test("integrate --force-lanes folds snapshotted failed lanes and records which",
     await cliError(["integrate", runId, "--force-lanes", "bogus"]),
     /unknown --force-lanes selector: bogus/,
   );
+  // The selector list is an exact comma-split, not a substring test: a value
+  // that merely contains a known selector is a typo, not a permission.
+  assert.match(
+    await cliError(["integrate", runId, "--force-lanes", "done-ish,failed-with-snapshot"]),
+    /unknown --force-lanes selector: done-ish \(expected done, failed-with-snapshot\)/,
+  );
   assert.match(
     await cliError(["integrate", runId, "--force-lanes", "done"]),
     /--force-lanes done does not cover breaker \(failed\), silent \(failed\), stray \(failed\)/,
@@ -91,13 +97,18 @@ test("integrate --force-lanes folds snapshotted failed lanes and records which",
   assert.equal(afterRefusals.integrate, undefined);
 
   const forced = await runCli([
-    "integrate", runId, "--force-lanes", "done,failed-with-snapshot", "--json",
+    "integrate", runId, "--force-lanes", " done , FAILED-WITH-SNAPSHOT , done ", "--json",
   ]);
   const status = JSON.parse(forced.stdout.trim());
 
   assert.equal(status.integrate.state, "ready");
   assert.deepEqual(status.integrate.forcedLanes, ["breaker"]);
-  assert.deepEqual(status.integrate.forceLaneSelectors, ["done", "failed-with-snapshot"]);
+  assert.deepEqual(
+    status.integrate.forceLaneSelectors,
+    ["done", "failed-with-snapshot"],
+    "whitespace, case, and duplicates normalize into the same two selectors",
+  );
+  assert.deepEqual(status.integrate.ratifiedLanes, [], "nothing here was ratified");
   const excluded = Object.fromEntries(
     status.integrate.excludedLanes.map((lane) => [lane.id, lane.reason]),
   );
@@ -127,6 +138,139 @@ test("integrate --force-lanes folds snapshotted failed lanes and records which",
   assert.deepEqual(target.changedFiles.sort(), ["allowed.txt", "broken.txt"]);
 
   await runCli(["cancel", runId]);
+});
+
+test("a ratified guardrail violation folds; an unratified one still does not", async () => {
+  const runId = "run-force-ratified";
+  const workflow = writeWorkflow("force-ratified", baseWorkflow([
+    {
+      id: "sanctioned",
+      scope: "mine.txt",
+      prompt: "write the file Master later ratifies",
+      fake: { write: { path: "sanctioned.txt", content: "master wanted this\n" } },
+    },
+    {
+      id: "unsanctioned",
+      scope: "yours.txt",
+      prompt: "write outside the lane scope",
+      fake: { write: { path: "unsanctioned.txt", content: "nobody asked for this\n" } },
+    },
+  ]));
+
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  const failed = await waitForStatus(runId, (status) => status.state === "failed");
+  await waitForFeed("run_failed", runId);
+  for (const lane of failed.lanes) {
+    assert.equal(lane.state, "failed", lane.id);
+    assert.equal(lane.snapshot.state, "committed", lane.id);
+  }
+
+  assert.match(
+    await cliError(["ratify", runId, "sanctioned", "--reason", ""]),
+    /ratify requires --reason <text>/,
+  );
+  await runCli([
+    "ratify", runId, "sanctioned", "--reason", "audited 2026-08-17: this is the work Master asked for",
+  ]);
+
+  const forced = JSON.parse((await runCli([
+    "integrate", runId, "--force-lanes", "done,failed-with-snapshot", "--json",
+  ])).stdout.trim());
+  assert.equal(forced.integrate.state, "ready");
+  assert.deepEqual(forced.integrate.merged, ["sanctioned"]);
+  assert.deepEqual(forced.integrate.ratifiedLanes, ["sanctioned"]);
+  assert.deepEqual(
+    forced.integrate.excludedLanes.map((lane) => [lane.id, lane.reason]),
+    [["unsanctioned", "guardrail violations: unsanctioned.txt"]],
+    "the default is untouched for a violation nobody ratified",
+  );
+  const ratifiedLane = forced.lanes.find((lane) => lane.id === "sanctioned");
+  assert.equal(ratifiedLane.state, "failed");
+  assert.deepEqual(ratifiedLane.scopeViolations, ["sanctioned.txt"]);
+  assert.equal(ratifiedLane.ratification.by, "test-manager");
+
+  await runCli(["cancel", runId]);
+});
+
+test("a ratification does not cover violations recorded after it", async () => {
+  const runId = "run-force-ratified-gap";
+  const workflow = writeWorkflow("force-ratified-gap", baseWorkflow([
+    {
+      id: "stray",
+      scope: "mine.txt",
+      prompt: "write outside the lane scope",
+      fake: { write: { path: "stray.txt", content: "out of scope\n" } },
+    },
+  ]));
+
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  await waitForStatus(runId, (status) => status.state === "failed");
+  await waitForFeed("run_failed", runId);
+  await runCli(["ratify", runId, "stray", "--reason", "audited: stray.txt is fine"]);
+
+  // New evidence lands on the lane after the ratifier looked at it.
+  const statusPath = join(runsRoot, runId, "status.json");
+  const status = JSON.parse(readFileSync(statusPath, "utf8"));
+  status.lanes[0].scopeViolations = ["stray.txt", "later.txt"];
+  writeFileSync(statusPath, JSON.stringify(status, null, 2) + "\n");
+
+  assert.match(
+    await cliError(["integrate", runId, "--force-lanes", "done,failed-with-snapshot"]),
+    /no done lanes and no snapshotted failed lanes to integrate: stray \(guardrail violations recorded after ratification: later\.txt\)/,
+  );
+  const refused = JSON.parse(readFileSync(statusPath, "utf8"));
+  assert.equal(refused.integrate, undefined, "a refused fold leaves the run alone");
+
+  // Re-ratifying on the full evidence lets it through.
+  await runCli(["ratify", runId, "stray", "--reason", "audited again: both files are fine"]);
+  const forced = JSON.parse((await runCli([
+    "integrate", runId, "--force-lanes", "done,failed-with-snapshot", "--json",
+  ])).stdout.trim());
+  assert.deepEqual(forced.integrate.merged, ["stray"]);
+  assert.deepEqual(forced.integrate.ratifiedLanes, ["stray"]);
+
+  await runCli(["cancel", runId]);
+});
+
+test("ratify refuses a lane with nothing to ratify and a lane with nothing to fold", async () => {
+  const runId = "run-force-ratify-refusals";
+  const workflow = writeWorkflow("force-ratify-refusals", baseWorkflow([
+    {
+      id: "writer",
+      scope: "allowed.txt",
+      prompt: "write the allowed file",
+      fake: { write: { path: "allowed.txt", content: "allowed\n" } },
+    },
+    {
+      id: "silent",
+      scope: "never.txt",
+      prompt: "die with nothing",
+      fake: { exit_code: 4 },
+    },
+  ]));
+
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  await waitForStatus(runId, (status) => status.state === "failed");
+  await waitForFeed("run_failed", runId);
+
+  assert.match(
+    await cliError(["ratify", runId, "writer", "--reason", "it went fine"]),
+    /recorded no guardrail violations; there is nothing to ratify/,
+  );
+  assert.match(
+    await cliError(["ratify", runId, "silent", "--reason", "let it through"]),
+    /recorded no guardrail violations; there is nothing to ratify/,
+  );
+  assert.match(
+    await cliError(["ratify", runId, "ghost", "--reason", "who?"]),
+    /no lane ghost in/,
+  );
+  // The run stays `failed`: refusing to ratify is not a state change, and a
+  // terminal run has nothing left to cancel.
+  assert.equal(
+    JSON.parse((await runCli(["status", runId, "--json"])).stdout.trim()).state,
+    "failed",
+  );
 });
 
 test("a force-integrated run can be reviewed and accepted, with the fold surfaced", async () => {

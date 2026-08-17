@@ -107,6 +107,32 @@ test("generates collision-safe local IDs and validates caller-supplied IDs", asy
   );
 });
 
+// Field failure 2026-08-15: a long title truncated to 64 characters mid-word,
+// minting `goal-...-durable-`, which the document ID pattern rejects.
+test("a title too long to slug whole still ends on an alphanumeric character", async () => {
+  const root = brainRoot();
+  const truncated = await createGoal({
+    title: "agent-manager resilience batch recoverable failed lanes durable evidence",
+  }, { root });
+  // The 64th slug character is the separator before "evidence", so the strip
+  // has to run after the slice or the ID ends in a dash.
+  assert.equal(truncated.id, "goal-agent-manager-resilience-batch-recoverable-failed-lanes-durable");
+  assert.match(truncated.id, /^goal-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
+
+  // A cut that lands inside a word keeps the whole 64-character budget.
+  const midWord = await createGoal({
+    title: "close the human loop ratification scope extension and allowed tools synthesis",
+  }, { root });
+  assert.equal(midWord.id, "goal-close-the-human-loop-ratification-scope-extension-and-allowed-to");
+  assert.equal(midWord.id.length, "goal-".length + 64);
+  assert.match(midWord.id, /[a-z0-9]$/);
+
+  // Short titles keep the IDs they already minted.
+  assert.equal((await createGoal({ title: "Shared title" }, { root })).id, "goal-shared-title");
+  assert.equal((await createGoal({ title: "  --spaced out--  " }, { root })).id, "goal-spaced-out");
+  assert.equal((await createGoal({ title: "***" }, { root })).id, "goal-untitled");
+});
+
 test("rejects missing parents, self-parenting, and hierarchy cycles without mutating records", async () => {
   const root = brainRoot();
   await assert.rejects(

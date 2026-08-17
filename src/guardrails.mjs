@@ -52,16 +52,30 @@ export function inspectLaneChanges(worktree, baseCommit = "HEAD") {
   ].map(normalizePath))].sort();
 }
 
+/**
+ * The patterns a lane may write to: its declared scope plus every scope
+ * extension Master granted while answering the lane. A grant is recorded on the
+ * lane before the harness resumes, so work done under it cannot fail the lane
+ * at exit. Read-only paths are deliberately not unioned — an extension widens
+ * what the lane owns, it never reopens a path someone else owns.
+ */
+export function laneScopePatterns(scope, scopeExtensions = []) {
+  const extensions = (Array.isArray(scopeExtensions) ? scopeExtensions : [])
+    .flatMap((grant) => parseScope(grant?.patterns ?? grant));
+  return [...new Set([...parseScope(scope), ...extensions])];
+}
+
 export function validateLaneGuardrails({
   worktree,
   scope,
+  scopeExtensions = [],
   readOnlyScope = [],
   baseCommit,
   policy = {},
 }) {
   if (!baseCommit) throw new Error("guardrail inspection requires baseCommit");
   const changedFiles = inspectLaneChanges(worktree, baseCommit);
-  const patterns = parseScope(scope);
+  const patterns = laneScopePatterns(scope, scopeExtensions);
   const scopeViolations = changedFiles.filter((file) => !patterns.some((pattern) => matchesScope(file, pattern)));
   const readOnlyPatterns = parseScope(readOnlyScope);
   const readOnlyViolations = changedFiles.filter((file) =>

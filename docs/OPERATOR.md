@@ -346,6 +346,34 @@ agent-manager reply <runId> <laneId> --message "approved answer"
 
 Reply resumes the recorded Claude or Codex session. It does not create a new independent conversation.
 
+### Grant scope along with the answer
+
+A lane that asks "may I also touch `docs/OPERATOR.md`?" cannot act on a yes: its
+scope was fixed at launch, so the file it was told to write is a scope violation
+at lane exit. `--extend-scope` grants the scope with the answer:
+
+```bash
+agent-manager reply <runId> <laneId> \
+  --message "yes, the operator guide is yours for this lane" \
+  --extend-scope "docs/OPERATOR.md,schemas/**"
+```
+
+The grant is recorded on the lane as an appended `scopeExtensions` entry with
+who granted it and when, before the harness resumes. Guardrails then union the
+granted globs into the lane's writable patterns, so a Master-granted extension
+cannot fail the lane at exit. Grants accumulate: a later reply never drops an
+earlier extension.
+
+Attribution comes from `--by <id>`, falling back to the run's recorded planning
+verifier. A run with neither is refused rather than credited to nobody. Globs
+follow the same rules as `lanes[].scope` — repository-relative, no traversal —
+and a bad glob is rejected before anything is recorded, so the lane stays
+blocked rather than resuming on a typo.
+
+An extension widens what the lane owns. It never reopens a `read_only` path:
+those belong to another lane, and only the workflow can reassign them. Every
+extension is listed next to the lane's declared scope in Delivery Review.
+
 ## Delivery Review
 
 ```bash
@@ -364,6 +392,28 @@ Only a persisted accepted Delivery Review can proceed to Ship Gate. The ship
 command rejects conversational approval that was not recorded in `status.json`.
 Workers do not own commits, pushes, pull requests, merges, tags, or releases
 unless the workflow explicitly permits a narrower action.
+
+### Reviewing a run that never reached review
+
+A run that died, stalled, or was cancelled never reaches an awaiting-review
+state, so `review` refuses it — and its verdict had nowhere to live. Add
+`--recovered` to record one anyway:
+
+```bash
+agent-manager review <runId> --recovered
+agent-manager review <runId> --pass 1 --verdict reject \
+  --reviewer master-dev --recovered
+```
+
+`--recovered` accepts `blocked`, `failed`, and `cancelled`, and nothing else.
+The decision and the review summary are both stamped `recovered: true` with the
+state they were recorded from, and the review document says so, so a recovered
+verdict is never read later as an ordinary one.
+
+It relaxes only the state gate. Structural preflight still gates `accept` and
+`accept-with-notes`, so a run with unaccounted failed lanes or an empty delivery
+target cannot be accepted just because the flag was passed. Without the flag,
+behaviour is unchanged.
 
 ## Accept without shipping: closeout and `filed`
 
@@ -451,6 +501,39 @@ risk. Configured `verification.commands` then run without a shell in the
 integration worktree. A merge conflict or failed verification becomes a
 resumable escalation. Integration does not push or merge to the target
 repository default branch.
+
+### Folding a lane that a guardrail stopped
+
+`integrate --force-lanes done,failed-with-snapshot` folds lanes that *died* with
+a committed end-of-lane snapshot. It deliberately drops lanes that a guardrail
+*stopped*: the snapshot of a scope violation is still a scope violation.
+
+When Master audits such a lane and concludes the work was wanted, record that
+decision instead of folding by hand:
+
+```bash
+agent-manager ratify <runId> <laneId> \
+  --reason "audited 2026-08-17: the file belongs to this lane"
+agent-manager integrate <runId> --force-lanes done,failed-with-snapshot
+```
+
+`ratify` snapshots the lane's violation lists as they stand and records who
+accepted them and why (`--by <id>`, falling back to the run's planning
+verifier). It refuses a lane with no guardrail violations — there is nothing to
+ratify — and a lane with no committed snapshot, because there would be nothing
+to fold.
+
+A ratification reaches exactly as far as the violations it was shown. If the
+lane strays again after being ratified — a resumed lane writing somewhere new —
+the fold is refused and names the uncovered violations, until Master looks at
+the new evidence and ratifies again. Ratification never relabels the lane as
+`done`: the violations stay on the record, and Delivery Review renders them
+under **Ratified violations** with the reason and the ratifier, alongside the
+lane's ordinary violation lines. `status.integrate.ratifiedLanes` lists which
+lanes were folded this way.
+
+`--force-lanes` takes an exact comma-separated selector list. A value that
+merely contains a known selector is a typo, and is rejected.
 
 If `integrate: false` is used for more than one writable lane, the workflow
 must declare a `delivery.targets` train that maps every lane to an explicit
@@ -690,6 +773,47 @@ allowlist for `dontAsk`, and verifies CLI support before launch. Claude Code
 still owns account, model, provider, and administrative-policy eligibility.
 Use `lanes[].setup.commands` for deterministic worktree preparation such as
 `npm ci`; setup runs before the model and fails closed with captured evidence.
+
+### Default allowlist from `verification.commands`
+
+Claude prompts before every shell command under `acceptEdits` and
+`workspace-write`, and a detached worker has nobody to answer — so a lane whose
+own prompt says "run `npm test`" was denied `npm` by default and stalled.
+
+A writable Claude lane that declares no `allowed_tools` now inherits one derived
+from the workflow's own `verification.commands`: one `Bash(<prefix>*)` rule per
+declared command, where the prefix is the executable plus its leading
+sub-command arguments.
+
+```yaml
+verification:
+  commands:
+    - { command: npm, args: [test] }          # -> Bash(npm test*)
+    - { command: npm, args: [run, hygiene] }  # -> Bash(npm run hygiene*)
+```
+
+The rule is derived from what the workflow already declares, never guessed. The
+prefix stops at the first flag, at anything that would need quoting, and after
+two sub-command arguments, so a command with no leading sub-command grants only
+its own name. Each lane's effective source is recorded in `status.json` as
+`allowedToolsSource` (`declared`, `verification`, or `none`).
+
+What this does not change:
+
+- An explicit `lanes[].allowed_tools` always wins, untouched.
+- `dontAsk` still requires its own complete allowlist and still fails to load
+  without one — a derived list would silently under-grant a mode that permits
+  nothing else.
+- Read-only lanes get nothing.
+- Codex and Cursor lanes are untouched. Codex governs execution through its
+  sandbox mode, which has no per-command allowlist to synthesize into, so the
+  same workflow grants a Claude lane a shell rule and a Codex lane nothing. That
+  asymmetry is in the harnesses, not in the policy.
+- A workflow with no `verification.commands` grants nothing.
+
+This is a default, not a replacement for `setup`. Worktree preparation that must
+happen before the model runs — `npm ci` and friends — still belongs in
+`lanes[].setup.commands`, where the supervisor runs it deterministically.
 
 Dangerous permission bypass is disabled by default. Enabling it requires both:
 

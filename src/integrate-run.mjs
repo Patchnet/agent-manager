@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { integrateLanes } from "./integrate.mjs";
 import { runDir } from "./paths.mjs";
 import { writeReport } from "./report.mjs";
+import { laneGuardrailViolations, ratificationGap } from "./ratify.mjs";
 import { readStatus, writeStatus } from "./status.mjs";
 import { loadWorkflow } from "./workflow.mjs";
 import { markWorkersComplete } from "./delivery.mjs";
@@ -30,43 +31,57 @@ export function parseForceLanes(value) {
 }
 
 /**
+ * Why a snapshotted failed lane still cannot be folded, or null when it can.
+ *
+ * A lane that tripped a guardrail is dropped even with a snapshot: `--force-lanes`
+ * exists for lanes that died, not for lanes that were stopped — the snapshot of a
+ * scope violation is still a scope violation. The one exception is a recorded
+ * Master ratification, and it only reaches as far as the violations it was shown:
+ * a lane that strayed again after being ratified is dropped on the new evidence.
+ */
+function forcedLaneExclusion(lane) {
+  const violations = laneGuardrailViolations(lane);
+  if (violations.length) {
+    if (!lane.ratification) return `guardrail violations: ${violations.join("; ")}`;
+    const uncovered = ratificationGap(lane);
+    if (uncovered.length) {
+      return `guardrail violations recorded after ratification: ${uncovered.join("; ")}`;
+    }
+  }
+  if (lane.snapshot?.state !== "committed") {
+    return lane.snapshot?.state
+      ? `lane snapshot ${lane.snapshot.state}`
+      : "no lane snapshot recorded";
+  }
+  if (!lane.branch || !lane.worktree) return "lane kept no branch or worktree";
+  return null;
+}
+
+/**
  * Which lanes a forced integration folds, which it drops, and which make it
  * refuse. Failed lanes only qualify with a committed snapshot: without one the
  * lane branch holds nothing, so folding it would claim work that does not exist.
- *
- * A lane that tripped a guardrail is dropped even with a snapshot. `--force-lanes`
- * exists for lanes that died, not for lanes that were stopped — the snapshot of a
- * scope violation is still a scope violation.
  */
 export function selectForcedLanes(lanes, selectors) {
   const acceptFailed = selectors.includes("failed-with-snapshot");
   const forced = [];
   const excluded = [];
   const refused = [];
+  const ratified = [];
   for (const lane of lanes) {
     if (lane.state === "done") continue;
     if (lane.state === "failed" && acceptFailed) {
-      const violations = [
-        ...(lane.scopeViolations || []),
-        ...(lane.readOnlyViolations || []),
-        ...(lane.policyViolations || []),
-      ];
-      const reason = violations.length
-        ? `guardrail violations: ${violations.join("; ")}`
-        : lane.snapshot?.state !== "committed"
-          ? lane.snapshot?.state
-            ? `lane snapshot ${lane.snapshot.state}`
-            : "no lane snapshot recorded"
-          : !lane.branch || !lane.worktree
-            ? "lane kept no branch or worktree"
-            : null;
+      const reason = forcedLaneExclusion(lane);
       if (reason) excluded.push({ id: lane.id, state: lane.state, reason });
-      else forced.push(lane.id);
+      else {
+        forced.push(lane.id);
+        if (lane.ratification) ratified.push(lane.id);
+      }
       continue;
     }
     refused.push(`${lane.id} (${lane.state})`);
   }
-  return { forced, excluded, refused };
+  return { forced, excluded, refused, ratified };
 }
 
 function alignForcedDeliveryTarget(status) {
@@ -96,6 +111,7 @@ export async function integrateRun(runId, { forceLanes = [] } = {}) {
   const lanes = status.lanes || [];
   let forced = [];
   let excluded = [];
+  let ratified = [];
   if (!selectors.length) {
     if (!lanes.length || !lanes.every((lane) => lane.state === "done")) {
       throw new Error("all lanes must be done before integration");
@@ -110,8 +126,16 @@ export async function integrateRun(runId, { forceLanes = [] } = {}) {
     }
     forced = selection.forced;
     excluded = selection.excluded;
+    ratified = selection.ratified;
     if (!forced.length && !lanes.some((lane) => lane.state === "done")) {
-      throw new Error("no done lanes and no snapshotted failed lanes to integrate");
+      // Say why each candidate was dropped: "nothing to fold" is not actionable
+      // on its own when the operator just recorded a ratification.
+      throw new Error(
+        "no done lanes and no snapshotted failed lanes to integrate" +
+          (excluded.length
+            ? `: ${excluded.map((lane) => `${lane.id} (${lane.reason})`).join(", ")}`
+            : ""),
+      );
     }
   }
 
@@ -140,7 +164,13 @@ export async function integrateRun(runId, { forceLanes = [] } = {}) {
   );
   const stampForced = (integrate) =>
     selectors.length
-      ? { ...integrate, forceLaneSelectors: selectors, forcedLanes: forced, excludedLanes: excluded }
+      ? {
+          ...integrate,
+          forceLaneSelectors: selectors,
+          forcedLanes: forced,
+          excludedLanes: excluded,
+          ratifiedLanes: ratified,
+        }
       : integrate;
   try {
     status.integrate = stampForced(

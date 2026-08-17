@@ -58,6 +58,11 @@ const READ_ONLY_PERMISSION_MODES = new Set(["readOnly", "read-only", "read_only"
 // detached worker cannot answer that prompt. Only these modes can actually run the
 // git and gh commands a commit/PR policy claims to allow.
 const CLAUDE_UNATTENDED_SHELL_MODES = new Set(["auto", "dontAsk"]);
+// Writable Claude modes that take a default allowlist derived from the
+// workflow's own verification commands. `dontAsk` is excluded on purpose: it
+// requires a complete, explicit allowlist, and a derived one would silently
+// under-grant it.
+const SYNTHESIZED_ALLOWED_TOOL_MODES = new Set(["acceptEdits", "auto", "workspace-write"]);
 
 export function loadWorkflow(filePath, {
   repoOverride = null,
@@ -117,6 +122,7 @@ export function loadWorkflow(filePath, {
     "workflow.max_concurrency",
   );
   const verification = normalizeVerification(doc.verification);
+  synthesizeAllowedTools(lanes, verification);
   const goalRefs = normalizeGoalRefs(doc.goal_refs);
   const planning = normalizePlanning(doc.planning, {
     repoRoot,
@@ -360,6 +366,57 @@ function normalizeLane(input, index, repoRoot, harnessDefault, ids, policy) {
     prompt_file: input.prompt_file || undefined,
     _promptFile: promptFile,
   };
+}
+
+/**
+ * Claude prompts before every Bash command under `acceptEdits` and
+ * `workspace-write`, and a detached worker has nobody to answer the prompt — so
+ * a lane whose own prompt says "run npm test" was denied `npm` by default. The
+ * workflow already declares which commands this work is verified with; those
+ * commands are the honest default allowlist.
+ *
+ * The rule is derived, never guessed: one `Bash(<prefix>*)` per declared
+ * verification command, where the prefix is the executable plus its leading
+ * sub-command arguments (`npm test`, `npm run hygiene`). An explicit lane
+ * `allowed_tools` always wins untouched, `dontAsk` still requires its own
+ * complete allowlist, and non-Claude harnesses are not touched at all: Codex
+ * governs execution through its sandbox mode, which has no per-command
+ * allowlist to synthesize into.
+ */
+export function allowedToolRulesForVerification(commands = []) {
+  const rules = [];
+  for (const entry of commands) {
+    const command = String(entry?.command || "").trim();
+    if (!command) continue;
+    const prefix = [command];
+    for (const raw of entry.args || []) {
+      // Stop at the first flag or anything needing quoting: the rule is a
+      // command prefix, not a full command line.
+      const arg = String(raw).trim();
+      if (prefix.length >= 3 || !/^[A-Za-z0-9._:@/-]+$/.test(arg) || arg.startsWith("-")) break;
+      prefix.push(arg);
+    }
+    rules.push(`Bash(${prefix.join(" ")}*)`);
+  }
+  return [...new Set(rules)];
+}
+
+export function synthesizeAllowedTools(lanes, verification) {
+  const rules = allowedToolRulesForVerification(verification?.commands);
+  for (const lane of lanes) {
+    if (lane.harness !== "claude") continue;
+    if (lane.allowed_tools.length) {
+      lane.allowed_tools_source = "declared";
+      continue;
+    }
+    if (!SYNTHESIZED_ALLOWED_TOOL_MODES.has(lane.permission_mode) || !rules.length) {
+      lane.allowed_tools_source = "none";
+      continue;
+    }
+    lane.allowed_tools = [...rules];
+    lane.allowed_tools_source = "verification";
+  }
+  return lanes;
 }
 
 function normalizeAllowedTools(input, laneId, harness, permissionMode) {

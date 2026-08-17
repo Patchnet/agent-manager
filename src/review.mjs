@@ -13,7 +13,18 @@ import {
   staleGoalHints,
 } from "./delivery.mjs";
 import { GoalModelError, linkGoalArtifact, updateArtifactLink } from "./goals.mjs";
+import { ratificationGap } from "./ratify.mjs";
 import { writeReport } from "./report.mjs";
+
+const AWAITING_REVIEW_STATES = ["delivery_review_pending", "correction_pending", "ship_gate_pending"];
+/**
+ * A run that died, stalled, or was cancelled never reaches an awaiting-review
+ * state, so its verdict had nowhere to live. `--recovered` lets Master record
+ * one anyway — explicitly, and stamped as recovered so nobody later reads it as
+ * an ordinary review. It only relaxes the state gate: structural preflight
+ * still gates acceptance.
+ */
+const RECOVERABLE_REVIEW_STATES = ["blocked", "failed", "cancelled"];
 
 export function buildDeliveryReview(runId, {
   pass = 1,
@@ -21,12 +32,21 @@ export function buildDeliveryReview(runId, {
   verdict = null,
   reviewer = null,
   notes = null,
+  recovered = false,
 } = {}) {
   if (![1, 2].includes(pass)) throw new Error("review pass must be 1 or 2");
   let status = readStatus(runId);
   if (!status) throw new Error(`no status for ${runId}`);
-  if (!["delivery_review_pending", "correction_pending", "ship_gate_pending"].includes(status.state)) {
-    throw new Error(`run ${runId} is not awaiting Delivery Review (state ${status.state})`);
+  let recoveredFrom = null;
+  if (!AWAITING_REVIEW_STATES.includes(status.state)) {
+    const recoverable = RECOVERABLE_REVIEW_STATES.includes(status.state);
+    if (!recovered || !recoverable) {
+      throw new Error(
+        `run ${runId} is not awaiting Delivery Review (state ${status.state})` +
+          (recoverable ? "; rerun with --recovered to record a verdict on a recovered run" : ""),
+      );
+    }
+    recoveredFrom = status.state;
   }
   const structuralPreflight = inspectDeliveryStructure(status);
   if (verdict && ["accept", "accept-with-notes"].includes(verdict) && !structuralPreflight.ok) {
@@ -36,11 +56,24 @@ export function buildDeliveryReview(runId, {
   }
   if (verdict) {
     recordReviewDecision(status, { pass, verdict, reviewer, notes });
+    stampRecovery(status, pass, recoveredFrom);
+    // A cancelled run stays cancelled. `writeStatus` refuses to move a run off
+    // `cancelled` while its cancel marker exists, so leaving the verdict's own
+    // state transition in place would drop the whole write on the floor — and a
+    // verdict is evidence about abandoned work, not a resurrection of it. The
+    // decision itself is recorded on the delivery record either way.
+    if (recoveredFrom === "cancelled") {
+      status.state = "cancelled";
+      status.endedAt ||= status.delivery.review.decidedAt;
+    }
     status = writeStatus(runId, status);
     writeReport(runId, status);
-  } else if (write && ["delivery_review_pending", "correction_pending"].includes(status.state)
+    assertRecoveredDecisionPersisted(status, pass, recoveredFrom, runId);
+  } else if (write
+    && (recoveredFrom || ["delivery_review_pending", "correction_pending"].includes(status.state))
     && status.delivery?.review?.state !== "accepted") {
     recordReviewPresentation(status, { pass });
+    stampRecovery(status, pass, recoveredFrom);
     status = writeStatus(runId, status);
     writeReport(runId, status);
   }
@@ -65,6 +98,9 @@ export function buildDeliveryReview(runId, {
     `- Decided: ${decision?.decidedAt || "-"}`,
     `- Notes: ${decision?.notes || "-"}`,
     `- Structural preflight: **${structuralPreflight.ok ? "passed" : "failed"}**`,
+    ...(recoveredFrom || status.delivery?.review?.recoveredFrom
+      ? [`- Recovered review: **recorded from \`${recoveredFrom || status.delivery.review.recoveredFrom}\`**`]
+      : []),
     "",
     "## Lane evidence",
     "",
@@ -80,6 +116,7 @@ export function buildDeliveryReview(runId, {
     lines.push(`- Completion contract: ${lane.completion?.state || "legacy/unrecorded"}`);
     lines.push(`- Expected outputs: ${lane.expectedOutputs?.length ? lane.expectedOutputs.map((file) => `\`${file}\``).join(", ") : "none"}`);
     lines.push(`- Scope: ${lane.scope}`);
+    lines.push(`- Scope extensions: ${formatScopeExtensions(lane)}`);
     lines.push(`- Read-only paths: ${lane.readOnly || "none"}`);
     lines.push(`- Depends on: ${lane.dependsOn?.length ? lane.dependsOn.join(", ") : "none"}`);
     lines.push(`- Dependencies integrated: ${lane.dependenciesIntegrated?.length ? lane.dependenciesIntegrated.join(", ") : "none"}`);
@@ -87,6 +124,19 @@ export function buildDeliveryReview(runId, {
     lines.push(`- Scope violations: ${lane.scopeViolations?.length ? lane.scopeViolations.join(", ") : "none"}`);
     lines.push(`- Read-only violations: ${lane.readOnlyViolations?.length ? lane.readOnlyViolations.join(", ") : "none"}`);
     lines.push(`- Policy violations: ${lane.policyViolations?.length ? lane.policyViolations.join("; ") : "none"}`);
+    // A ratified lane is never rendered as clean: the violations stay on the
+    // record above, and this line says who accepted them and why.
+    if (lane.ratification) {
+      const ratified = (lane.ratification.violations || []).map((file) => `\`${file}\``).join(", ");
+      lines.push(
+        `- **Ratified violations:** ${ratified || "none recorded"} - ${lane.ratification.reason} ` +
+          `(${lane.ratification.by || "-"}, ${lane.ratification.at || "-"})`,
+      );
+      const uncovered = ratificationGap(lane);
+      if (uncovered.length) {
+        lines.push(`- **Violations recorded after ratification:** ${uncovered.join("; ")}`);
+      }
+    }
     lines.push(`- Exit: ${lane.exitCode ?? "-"}`);
     lines.push(`- Evidence log: \`${lane.logPath || "-"}\``, "");
   }
@@ -105,6 +155,11 @@ export function buildDeliveryReview(runId, {
         status.integrate?.excludedLanes?.length
           ? status.integrate.excludedLanes.map((lane) => `${lane.id} (${lane.reason})`).join("; ")
           : "none"
+      }`,
+    );
+    lines.push(
+      `- Lanes folded on a recorded ratification: ${
+        status.integrate?.ratifiedLanes?.length ? status.integrate.ratifiedLanes.join(", ") : "none"
       }`,
     );
   }
@@ -160,6 +215,52 @@ export function buildDeliveryReview(runId, {
     decisionPath: decision ? decisionPath : null,
     markdown,
   };
+}
+
+/**
+ * Mark a review that was recorded outside the ordinary awaiting-review states,
+ * on both the decision and the review summary, so the run's own telemetry says
+ * where the verdict came from.
+ */
+/**
+ * `writeStatus` can silently discard a write and hand back the on-disk record.
+ * A recovered verdict that was dropped that way must not be reported as
+ * recorded, so re-read what actually landed before returning.
+ */
+function assertRecoveredDecisionPersisted(status, pass, recoveredFrom, runId) {
+  if (!recoveredFrom) return;
+  const persisted = (status.delivery?.review?.history || [])
+    .some((item) => item.pass === Number(pass) && item.recovered === true);
+  if (!persisted) {
+    throw new Error(
+      `recovered Delivery Review pass ${pass} for ${runId} was not persisted; ` +
+        "inspect the run directory before recording it again",
+    );
+  }
+}
+
+function stampRecovery(status, pass, recoveredFrom) {
+  if (!recoveredFrom) return;
+  const review = status.delivery?.review;
+  if (!review) return;
+  review.recovered = true;
+  review.recoveredFrom = recoveredFrom;
+  const decision = (review.history || []).find((item) => item.pass === Number(pass));
+  if (decision) {
+    decision.recovered = true;
+    decision.recoveredFrom = recoveredFrom;
+  }
+}
+
+function formatScopeExtensions(lane) {
+  const grants = lane.scopeExtensions || [];
+  if (!grants.length) return "none";
+  return grants
+    .map((grant) => {
+      const patterns = (grant.patterns || []).map((pattern) => `\`${pattern}\``).join(", ");
+      return `${patterns || "none"} (${grant.by || "-"}, ${grant.at || "-"})`;
+    })
+    .join("; ");
 }
 
 export function inspectDeliveryStructure(status) {
