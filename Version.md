@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.20.0
+current: 1.21.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.21.0 - 2026-08-17
+
+Close the human loop: `agent-manager ratify` records Master's audit of guardrail-failed lanes and force-integrate folds ratified snapshots (coverage-checked); worker lanes auto-allow their workflow's own verification commands; `reply --extend-scope` makes granted extensions guardrail-real; `review --recovered` persists verdicts on manually recovered runs; `--force-lanes` list parsing and goal docId slugs fixed.
 
 ## 1.20.0 - 2026-08-15
 
