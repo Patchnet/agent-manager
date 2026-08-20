@@ -681,23 +681,33 @@ The approval replies are intentionally narrow:
 
 ## Local demo without a model subscription
 
-The fake harness is restricted to an explicitly opted-in test process.
+Run a complete local walkthrough without configuring a model CLI or touching an
+existing repository:
 
-PowerShell:
+```bash
+agent-manager demo
+```
 
-```powershell
-$env:AGENT_MANAGER_TEST_MODE="1"
-agent-manager run examples/fake-demo.yaml --detach --json
+The command creates a marker-owned scratch Git repository in the system
+temporary directory, writes a workflow with a current reviewed base, and
+launches two lanes. One finishes immediately; the other asks for input:
+
+```bash
 agent-manager status <runId>
 agent-manager reply <runId> demo-question --message "Use blue"
 agent-manager review <runId>
 ```
 
-bash or zsh:
+Use `--no-run` to inspect the generated repository without launching it,
+`--dir <path>` to choose a scratch location, or `--json` for machine-readable
+output. Repeating the command safely retires an active prior demo at the same
+path. A nonempty directory without Agent Manager's demo marker is never
+replaced.
 
-```bash
-AGENT_MANAGER_TEST_MODE=1 agent-manager run examples/fake-demo.yaml --detach --json
-```
+The fake harness remains fail-closed everywhere else. Tests can opt in with
+`AGENT_MANAGER_TEST_MODE=1`; operators opt in by invoking `agent-manager demo`.
+[`examples/fake-demo.yaml`](examples/fake-demo.yaml) documents the generated
+workflow shape but is intentionally not runnable as-is.
 
 ## 🎛️ Agent Manager: create a real workflow
 
@@ -800,23 +810,31 @@ output not covered by the lane scope, including extension mismatches such as a
 when the dependency graph is fully serialized and a single queued agent would
 be more efficient.
 
-## Install host skills (Cursor)
+## Install host skills
 
-Install the user-level agent-manager and PR Manager skills:
+Install the bundled Agent Manager and PR Manager skills for the host that will
+drive the CLI:
 
 ```bash
+agent-manager install claude
+agent-manager install codex
 agent-manager install cursor
 ```
 
-Install both skills plus a project rule:
+Use `--project <path>` for a repository-local installation. Cursor also gets
+its project rule:
 
 ```bash
-agent-manager install cursor --project /path/to/repo
+agent-manager install codex --project /path/to/repo
 ```
 
-This command installs the Agent Manager and PR Manager skills. Install or
-reference Ship Gate separately because approval policy belongs to the target
-repository, not to the orchestration runtime.
+The installer is idempotent: an unchanged installation reports `unchanged`.
+If local files differ, it stops and tells you to review them; `--force`
+explicitly replaces them. It copies only files bundled with Agent Manager and
+does not download a host CLI or contact a network service. Install or reference
+Ship Gate separately because approval policy belongs to the target repository,
+not to the orchestration runtime. `agent-manager doctor` reports when no
+supported host skill is installed.
 
 Cursor launches runs with `--detach`, reads `status.json`, replies to blocking lanes, and generates Delivery Review. `watch-signal` and `events --jsonl` are the portable wake sources:
 
