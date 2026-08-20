@@ -15,6 +15,7 @@ import { formatRuntime } from "./runtime.mjs";
 import { deriveOperatorCadence } from "./cadence.mjs";
 import { isOverallTerminalState } from "./delivery.mjs";
 import { AGENT_MANAGER_VERSION } from "./version.mjs";
+import { summarizeAuthorization } from "./authorization.mjs";
 
 export function writeStatus(runId, status) {
   assertSafeSlug(runId, "run id");
@@ -28,7 +29,14 @@ export function writeStatus(runId, status) {
     }
     const previous = existsSync(path) ? safeParse(path) : null;
     const lanes = preserveNewerLaneAttempts(status.lanes, previous?.lanes);
-    const payload = { ...status, lanes, runId, updatedAt: new Date().toISOString() };
+    const currentAuthorization = summarizeAuthorization({ ...status, lanes, runId });
+    const payload = {
+      ...status,
+      lanes,
+      runId,
+      ...(currentAuthorization ? { authorization: currentAuthorization } : {}),
+      updatedAt: new Date().toISOString(),
+    };
     const tempPath = path + "." + process.pid + "." + Date.now() + ".tmp";
     writePrivateFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
     replaceFileWithRetry(tempPath, path);
@@ -70,6 +78,15 @@ export function writeStatus(runId, status) {
                 state: target.state,
                 mergeSha: target.mergeSha || null,
               })),
+            }
+          : null,
+        authorization: payload.authorization
+          ? {
+              state: payload.authorization.state,
+              level: payload.authorization.level,
+              grantDigest: payload.authorization.grantDigest,
+              receiptDigest: payload.authorization.receiptDigest || null,
+              failureCode: payload.authorization.failureCode || null,
             }
           : null,
         awareness: payload.awareness
@@ -187,6 +204,15 @@ export function formatStatus(status) {
       lines.push(`      target ${target.id}: ${target.state}  lane=${target.laneId}  pr=${target.prUrl || target.pr || "-"}  merge=${target.mergeSha || "-"}`);
     }
     if (status.delivery.release?.tag) lines.push(`      release: ${status.delivery.release.tag}  sha=${status.delivery.release.sha || "-"}`);
+    lines.push("");
+  }
+  if (status.authorization) {
+    lines.push(`authorization: ${status.authorization.state}  level=${status.authorization.level || "-"}  valid=${status.authorization.valid ? "yes" : "no"}`);
+    lines.push(`      grant: ${status.authorization.grantDigest || "-"}`);
+    lines.push(`      expires: ${status.authorization.expiresAt || "-"}  riskCeiling=${status.authorization.riskCeiling || "-"}`);
+    if (status.authorization.receiptDigest) lines.push(`      receipt: ${status.authorization.receiptDigest}`);
+    if (status.authorization.failureCode) lines.push(`      failure: ${status.authorization.failureCode}`);
+    if (status.authorization.nextAction) lines.push(`      next: ${status.authorization.nextAction}`);
     lines.push("");
   }
   if (status.ship) {
@@ -313,6 +339,14 @@ function eventFingerprint(status) {
             state: target.state,
             mergeSha: target.mergeSha || null,
           })),
+        }
+      : null,
+    authorization: status.authorization
+      ? {
+          state: status.authorization.state,
+          grantDigest: status.authorization.grantDigest,
+          receiptDigest: status.authorization.receiptDigest || null,
+          failureCode: status.authorization.failureCode || null,
         }
       : null,
   });

@@ -1,4 +1,5 @@
 import { staleGoalHints } from "./delivery.mjs";
+import { inspectAuthorization } from "./authorization.mjs";
 
 const TERMINAL_STATES = new Set([
   "reviewed",
@@ -102,6 +103,25 @@ export function deriveOperatorCadence(status, { wakeReason = "state_change" } = 
         "Agent Manager · Correction kickoff",
       );
     case "ship_gate_pending":
+      if (status.authorization || inspectAuthorization(status).exists) {
+        const authorization = inspectAuthorization(status);
+        if (authorization.valid) {
+          return cadence(
+            "conditional_authority_ready",
+            OPERATOR_TRANSITIONS.AUTO_CONTINUE,
+            `Launch \`agent-manager ship ${status.runId} --authorized --detach\`; the immutable grant supplies the exact approved inputs and must be consumed once.`,
+            [],
+            "PR Manager · Authorized handoff",
+          );
+        }
+        return cadence(
+          "conditional_authority_blocked",
+          OPERATOR_TRANSITIONS.WAIT_OPERATOR,
+          authorization.action || "Use the manual Ship Gate or create a new reviewed grant.",
+          [authorization.action || "operator review required"],
+          "Agent Manager · Authorization escalation",
+        );
+      }
       if (wakeReason === "heartbeat") {
         return cadence(
           "ship_gate_decision",

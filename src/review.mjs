@@ -15,6 +15,7 @@ import {
 import { GoalModelError, linkGoalArtifact, updateArtifactLink } from "./goals.mjs";
 import { ratificationGap } from "./ratify.mjs";
 import { writeReport } from "./report.mjs";
+import { resolveReviewerIdentity } from "./authorization.mjs";
 
 const AWAITING_REVIEW_STATES = ["delivery_review_pending", "correction_pending", "ship_gate_pending"];
 /**
@@ -31,6 +32,7 @@ export function buildDeliveryReview(runId, {
   write = true,
   verdict = null,
   reviewer = null,
+  reviewerRole = null,
   notes = null,
   recovered = false,
 } = {}) {
@@ -55,7 +57,8 @@ export function buildDeliveryReview(runId, {
     );
   }
   if (verdict) {
-    recordReviewDecision(status, { pass, verdict, reviewer, notes });
+    const reviewerIdentity = resolveReviewerIdentity(status, reviewerRole);
+    recordReviewDecision(status, { pass, verdict, reviewer, reviewerIdentity, notes });
     stampRecovery(status, pass, recoveredFrom);
     // A cancelled run stays cancelled. `writeStatus` refuses to move a run off
     // `cancelled` while its cancel marker exists, so leaving the verdict's own

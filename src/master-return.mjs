@@ -146,6 +146,8 @@ export function shouldReturnToMaster(payload) {
     "workers_complete",
     "correction_required",
     "ship_gate_ready",
+    "conditional_authority_ready",
+    "conditional_authority_blocked",
     "release_gate_ready",
   ].includes(payload.cadence?.stage);
 }

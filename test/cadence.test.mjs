@@ -52,3 +52,18 @@ test("operator cadence stops only at overall terminal delivery", () => {
   assert.equal(deriveOperatorCadence(status("reviewed")).transition, "TERMINAL");
   assert.equal(deriveOperatorCadence(status("released")).transition, "TERMINAL");
 });
+
+test("an explicit but unavailable conditional grant fails closed instead of falling back silently", () => {
+  const result = deriveOperatorCadence(status("ship_gate_pending", {
+    authorization: {
+      schema: "agent-manager.authorization-summary.v1",
+      state: "ready",
+      valid: true,
+      level: "through-pr",
+      grantDigest: "a".repeat(64),
+    },
+  }));
+  assert.equal(result.stage, "conditional_authority_blocked");
+  assert.equal(result.transition, "WAIT_OPERATOR");
+  assert.match(result.nextAction, /manual Ship Gate|new reviewed grant/i);
+});

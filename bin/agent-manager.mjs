@@ -69,6 +69,13 @@ import {
   writeMasterReturn,
 } from "../src/master-return.mjs";
 import {
+  authorizedShipOptions,
+  consumeAuthorization,
+  createAuthorizationGrant,
+  inspectAuthorization,
+  revokeAuthorization,
+} from "../src/authorization.mjs";
+import {
   loadDirectorPolicy,
   runDirectorCycle,
 } from "../src/director/index.mjs";
@@ -121,14 +128,18 @@ function usage() {
     "  agent-manager ratify <runId> <laneId> --reason <text> [--by <id>] [--json]",
     "    records Master acceptance of a guardrail-failed lane's violations so",
     "    `integrate --force-lanes failed-with-snapshot` may fold it",
-    "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--notes <text>]] [--recovered] [--json]",
+    "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--reviewer-role manager] [--notes <text>]] [--recovered] [--json]",
     "    --recovered: record a verdict on a blocked, failed, or cancelled run",
     "  agent-manager closeout <runId> --operator <id> [--reason <text>] [--no-artifacts] [--json]",
     "    accept-without-ship terminal: files run outputs, ends the run as `filed`",
     "  agent-manager file-artifacts <runId> [--json]",
     "  agent-manager next-action <runId> [--json]",
     "  agent-manager delivery-ready <runId> [--require merged|released] [--json]",
+    "  agent-manager authorization create <runId> --level through-pr|all --operator <id> --expires-at <iso> --risk <level> --risk-ceiling <level> --provider-mode <mode> [ship inputs] [--json]",
+    "  agent-manager authorization inspect <runId> [--json]",
+    "  agent-manager authorization revoke <runId> --operator <id> [--reason <text>] [--json]",
     "  agent-manager ship <runId> --approve all|through-pr --detach [options] [--json]",
+    "  agent-manager ship <runId> --authorized --detach [--json]",
     "    options: --commit-message <text> --version <semver> --summary <text>",
     "             --repo <path> --worktree <path> --branch <ref> --base <ref>",
     "             --remote <name> --pr <url|number> --target <delivery-target-id>",
@@ -167,6 +178,9 @@ function parseShipFlags(rest) {
     timeoutSec: null,
     checkGraceSec: null,
     target: null,
+    authorized: false,
+    providerMode: null,
+    risk: null,
   };
   const valued = new Map([
     ["--approve", "approve"],
@@ -183,10 +197,13 @@ function parseShipFlags(rest) {
     ["--timeout-sec", "timeoutSec"],
     ["--check-grace-sec", "checkGraceSec"],
     ["--target", "target"],
+    ["--provider-mode", "providerMode"],
+    ["--risk", "risk"],
   ]);
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     if (arg === "--detach") flags.detach = true;
+    else if (arg === "--authorized") flags.authorized = true;
     else if (arg === "--json") flags.json = true;
     else if (valued.has(arg)) {
       const value = rest[++index];
@@ -201,6 +218,74 @@ function parseShipFlags(rest) {
     }
   }
   return flags;
+}
+
+function parseAuthorizationFlags(rest) {
+  const action = rest[0];
+  if (!["create", "inspect", "revoke"].includes(action)) {
+    throw new Error("authorization requires create, inspect, or revoke");
+  }
+  const valued = new Map([
+    ["--level", "level"], ["--operator", "operator"], ["--operator-source", "operatorSource"],
+    ["--expires-at", "expiresAt"], ["--risk", "risk"], ["--risk-ceiling", "riskCeiling"],
+    ["--provider-mode", "providerMode"], ["--target", "target"], ["--repo", "repo"],
+    ["--worktree", "worktree"], ["--branch", "branch"], ["--base", "base"],
+    ["--remote", "remote"], ["--pr", "pr"], ["--commit-message", "commitMessage"],
+    ["--version", "version"], ["--summary", "summary"], ["--poll-sec", "pollSec"],
+    ["--timeout-sec", "timeoutSec"], ["--check-grace-sec", "checkGraceSec"],
+    ["--retry-attempts", "retryAttempts"], ["--retry-base-ms", "retryBaseMs"],
+    ["--reason", "reason"],
+  ]);
+  const flags = { action, runId: null, json: false };
+  for (let index = 1; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === "--json") flags.json = true;
+    else if (valued.has(arg)) {
+      const value = rest[++index];
+      if (!value) throw new Error(`${arg} requires a value`);
+      flags[valued.get(arg)] = value;
+    } else if (arg.startsWith("-")) throw new Error(`unknown authorization flag: ${arg}`);
+    else if (flags.runId) throw new Error(`unexpected authorization argument: ${arg}`);
+    else flags.runId = arg;
+  }
+  if (!flags.runId) throw new Error(`authorization ${action} requires <runId>`);
+  return flags;
+}
+
+function runAuthorizationCommand(rest) {
+  const flags = parseAuthorizationFlags(rest);
+  let status = readStatus(flags.runId);
+  if (!status) throw new Error(`no status for ${flags.runId}`);
+  let result;
+  if (flags.action === "create") {
+    result = createAuthorizationGrant(status, flags);
+    status.authorization = result.summary;
+    writeStatus(flags.runId, status);
+  } else if (flags.action === "revoke") {
+    result = revokeAuthorization(status, flags);
+    status.authorization = result.summary;
+    writeStatus(flags.runId, status);
+  } else {
+    result = inspectAuthorization(status);
+  }
+  const summary = result.summary;
+  const publicResult = {
+    schema: "agent-manager.authorization-command.v1",
+    action: flags.action,
+    runId: flags.runId,
+    authorization: summary,
+  };
+  console.log(flags.json ? JSON.stringify(publicResult) : [
+    `runId: ${flags.runId}`,
+    `authorization: ${summary?.state || "none"}`,
+    `valid: ${summary?.valid ? "yes" : "no"}`,
+    `level: ${summary?.level || "-"}`,
+    `grant: ${summary?.grantDigest || "-"}`,
+    `receipt: ${summary?.receiptDigest || "-"}`,
+    `expires: ${summary?.expiresAt || "-"}`,
+    `failure: ${summary?.failureCode || "none"}`,
+    `next: ${summary?.nextAction || "none"}`,
+  ].join("\n"));
 }
 
 function flagValue(name, source = args) {
@@ -690,8 +775,35 @@ function detachShip(flags) {
     throw new Error("ship must use --detach so the host chat does not babysit CI or merge");
   }
   if (!flags.runId) throw new Error("ship requires <runId>");
-  const handoff = prepareShipHandoff(flags.runId, flags);
+  let authorization = null;
+  let authorizationStatus = null;
+  let handoff;
+  if (flags.authorized) {
+    const overrides = Object.entries(flags).filter(([key, value]) =>
+      !["runId", "detach", "json", "authorized"].includes(key) && value != null);
+    if (overrides.length) {
+      throw new Error(`--authorized reads the immutable grant manifest; remove overrides: ${overrides.map(([key]) => key).join(", ")}`);
+    }
+    const status = readStatus(flags.runId);
+    if (!status) throw new Error(`no status for ${flags.runId}`);
+    authorizationStatus = status;
+    const options = authorizedShipOptions(status);
+    handoff = prepareShipHandoff(flags.runId, options);
+    handoff.providerMode = options.providerMode;
+    handoff.risk = options.risk;
+    handoff.permittedMutations = options.permittedMutations;
+  } else {
+    handoff = prepareShipHandoff(flags.runId, flags);
+  }
   preflightShipHandoff(handoff);
+  if (authorizationStatus) {
+    authorization = consumeAuthorization(authorizationStatus, handoff);
+    handoff.authorization = {
+      grantDigest: authorization.receipt.grantDigest,
+      receiptDigest: authorization.receipt.receiptDigest,
+      executionDigest: authorization.receipt.executionDigest,
+    };
+  }
   const queued = queueShip(flags.runId, handoff);
   const logPath = join(runDir(flags.runId), "ship", "supervisor.log");
   let child;
@@ -715,12 +827,17 @@ function detachShip(flags) {
     handoff: queued.handoffPath,
     statusCommand: `agent-manager status ${flags.runId}`,
     watchCommand: `agent-manager watch-signal ${flags.runId}`,
+    authorization: handoff.authorization ? {
+      grantDigest: handoff.authorization.grantDigest,
+      receiptDigest: handoff.authorization.receiptDigest,
+    } : null,
   };
   console.log(flags.json ? JSON.stringify(payload) : [
     `runId: ${flags.runId}`,
     "state: detached",
     "phase: ship",
     `approve: ${handoff.approve}`,
+    ...(handoff.authorization ? [`authorization: consumed (${handoff.authorization.receiptDigest})`] : []),
     `runtime: ${formatRuntime(payload.runtime)}`,
     `pid: ${child.pid}`,
     `telemetry: ${payload.telemetry}`,
@@ -1035,13 +1152,14 @@ async function main() {
   }
 
   if (cmd === "review") {
-    const runId = firstPositional(args.slice(1), ["--pass", "--verdict", "--reviewer", "--notes"])
+    const runId = firstPositional(args.slice(1), ["--pass", "--verdict", "--reviewer", "--reviewer-role", "--notes"])
       || latestRunId();
     if (!runId) throw new Error("review requires <runId>");
     const result = buildDeliveryReview(runId, {
       pass: Number(flagValue("--pass") || 1),
       verdict: flagValue("--verdict"),
       reviewer: flagValue("--reviewer"),
+      reviewerRole: flagValue("--reviewer-role"),
       notes: flagValue("--notes"),
       recovered: args.includes("--recovered"),
     });
@@ -1125,6 +1243,11 @@ async function main() {
       `state: ${result.state}`,
     ].join("\n"));
     if (!result.ready) process.exitCode = 2;
+    return;
+  }
+
+  if (cmd === "authorization") {
+    runAuthorizationCommand(args.slice(1));
     return;
   }
 
