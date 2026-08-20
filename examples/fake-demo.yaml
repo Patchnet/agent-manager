@@ -1,14 +1,15 @@
-# Local orchestration demo. The fake harness is available only when the process
-# explicitly opts into test mode; it never launches a model CLI.
+# Reference shape for the built-in fake harness. This file is intentionally not
+# runnable: its repository and reviewed base are placeholders.
 #
-# PowerShell:
-#   $env:AGENT_MANAGER_TEST_MODE="1"
-#   node bin/agent-manager.mjs run examples/fake-demo.yaml --detach
+# To create a current workflow in a safe scratch repository and explicitly opt
+# into the fake harness, run:
 #
-# bash/zsh:
-#   AGENT_MANAGER_TEST_MODE=1 node bin/agent-manager.mjs run examples/fake-demo.yaml --detach
+#   agent-manager demo
+#
+# Add --no-run to scaffold without launching, or --dir <path> to choose the
+# scratch location. Agent Manager refuses to replace a non-demo directory.
 
-repo: ..
+repo: replace-with-absolute-repository-path
 harness_default: fake
 claim_mode: off
 integrate: true
@@ -34,6 +35,7 @@ planning:
 lanes:
   - id: demo-write
     scope: demo-output.txt
+    expected_outputs: [demo-output.txt]
     prompt: Create the demo output.
     fake:
       write:
@@ -41,6 +43,7 @@ lanes:
         content: demo complete
   - id: demo-question
     scope: demo-answer.txt
+    expected_outputs: [demo-answer.txt]
     prompt: Ask for a value, then resume.
     fake:
       needs_input: Which value should the demo use?

@@ -5,6 +5,7 @@ import { resolveCursorBin } from "./harness/cursor.mjs";
 import { assertPlanningReady } from "./planning.mjs";
 import { spawnCommandSync } from "./command.mjs";
 import { harnessFailureRecommendation } from "./harness/setup.mjs";
+import { fakeHarnessAllowed } from "./constants.mjs";
 
 export function checkCommand(command, args = ["--version"], options = {}) {
   const { result, resolved } = spawnCommandSync(command, args, {
@@ -69,7 +70,12 @@ export function preflightWorkflow(workflow) {
   for (const name of new Set(workflow.lanes.map((lane) => lane.harness))) {
     getHarnessAdapter(name);
     if (name === "fake") {
-      checks.push({ ok: process.env.AGENT_MANAGER_TEST_MODE === "1", command: "fake", version: "test", error: "fake harness requires AGENT_MANAGER_TEST_MODE=1" });
+      checks.push({
+        ok: fakeHarnessAllowed(),
+        command: "fake",
+        version: "local demo",
+        error: 'fake harness requires an explicit opt-in; use "agent-manager demo" or AGENT_MANAGER_TEST_MODE=1 in tests',
+      });
     } else {
       const installation = name === "codex" ? resolveCodexInstallation() : null;
       const command = name === "claude"

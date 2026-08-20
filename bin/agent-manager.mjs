@@ -9,9 +9,18 @@ import { formatDoctor, runDoctor } from "../src/doctor.mjs";
 import { ensurePrivateDir } from "../src/fs-safe.mjs";
 import { listHarnessAdapters } from "../src/harness/index.mjs";
 import { initWorkflow } from "../src/init.mjs";
-import { installCursor } from "../src/install.mjs";
+import { formatInstall, hostNames, installHost } from "../src/install.mjs";
+import {
+  adoptDemoRun,
+  createDemo,
+  DEFAULT_DEMO_DIR,
+  formatDemo,
+  listDemoRuns,
+  listRunIds,
+  markDemoRun,
+} from "../src/demo.mjs";
 import { integrateRun } from "../src/integrate-run.mjs";
-import { assertSafeSlug, IGNORED_PATH_OVERRIDES, runDir } from "../src/paths.mjs";
+import { assertSafeSlug, IGNORED_PATH_OVERRIDES, RUNS_ROOT, runDir } from "../src/paths.mjs";
 import { preflightWorkflow, validateRepository } from "../src/preflight.mjs";
 import { assertPlanningReady } from "../src/planning.mjs";
 import { ratifyLane } from "../src/ratify.mjs";
@@ -27,7 +36,7 @@ import {
   runShip,
 } from "../src/ship-run.mjs";
 import { runMonitor } from "../src/monitor.mjs";
-import { formatStatus, latestRunId, readEvents, readStatus, writeStatus } from "../src/status.mjs";
+import { formatStatus, isTerminalState, latestRunId, readEvents, readStatus, writeStatus } from "../src/status.mjs";
 import { runWatchSignal } from "../src/watch-signal.mjs";
 import { assertDangerousPermissionApproval, loadWorkflow } from "../src/workflow.mjs";
 import { formatRuntime } from "../src/runtime.mjs";
@@ -99,6 +108,7 @@ function usage() {
     "  agent-manager validate <workflow.yaml> [--repo <path>] [--json]",
     "  agent-manager doctor [--repo <path>] [--json]",
     "  agent-manager init [--repo <path>] [--request <text>] [--harnesses claude,codex]",
+    "  agent-manager demo [--dir <path>] [--no-run] [--json]",
     "  agent-manager status [runId] [--watch] [--json]",
     "  agent-manager events <runId> [--jsonl]",
     "  agent-manager monitor [runId] [--interval <sec>]",
@@ -149,7 +159,7 @@ function usage() {
     "  agent-manager integrate <runId> [--force-lanes done,failed-with-snapshot] [--json]",
     "    --force-lanes: also fold failed lanes whose end-of-lane snapshot committed",
     "                   guardrail-failed lanes need `ratify` first",
-    "  agent-manager install cursor [--project <path>] [--force] [--json]",
+    "  agent-manager install claude|codex|cursor [--project <path>] [--force] [--json]",
     "  agent-manager harnesses [--json]",
     "  agent-manager version [--json]",
     "  agent-manager --version",
@@ -413,7 +423,7 @@ function firstPositional(rest, valueFlags = []) {
   return null;
 }
 
-function parseNamedArgs(rest, { values = {}, booleans = {} } = {}) {
+function parseNamedArgs(rest, { values = {}, booleans = {}, label = "goal" } = {}) {
   const parsed = { positionals: [] };
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -435,7 +445,7 @@ function parseNamedArgs(rest, { values = {}, booleans = {} } = {}) {
       }
       continue;
     }
-    if (arg.startsWith("-")) throw new Error(`unknown goal flag: ${arg}`);
+    if (arg.startsWith("-")) throw new Error(`unknown ${label} flag: ${arg}`);
     parsed.positionals.push(arg);
   }
   return parsed;
@@ -733,13 +743,15 @@ async function detachRun(flags) {
     statusCommand: `agent-manager status ${runId}`,
     masterReturn: returnWatcher,
   };
-  console.log(flags.json ? JSON.stringify(payload) : [
-    `runId: ${runId}`, `title: ${runIdentity.displayTitle}`, `agent-manager: v${AGENT_MANAGER_VERSION}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
-    `runtime: ${formatRuntime(payload.runtime)}`,
-    `supervisorLog: ${logPath}`, `status: ${payload.statusCommand}`,
-    `masterReturn: ${returnWatcher ? `${returnWatcher.state} (${returnWatcher.channel.host}/${returnWatcher.channel.mode})` : "not configured"}`,
-    `monitor: agent-manager monitor ${runId}`, `watch-signal: agent-manager watch-signal ${runId}`,
-  ].join("\n"));
+  if (!flags.quiet) {
+    console.log(flags.json ? JSON.stringify(payload) : [
+      `runId: ${runId}`, `title: ${runIdentity.displayTitle}`, `agent-manager: v${AGENT_MANAGER_VERSION}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
+      `runtime: ${formatRuntime(payload.runtime)}`,
+      `supervisorLog: ${logPath}`, `status: ${payload.statusCommand}`,
+      `masterReturn: ${returnWatcher ? `${returnWatcher.state} (${returnWatcher.channel.host}/${returnWatcher.channel.mode})` : "not configured"}`,
+      `monitor: agent-manager monitor ${runId}`, `watch-signal: agent-manager watch-signal ${runId}`,
+    ].join("\n"));
+  }
   return payload;
 }
 
@@ -1126,6 +1138,7 @@ async function main() {
 
   if (cmd === "reply") {
     if (!args[1] || !args[2]) throw new Error("reply requires <runId> <laneId>");
+    adoptDemoRun(runDir(args[1]));
     detachReply(args[1], args[2], flagValue("--message"), args.includes("--json"), {
       force: args.includes("--force"),
       extendScope: flagValue("--extend-scope") || [],
@@ -1133,7 +1146,11 @@ async function main() {
     });
     return;
   }
-  if (cmd === "_resume-lane") { await resumeLane(args[1], args[2], args[3]); return; }
+  if (cmd === "_resume-lane") {
+    adoptDemoRun(runDir(args[1]));
+    await resumeLane(args[1], args[2], args[3]);
+    return;
+  }
 
   if (cmd === "ratify") {
     if (!args[1] || !args[2]) throw new Error("ratify requires <runId> <laneId>");
@@ -1304,9 +1321,90 @@ async function main() {
   }
 
   if (cmd === "install") {
-    if (args[1] !== "cursor") throw new Error("install currently supports: cursor");
-    const result = installCursor({ project: flagValue("--project"), force: args.includes("--force") });
-    console.log(args.includes("--json") ? JSON.stringify(result) : `installed Cursor integration:\n${result.installed.join("\n")}`);
+    const host = args[1];
+    if (!host || !hostNames().includes(host)) {
+      throw new Error(`install requires one of: ${hostNames().join(", ")}`);
+    }
+    const installFlags = parseNamedArgs(args.slice(2), {
+      values: { "--project": { key: "project" } },
+      booleans: { "--force": "force", "--json": "json" },
+      label: "install",
+    });
+    if (installFlags.positionals.length) {
+      throw new Error(`unexpected install argument: ${installFlags.positionals[0]}`);
+    }
+    if (installFlags.project?.startsWith("-")) throw new Error("--project requires a path");
+    const result = installHost(host, {
+      project: installFlags.project,
+      force: installFlags.force,
+    });
+    console.log(installFlags.json ? JSON.stringify(result) : formatInstall(result));
+    return;
+  }
+
+  if (cmd === "demo") {
+    const demoFlags = parseNamedArgs(args.slice(1), {
+      values: { "--dir": { key: "dir" } },
+      booleans: { "--no-run": "noRun", "--json": "json" },
+      label: "demo",
+    });
+    if (demoFlags.positionals.length) {
+      throw new Error(`unexpected demo argument: ${demoFlags.positionals[0]}`);
+    }
+    if (demoFlags.dir?.startsWith("-")) throw new Error("--dir requires a path");
+    const demoRepo = resolve(demoFlags.dir || DEFAULT_DEMO_DIR);
+    // Match both the durable marker and the repository path. The path fallback
+    // closes the tiny launch-to-marker window if a prior CLI process exited
+    // after detaching the supervisor but before recording its demo marker.
+    const priorIds = new Set(listDemoRuns(RUNS_ROOT));
+    for (const runId of listRunIds(RUNS_ROOT)) {
+      const status = readStatus(runId);
+      if (status?.repo && resolve(status.repo) === demoRepo) priorIds.add(runId);
+    }
+    const priorRuns = [...priorIds]
+      .map((runId) => ({ runId, status: readStatus(runId) }))
+      .filter(({ status }) => status?.repo && resolve(status.repo) === demoRepo);
+    const retired = [];
+    for (const { runId, status } of priorRuns) {
+      if (isTerminalState(status.state)) continue;
+      try {
+        await cancelRun(runId, { removeWorktrees: true });
+      } catch (cleanupError) {
+        try {
+          await cancelRun(runId);
+        } catch (cancelError) {
+          throw new Error(
+            `could not retire previous demo run ${runId}: ${cancelError.message}; ` +
+            `initial cleanup error: ${cleanupError.message}`,
+          );
+        }
+      }
+      retired.push(runId);
+    }
+
+    const scaffold = createDemo({ dir: demoRepo });
+    if (demoFlags.noRun) {
+      const result = { ...scaffold, retiredRuns: retired };
+      console.log(demoFlags.json ? JSON.stringify(result) : formatDemo(scaffold, { retired }));
+      return;
+    }
+
+    const previousDemoOptIn = process.env.AGENT_MANAGER_DEMO;
+    let launched;
+    try {
+      process.env.AGENT_MANAGER_DEMO = "1";
+      const runFlags = parseRunFlags([scaffold.workflowPath, "--detach"]);
+      runFlags.quiet = true;
+      launched = await detachRun(runFlags);
+    } finally {
+      if (previousDemoOptIn === undefined) delete process.env.AGENT_MANAGER_DEMO;
+      else process.env.AGENT_MANAGER_DEMO = previousDemoOptIn;
+    }
+    markDemoRun(runDir(launched.runId));
+    const result = { ...scaffold, runId: launched.runId, retiredRuns: retired };
+    console.log(demoFlags.json
+      ? JSON.stringify(result)
+      : formatDemo(scaffold, { launched: launched.runId, retired }));
     return;
   }
 
