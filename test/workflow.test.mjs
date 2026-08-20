@@ -134,6 +134,69 @@ test("workflows that claim no shell permission keep the acceptEdits default", ()
   assert.equal(workflowValue.lanes[0].permission_mode, "acceptEdits");
 });
 
+test("integration verification setup normalizes separately without changing legacy workflows", () => {
+  const legacy = loadWorkflow(withLane({}, {
+    verification: {
+      commands: [{ command: "npm", args: ["test"] }],
+    },
+  }));
+  assert.deepEqual(legacy.verification, {
+    commands: [{ command: "npm", args: ["test"] }],
+    timeout_sec: 900,
+  });
+
+  const configured = loadWorkflow(withLane(
+    { harness: "claude", permission_mode: "auto" },
+    {
+      verification: {
+        setup: {
+          commands: [{ command: "npm", args: ["ci"] }],
+          timeout_sec: 120,
+        },
+        commands: [{ command: "npm", args: ["test"] }],
+        timeout_sec: 30,
+      },
+    },
+  ));
+  assert.deepEqual(configured.verification, {
+    commands: [{ command: "npm", args: ["test"] }],
+    timeout_sec: 30,
+    setup: {
+      commands: [{ command: "npm", args: ["ci"] }],
+      timeout_sec: 120,
+    },
+  });
+  assert.deepEqual(configured.lanes[0].allowed_tools, [
+    "Bash(npm ci*)",
+    "Bash(npm test*)",
+  ]);
+  assert.equal(configured.lanes[0].allowed_tools_source, "verification");
+});
+
+test("integration verification setup rejects invalid or nested command plans", () => {
+  assert.throws(
+    () => loadWorkflow(withLane({}, {
+      verification: {
+        setup: { commands: [] },
+        commands: [{ command: "npm", args: ["test"] }],
+      },
+    })),
+    /workflow\.verification\.setup\.commands must be a non-empty array/,
+  );
+  assert.throws(
+    () => loadWorkflow(withLane({}, {
+      verification: {
+        setup: {
+          setup: { commands: [{ command: "npm", args: ["ci"] }] },
+          commands: [{ command: "npm", args: ["ci"] }],
+        },
+        commands: [{ command: "npm", args: ["test"] }],
+      },
+    })),
+    /workflow\.verification\.setup contains unknown field: setup/,
+  );
+});
+
 test("the coherence check reads lane state directly and is order independent", () => {
   const lanes = [
     { id: "review", kind: "review", harness: "claude", permission_mode: "readOnly", allowed_tools: [] },

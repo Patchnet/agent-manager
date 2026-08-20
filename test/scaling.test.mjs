@@ -191,6 +191,59 @@ test("changed-file overlap and verification produce deterministic evidence", () 
   assert.equal(failed.commands[0].exitCode, 7);
 });
 
+test("verification setup has separate evidence, blocks tests, and reuses a passed revision", () => {
+  const blockedMarker = join(repo, "verification-command-ran.txt");
+  const setupFailed = runVerification(repo, {
+    setup: {
+      timeout_sec: 10,
+      commands: [{ command: process.execPath, args: ["-e", "process.exit(8)"] }],
+    },
+    timeout_sec: 10,
+    commands: [{
+      command: process.execPath,
+      args: ["-e", "require('node:fs').writeFileSync('verification-command-ran.txt', 'ran')"],
+    }],
+  }, { setupRevision: "revision-failed" });
+  assert.equal(setupFailed.state, "failed");
+  assert.equal(setupFailed.setup.state, "failed");
+  assert.equal(setupFailed.setup.commands[0].exitCode, 8);
+  assert.match(setupFailed.setup.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(typeof setupFailed.setup.elapsedMs, "number");
+  assert.equal(setupFailed.setup.revision, "revision-failed");
+  assert.deepEqual(setupFailed.commands, []);
+  assert.match(setupFailed.error, /^verification setup failed:/);
+  assert.equal(existsSync(blockedMarker), false);
+
+  const retryPlan = {
+    setup: {
+      timeout_sec: 10,
+      commands: [{
+        command: process.execPath,
+        args: [
+          "-e",
+          "const fs=require('node:fs');const p='setup-count.txt';const n=fs.existsSync(p)?Number(fs.readFileSync(p,'utf8')):0;fs.writeFileSync(p,String(n+1))",
+        ],
+      }],
+    },
+    timeout_sec: 10,
+    commands: [{
+      command: process.execPath,
+      args: ["-e", "process.exit(require('node:fs').existsSync('verification-ready.txt')?0:9)"],
+    }],
+  };
+  const first = runVerification(repo, retryPlan, { setupRevision: "revision-stable" });
+  assert.equal(first.setup.state, "passed");
+  assert.equal(first.state, "failed");
+  writeFileSync(join(repo, "verification-ready.txt"), "ready\n");
+  const retried = runVerification(repo, retryPlan, {
+    previousVerification: first,
+    setupRevision: "revision-stable",
+  });
+  assert.equal(retried.state, "passed");
+  assert.deepEqual(retried.setup, first.setup);
+  assert.equal(readFileSync(join(repo, "setup-count.txt"), "utf8"), "1");
+});
+
 test("claim groups permit one wave's approved overlap, block another wave, and renew leases", () => {
   const claimTool = join(process.cwd(), "tools", "claim.mjs");
   const claimEnv = { ...process.env, AGENT_MANAGER_CLAIMS_ROOT: claims };

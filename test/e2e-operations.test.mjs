@@ -110,6 +110,111 @@ test("failed integrated verification blocks delivery with command evidence", asy
   await runCli(["cleanup", runId]);
 });
 
+test("failed integration setup persists evidence, skips tests, and retries", async () => {
+  const runId = "run-test-verification-setup-retry";
+  const workflow = writeWorkflow("verification-setup-retry", {
+    ...baseWorkflow([{
+      id: "implementation",
+      scope: "setup-retry.txt",
+      prompt: "write setup retry fixture",
+      fake: { write: { path: "setup-retry.txt", content: "retry\n" } },
+    }]),
+    verification: {
+      setup: {
+        commands: [{
+          command: "node",
+          args: [
+            "-e",
+            "const fs=require('node:fs');if(!fs.existsSync('setup-ready.txt'))process.exit(8);fs.writeFileSync('setup-count.txt','1')",
+          ],
+        }],
+        timeout_sec: 10,
+      },
+      commands: [{
+        command: "node",
+        args: ["-e", "require('node:fs').writeFileSync('verification-ran.txt','ran')"],
+      }],
+      timeout_sec: 10,
+    },
+  });
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  await waitForStatus(runId, (status) => status.state === "delivery_review_pending" && !status.integrate);
+
+  const firstOutput = await runCli(["integrate", runId, "--json"]);
+  const first = JSON.parse(firstOutput.stdout.trim());
+  assert.equal(first.state, "blocked");
+  assert.equal(first.integrate.verification.setup.state, "failed");
+  assert.equal(first.integrate.verification.setup.commands[0].exitCode, 8);
+  assert.match(first.integrate.verification.setup.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(typeof first.integrate.verification.setup.elapsedMs, "number");
+  assert.deepEqual(first.integrate.verification.commands, []);
+  assert.match(first.integrate.needsInput.prompt, /verification setup failed/);
+  assert.equal(existsSync(join(first.integrate.worktree, "verification-ran.txt")), false);
+  const persisted = JSON.parse(readFileSync(
+    join(runsRoot, runId, "integrate", "verification.json"),
+    "utf8",
+  ));
+  assert.deepEqual(persisted, first.integrate.verification);
+
+  writeFileSync(join(first.integrate.worktree, "setup-ready.txt"), "ready\n");
+  const retryOutput = await runCli(["integrate", runId, "--json"]);
+  const retried = JSON.parse(retryOutput.stdout.trim());
+  assert.equal(retried.state, "delivery_review_pending");
+  assert.equal(retried.integrate.state, "ready");
+  assert.equal(retried.integrate.verification.setup.state, "passed");
+  assert.equal(retried.integrate.verification.state, "passed");
+  assert.equal(readFileSync(join(retried.integrate.worktree, "setup-count.txt"), "utf8"), "1");
+  assert.equal(readFileSync(join(retried.integrate.worktree, "verification-ran.txt"), "utf8"), "ran");
+  await runCli(["cancel", runId]);
+  await runCli(["cleanup", runId]);
+});
+
+test("integration retries reuse successful setup evidence at the same revision", async () => {
+  const runId = "run-test-verification-setup-reuse";
+  const workflow = writeWorkflow("verification-setup-reuse", {
+    ...baseWorkflow([{
+      id: "implementation",
+      scope: "setup-reuse.txt",
+      prompt: "write setup reuse fixture",
+      fake: { write: { path: "setup-reuse.txt", content: "reuse\n" } },
+    }]),
+    verification: {
+      setup: {
+        commands: [{
+          command: "node",
+          args: [
+            "-e",
+            "const fs=require('node:fs');const p='setup-count.txt';const n=fs.existsSync(p)?Number(fs.readFileSync(p,'utf8')):0;fs.writeFileSync(p,String(n+1))",
+          ],
+        }],
+        timeout_sec: 10,
+      },
+      commands: [{
+        command: "node",
+        args: ["-e", "process.exit(require('node:fs').existsSync('verification-ready.txt')?0:9)"],
+      }],
+      timeout_sec: 10,
+    },
+  });
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  await waitForStatus(runId, (status) => status.state === "delivery_review_pending" && !status.integrate);
+
+  const firstOutput = await runCli(["integrate", runId, "--json"]);
+  const first = JSON.parse(firstOutput.stdout.trim());
+  assert.equal(first.integrate.verification.setup.state, "passed");
+  assert.equal(first.integrate.verification.state, "failed");
+  const setupStartedAt = first.integrate.verification.setup.startedAt;
+  writeFileSync(join(first.integrate.worktree, "verification-ready.txt"), "ready\n");
+
+  const retryOutput = await runCli(["integrate", runId, "--json"]);
+  const retried = JSON.parse(retryOutput.stdout.trim());
+  assert.equal(retried.integrate.state, "ready");
+  assert.equal(retried.integrate.verification.setup.startedAt, setupStartedAt);
+  assert.equal(readFileSync(join(retried.integrate.worktree, "setup-count.txt"), "utf8"), "1");
+  await runCli(["cancel", runId]);
+  await runCli(["cleanup", runId]);
+});
+
 test("blocked prerequisites resume before dependent lanes launch", async () => {
   const runId = "run-test-dependent-resume";
   const workflow = writeWorkflow("dependent-resume", baseWorkflow([

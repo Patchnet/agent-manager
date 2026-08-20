@@ -25,7 +25,8 @@ const LANE_KEYS = new Set([
   "kind", "expected_outputs", "allow_no_changes", "permission_mode", "allowed_tools", "setup",
 ]);
 const SCOPE_OVERRIDE_KEYS = new Set(["path", "lanes", "owner", "reason", "access"]);
-const VERIFICATION_KEYS = new Set(["commands", "timeout_sec"]);
+const VERIFICATION_KEYS = new Set(["commands", "timeout_sec", "setup"]);
+const COMMAND_PLAN_KEYS = new Set(["commands", "timeout_sec"]);
 const VERIFICATION_COMMAND_KEYS = new Set(["command", "args"]);
 const DELIVERY_KEYS = new Set(["mode", "targets", "release_required"]);
 const DELIVERY_TARGET_KEYS = new Set(["id", "lane", "branch", "base", "pr"]);
@@ -121,7 +122,9 @@ export function loadWorkflow(filePath, {
     MAX_LANES,
     "workflow.max_concurrency",
   );
-  const verification = normalizeVerification(doc.verification);
+  const verification = normalizeVerification(doc.verification, "workflow.verification", {
+    allowSetup: true,
+  });
   synthesizeAllowedTools(lanes, verification);
   const goalRefs = normalizeGoalRefs(doc.goal_refs);
   const planning = normalizePlanning(doc.planning, {
@@ -372,8 +375,8 @@ function normalizeLane(input, index, repoRoot, harnessDefault, ids, policy) {
  * Claude prompts before every Bash command under `acceptEdits` and
  * `workspace-write`, and a detached worker has nobody to answer the prompt — so
  * a lane whose own prompt says "run npm test" was denied `npm` by default. The
- * workflow already declares which commands this work is verified with; those
- * commands are the honest default allowlist.
+ * workflow already declares which setup and test commands this work is verified
+ * with; those commands are the honest default allowlist.
  *
  * The rule is derived, never guessed: one `Bash(<prefix>*)` per declared
  * verification command, where the prefix is the executable plus its leading
@@ -402,7 +405,10 @@ export function allowedToolRulesForVerification(commands = []) {
 }
 
 export function synthesizeAllowedTools(lanes, verification) {
-  const rules = allowedToolRulesForVerification(verification?.commands);
+  const rules = allowedToolRulesForVerification([
+    ...(verification?.setup?.commands || []),
+    ...(verification?.commands || []),
+  ]);
   for (const lane of lanes) {
     if (lane.harness !== "claude") continue;
     if (lane.allowed_tools.length) {
@@ -852,10 +858,10 @@ function lineNumberAt(source, index) {
   return line;
 }
 
-function normalizeVerification(input, label = "workflow.verification") {
+function normalizeVerification(input, label = "workflow.verification", { allowSetup = false } = {}) {
   if (input === undefined) return { commands: [], timeout_sec: 900 };
   if (!isMapping(input)) throw new Error(`${label} must be a mapping`);
-  assertKnownKeys(input, VERIFICATION_KEYS, label);
+  assertKnownKeys(input, allowSetup ? VERIFICATION_KEYS : COMMAND_PLAN_KEYS, label);
   if (!Array.isArray(input.commands) || input.commands.length === 0) {
     throw new Error(`${label}.commands must be a non-empty array`);
   }
@@ -878,7 +884,7 @@ function normalizeVerification(input, label = "workflow.verification") {
     });
     return { command: raw.command, args };
   });
-  return {
+  const normalized = {
     commands,
     timeout_sec: boundedInteger(
       input.timeout_sec,
@@ -888,6 +894,10 @@ function normalizeVerification(input, label = "workflow.verification") {
       `${label}.timeout_sec`,
     ),
   };
+  if (allowSetup && input.setup !== undefined) {
+    normalized.setup = normalizeVerification(input.setup, `${label}.setup`);
+  }
+  return normalized;
 }
 
 function normalizePolicy(input) {

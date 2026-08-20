@@ -497,9 +497,32 @@ Integration snapshots successful lane worktrees and merges them into
 merging, it blocks any file changed by multiple unordered lanes even when Git
 could merge that file cleanly. A `depends_on` chain explicitly approves
 sequential edits to the same file; the overlap is recorded as a Delivery Review
-risk. Configured `verification.commands` then run without a shell in the
-integration worktree. A merge conflict or failed verification becomes a
-resumable escalation. Integration does not push or merge to the target
+risk. Configured `verification.setup.commands` run first in the integration
+worktree, followed by `verification.commands`. Both command lists execute
+without a shell and use the verification environment allowlist. Agent Manager
+does not infer a package manager or install command from repository files.
+
+```yaml
+verification:
+  setup:
+    timeout_sec: 900
+    commands:
+      - { command: npm, args: [ci] }
+  timeout_sec: 900
+  commands:
+    - { command: npm, args: [test] }
+    - { command: npm, args: [run, hygiene] }
+```
+
+Setup has its own state, timing, command evidence, and timeout under
+`integrate.verification.setup`. The complete result is also persisted in
+`integrate/verification.json`. A setup failure says `verification setup failed`,
+preserves the commands that ran, and blocks before verification tests start.
+Retry reruns failed setup. After setup passes, a retry at the same integration
+revision reuses its evidence; a revision or command-plan change runs setup
+again. Workflows without `verification.setup` retain the existing verification
+behavior and telemetry shape. A merge conflict or failed verification becomes
+a resumable escalation. Integration does not push or merge to the target
 repository default branch.
 
 ### Folding a lane that a guardrail stopped
@@ -774,19 +797,22 @@ still owns account, model, provider, and administrative-policy eligibility.
 Use `lanes[].setup.commands` for deterministic worktree preparation such as
 `npm ci`; setup runs before the model and fails closed with captured evidence.
 
-### Default allowlist from `verification.commands`
+### Default allowlist from integration verification
 
 Claude prompts before every shell command under `acceptEdits` and
 `workspace-write`, and a detached worker has nobody to answer — so a lane whose
 own prompt says "run `npm test`" was denied `npm` by default and stalled.
 
-A writable Claude lane that declares no `allowed_tools` now inherits one derived
-from the workflow's own `verification.commands`: one `Bash(<prefix>*)` rule per
-declared command, where the prefix is the executable plus its leading
-sub-command arguments.
+A writable Claude lane that declares no `allowed_tools` inherits one derived
+from the workflow's own `verification.setup.commands` and
+`verification.commands`: one `Bash(<prefix>*)` rule per declared command, where
+the prefix is the executable plus its leading sub-command arguments.
 
 ```yaml
 verification:
+  setup:
+    commands:
+      - { command: npm, args: [ci] }          # -> Bash(npm ci*)
   commands:
     - { command: npm, args: [test] }          # -> Bash(npm test*)
     - { command: npm, args: [run, hygiene] }  # -> Bash(npm run hygiene*)
@@ -809,11 +835,13 @@ What this does not change:
   sandbox mode, which has no per-command allowlist to synthesize into, so the
   same workflow grants a Claude lane a shell rule and a Codex lane nothing. That
   asymmetry is in the harnesses, not in the policy.
-- A workflow with no `verification.commands` grants nothing.
+- A workflow with neither `verification.setup.commands` nor
+  `verification.commands` grants nothing.
 
-This is a default, not a replacement for `setup`. Worktree preparation that must
-happen before the model runs — `npm ci` and friends — still belongs in
-`lanes[].setup.commands`, where the supervisor runs it deterministically.
+This is an allowlist default, not an execution mechanism. Worktree preparation
+that must happen before a lane model runs belongs in `lanes[].setup.commands`.
+Dependency preparation needed only in the final integration worktree belongs in
+`verification.setup.commands`.
 
 Dangerous permission bypass is disabled by default. Enabling it requires both:
 

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { addWorktree } from "./worktree.mjs";
@@ -43,6 +43,15 @@ function ensureLaneCommitted(worktreePath, laneId) {
   ]);
   if (!commit.ok) return { ok: false, error: commit.stderr || "git commit failed" };
   return { ok: true, committed: true };
+}
+
+function readPreviousVerification(path) {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -210,11 +219,15 @@ export function integrateLanes({ workflow, runId, laneStates }) {
 
   const log = git(wt, ["log", "--oneline", baseSha + "..HEAD"]);
   const diffStat = git(wt, ["diff", "--stat", baseSha + "...HEAD"]);
+  const verificationPath = join(integrateDir, "verification.json");
+  const verificationHead = git(wt, ["rev-parse", "HEAD"]);
   const verification = runVerification(wt, workflow.verification, {
     envAllowlist: workflow.env_allowlist,
+    previousVerification: readPreviousVerification(verificationPath),
+    setupRevision: verificationHead.ok ? verificationHead.stdout : null,
   });
   writePrivateFile(
-    join(integrateDir, "verification.json"),
+    verificationPath,
     JSON.stringify(verification, null, 2) + "\n",
   );
   if (!verification.passed) {
