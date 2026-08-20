@@ -84,6 +84,11 @@ themselves in one chat — that stays a normal focused session.
     worker `done` or released claims.
 12. **Dangerous permissions need two approvals.** The workflow policy and the launch flag
     `--allow-dangerous-permissions` (or matching environment confirmation) must both be present.
+    **Conditional authority is separate and immutable.** The manual Delivery
+    Review + Ship Gate path remains the default. With a valid grant, record the
+    acceptance using `--reviewer-role manager`, follow `next-action`, and launch
+    only with `ship <runId> --authorized --detach`. Never repair, replay,
+    downgrade, or override a grant. See [AUTHORIZATION.md](../../docs/AUTHORIZATION.md).
 13. On `needs-input` / blocked lanes: surface the question in chat, wait for the
     operator, then resume/reply (or cancel) — do not guess product decisions.
 14. **Every operator board declares its transition.** End with
@@ -114,9 +119,11 @@ agent-manager integrate <runId>
 agent-manager cleanup <runId>
 agent-manager review <runId>
 agent-manager review <runId> --pass 1 --verdict accept --reviewer master-dev
+agent-manager authorization inspect <runId>
 agent-manager next-action <runId> --json
 agent-manager delivery-ready <runId> --require released
 agent-manager ship <runId> --approve through-pr|all --detach
+agent-manager ship <runId> --authorized --detach
 agent-manager director validate --policy <director-policy.yaml>
 agent-manager director cycle --policy <director-policy.yaml> --items <fixtures.yaml> --dry-run
 ```

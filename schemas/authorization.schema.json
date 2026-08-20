@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Patchnet/agent-manager/schemas/authorization.schema.json",
+  "title": "agent-manager immutable conditional authorization grant",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "runId", "level", "reviewedBase", "reviewedHead",
+    "evidenceDigest", "manifestDigest", "riskCeiling", "reviewerPolicy",
+    "expiresAt", "permittedMutations", "providerMode", "agentManagerVersion",
+    "operatorProvenance", "manifest", "grantDigest"
+  ],
+  "properties": {
+    "schema": { "const": "agent-manager.authorization-grant.v1" },
+    "runId": { "type": "string", "minLength": 1 },
+    "level": { "enum": ["through-pr", "all"] },
+    "reviewedBase": { "type": "string", "minLength": 1 },
+    "reviewedHead": { "type": "string", "minLength": 1 },
+    "evidenceDigest": { "$ref": "#/$defs/digest" },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "riskCeiling": { "$ref": "#/$defs/risk" },
+    "reviewerPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "allowedReviewerKinds", "requiredReviewerIdentityDigest", "authorIdentityDigests"],
+      "properties": {
+        "type": { "const": "independent-manager" },
+        "allowedReviewerKinds": { "type": "array", "const": ["manager"] },
+        "requiredReviewerIdentityDigest": { "$ref": "#/$defs/digest" },
+        "authorIdentityDigests": {
+          "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "permittedMutations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["commit", "push", "pull-request", "merge", "version", "tag"] }
+    },
+    "providerMode": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "agentManagerVersion": { "type": "string", "minLength": 1 },
+    "operatorProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source", "grantedAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "manifest": { "$ref": "#/$defs/manifest" },
+    "grantDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "risk": { "enum": ["low", "moderate", "high", "critical"] },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "runId", "grantDigest", "executionDigest", "approvalLevel",
+        "permittedMutations", "reviewedBase", "reviewedHead", "evidenceDigest",
+        "agentManagerVersion", "issuedAt", "receiptDigest"
+      ],
+      "properties": {
+        "schema": { "const": "agent-manager.authorization-receipt.v1" },
+        "runId": { "type": "string", "minLength": 1 },
+        "grantDigest": { "$ref": "#/$defs/digest" },
+        "executionDigest": { "$ref": "#/$defs/digest" },
+        "approvalLevel": { "enum": ["through-pr", "all"] },
+        "permittedMutations": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "reviewedBase": { "type": "string", "minLength": 1 },
+        "reviewedHead": { "type": "string", "minLength": 1 },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "agentManagerVersion": { "type": "string", "minLength": 1 },
+        "issuedAt": { "type": "string", "format": "date-time" },
+        "receiptDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "revocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "runId", "grantDigest", "revokedAt", "revokedBy", "reason", "revocationDigest"],
+      "properties": {
+        "schema": { "const": "agent-manager.authorization-revocation.v1" },
+        "runId": { "type": "string", "minLength": 1 },
+        "grantDigest": { "$ref": "#/$defs/digest" },
+        "revokedAt": { "type": "string", "format": "date-time" },
+        "revokedBy": { "type": "string", "minLength": 1 },
+        "reason": { "type": ["string", "null"] },
+        "revocationDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level", "flow", "repo", "worktree", "branch", "base", "remote", "pr",
+        "target", "commitMessage", "version", "summary", "pollSec", "timeoutSec",
+        "checkGraceSec", "retryAttempts", "retryBaseMs", "providerMode", "risk",
+        "permittedMutations"
+      ],
+      "properties": {
+        "level": { "enum": ["through-pr", "all"] },
+        "flow": { "enum": ["simple", "formal"] },
+        "repo": { "type": "string" },
+        "worktree": { "type": "string" },
+        "branch": { "type": "string", "minLength": 1 },
+        "base": { "type": "string", "minLength": 1 },
+        "remote": { "type": "string", "minLength": 1 },
+        "pr": { "type": ["string", "null"] },
+        "target": { "type": ["string", "null"] },
+        "commitMessage": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] },
+        "summary": { "type": ["string", "null"] },
+        "pollSec": { "type": "number", "minimum": 1, "maximum": 300 },
+        "timeoutSec": { "type": "number", "minimum": 1, "maximum": 86400 },
+        "checkGraceSec": { "type": "number", "minimum": 0, "maximum": 900 },
+        "retryAttempts": { "type": "number", "minimum": 1, "maximum": 10 },
+        "retryBaseMs": { "type": "number", "minimum": 100, "maximum": 60000 },
+        "providerMode": { "type": "string", "minLength": 1 },
+        "risk": { "$ref": "#/$defs/risk" },
+        "permittedMutations": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

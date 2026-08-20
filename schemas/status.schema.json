@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["runId", "state", "repo", "startedAt", "lanes"],
   "properties": {
-    "runId": { "type": "string" }, "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "reviewed", "merged", "released", "rejected", "failed", "cancelled"] },
+    "runId": { "type": "string" }, "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "reviewed", "filed", "merged", "released", "rejected", "failed", "cancelled"] },
     "agentManager": {
       "type": "object",
       "additionalProperties": false,
@@ -61,6 +61,7 @@
       }
     },
     "awareness": { "$ref": "#/$defs/awareness" },
+    "authorization": { "$ref": "#/$defs/authorizationSummary" },
     "delivery": {
       "type": "object",
       "required": ["schema", "mode", "state", "review", "targets", "release"],
@@ -98,11 +99,39 @@
         "ci": { "type": ["object", "null"] },
         "releaseWorktree": { "type": ["string", "null"] },
         "needsInput": { "type": ["object", "null"] },
-        "steps": { "type": "array" }
+        "steps": { "type": "array" },
+        "authorization": {
+          "type": ["object", "null"],
+          "properties": {
+            "grantDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "receiptDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
       }
     }
   },
   "$defs": {
+    "authorizationSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "state", "valid", "level", "grantDigest", "evidenceDigest", "manifestDigest", "riskCeiling", "providerMode", "expiresAt", "permittedMutations", "failureCode", "nextAction", "receiptDigest"],
+      "properties": {
+        "schema": { "const": "agent-manager.authorization-summary.v1" },
+        "state": { "enum": ["ready", "blocked", "revoked", "expired", "consumed"] },
+        "valid": { "type": "boolean" },
+        "level": { "enum": ["through-pr", "all"] },
+        "grantDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "evidenceDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "manifestDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "riskCeiling": { "enum": ["low", "moderate", "high", "critical"] },
+        "providerMode": { "type": "string" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "permittedMutations": { "type": "array", "items": { "type": "string" } },
+        "failureCode": { "type": ["string", "null"] },
+        "nextAction": { "type": ["string", "null"] },
+        "receiptDigest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
     "awareness": {
       "type": "object",
       "required": ["schema", "state"],

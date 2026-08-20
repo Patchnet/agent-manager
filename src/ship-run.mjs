@@ -24,6 +24,11 @@ import {
   recordRelease,
   selectDeliveryTarget,
 } from "./delivery.mjs";
+import {
+  assertAuthorizationReceipt,
+  AuthorizationError,
+  inspectAuthorization,
+} from "./authorization.mjs";
 
 export { resolveSpawnCommand } from "./command.mjs";
 
@@ -336,7 +341,12 @@ export function queueShip(runId, handoff) {
     needsInput: null,
     error: null,
     steps: [],
+    authorization: handoff.authorization ? {
+      grantDigest: handoff.authorization.grantDigest,
+      receiptDigest: handoff.authorization.receiptDigest,
+    } : null,
   };
+  if (handoff.authorization) status.authorization = inspectAuthorization(status).summary;
   if (status.delivery) {
     status.delivery.state = "shipping";
     const target = (status.delivery.targets || []).find((candidate) => candidate.id === handoff.targetId);
@@ -404,6 +414,7 @@ export async function runShip(runId, handoff, dependencies = {}) {
   status.ship.lastActivity = "validating ship handoff";
 
   try {
+    assertAuthorizationReceipt(status, handoff, { exec });
     await syncBrainStatus(status);
     status = save(id, status);
     preflight(handoff, exec);
@@ -459,7 +470,7 @@ export async function runShip(runId, handoff, dependencies = {}) {
       status.ship.pid = null;
       status.ship.endedAt = status.endedAt;
       status.ship.lastActivity = "shipping cancelled";
-    } else if (error instanceof ShipBlockedError) {
+    } else if (error instanceof ShipBlockedError || error instanceof AuthorizationError) {
       status.state = "blocked";
       status.endedAt = null;
       status.ship.state = "blocked";
@@ -468,7 +479,7 @@ export async function runShip(runId, handoff, dependencies = {}) {
       status.ship.needsInput = {
         type: "blocked",
         prompt: error.message,
-        options: error.options,
+        options: error.options || [error.action],
       };
       status.ship.error = error.message;
       if (status.delivery) {
@@ -496,7 +507,9 @@ export async function runShip(runId, handoff, dependencies = {}) {
       status = save(id, status);
     });
     writeShipSummary(id, status);
-    if (!(error instanceof ShipBlockedError) && !(error instanceof ShipCancelledError)) {
+    if (!(error instanceof ShipBlockedError)
+      && !(error instanceof AuthorizationError)
+      && !(error instanceof ShipCancelledError)) {
       throw error;
     }
     return status;

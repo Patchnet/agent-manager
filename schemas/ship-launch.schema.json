@@ -16,6 +16,14 @@
     "supervisorLog": { "type": "string" },
     "handoff": { "type": "string" },
     "statusCommand": { "type": "string" },
-    "watchCommand": { "type": "string" }
+    "watchCommand": { "type": "string" },
+    "authorization": {
+      "type": ["object", "null"],
+      "required": ["grantDigest", "receiptDigest"],
+      "properties": {
+        "grantDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "receiptDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
   }
 }

@@ -103,6 +103,7 @@ export function recordReviewDecision(status, {
   pass,
   verdict,
   reviewer,
+  reviewerIdentity = null,
   notes = null,
   at = new Date().toISOString(),
 }) {
@@ -139,6 +140,7 @@ export function recordReviewDecision(status, {
     pass: reviewPass,
     verdict,
     reviewer: String(reviewer).trim(),
+    reviewerIdentity,
     notes: notes ? String(notes).trim() : null,
     decidedAt: at,
   };

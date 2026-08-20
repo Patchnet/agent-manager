@@ -156,6 +156,29 @@ test("worker completion cannot become delivery completion without a persisted re
   assert.equal(status.delivery.release.verifiedMergeShas.length, 2);
 });
 
+test("Delivery Review preserves an attributable reviewer identity for conditional authority", () => {
+  const status = {
+    runId: "run-reviewer-identity",
+    state: "delivery_review_pending",
+    delivery: createDeliveryStatus({ delivery: { mode: "single", targets: [] } }, []),
+  };
+  const reviewerIdentity = {
+    kind: "manager",
+    source: "run-identity",
+    harness: "codex",
+    model: "gpt-test",
+    threadTitle: null,
+    identityDigest: "a".repeat(64),
+  };
+  recordReviewDecision(status, {
+    pass: 1,
+    verdict: "accept",
+    reviewer: "independent-manager",
+    reviewerIdentity,
+  });
+  assert.deepEqual(status.delivery.review.history[0].reviewerIdentity, reviewerIdentity);
+});
+
 test("Delivery Review permits one correction decision and one final pass", () => {
   const status = {
     runId: "run-review-loop",

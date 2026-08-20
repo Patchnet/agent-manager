@@ -17,8 +17,10 @@ Read [reporting.md](./reporting.md) before posting any ship status.
 
 ## Hard rules
 
-1. Require an accepted Delivery Review persisted in `status.json` and an
-   explicit Ship Gate approval. A chat-only verdict is not sufficient.
+1. Require an accepted Delivery Review persisted in `status.json` and either an
+   explicit Ship Gate approval or a valid immutable conditional grant. A
+   chat-only verdict is not sufficient. Conditional launches use only
+   `ship <runId> --authorized --detach`; never override or replay a grant.
 2. Map the approval exactly:
    - `through-pr`: commit if needed, push, create or find the pull request,
      enable squash auto-merge, and stop after merge.
@@ -63,6 +65,14 @@ Read [reporting.md](./reporting.md) before posting any ship status.
     states, not operator blockers.
 
 ## Launch
+
+When `next-action` reports `conditional_authority_ready`:
+
+```bash
+agent-manager ship <runId> --authorized --detach --json
+```
+
+The private grant supplies every input. Otherwise use the manual commands below.
 
 Formal Flow, stop after merge:
 

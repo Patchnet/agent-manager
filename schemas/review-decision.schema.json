@@ -10,6 +10,18 @@
     "pass": { "enum": [1, 2] },
     "verdict": { "enum": ["accept", "accept-with-notes", "revise", "relaunch", "reject"] },
     "reviewer": { "type": "string", "minLength": 1 },
+    "reviewerIdentity": {
+      "type": ["object", "null"],
+      "required": ["kind", "source", "harness", "model", "threadTitle", "identityDigest"],
+      "properties": {
+        "kind": { "const": "manager" },
+        "source": { "const": "run-identity" },
+        "harness": { "type": "string", "minLength": 1 },
+        "model": { "type": ["string", "null"] },
+        "threadTitle": { "type": ["string", "null"] },
+        "identityDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
     "notes": { "type": ["string", "null"] },
     "decidedAt": { "type": "string", "format": "date-time" }
   }
