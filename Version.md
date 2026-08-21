@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.21.0
+current: 1.22.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.22.0 - 2026-08-21
+
+Add declarative integration setup, bounded conditional shipping authorization, and safe demo and host installer flows.
 
 ## 1.21.0 - 2026-08-17
 
