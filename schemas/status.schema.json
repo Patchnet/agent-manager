@@ -207,8 +207,25 @@
         "modelObserved": { "type": ["string", "null"] },
         "permissionMode": { "type": "string" },
         "allowedTools": { "type": "array", "items": { "type": "string" } },
-        "setup": { "type": "object" },
+        "setup": {
+          "type": "object",
+          "properties": {
+            "cache": { "$ref": "#/$defs/setupCache" }
+          }
+        },
         "state": { "type": "string" }
+      }
+    },
+    "setupCache": {
+      "type": "object",
+      "required": ["schema", "outcome", "key", "reason", "restored", "stored"],
+      "properties": {
+        "schema": { "const": "agent-manager.setup-cache.v1" },
+        "outcome": { "enum": ["hit", "miss", "fallback"] },
+        "key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "reason": { "type": "string" },
+        "restored": { "type": "boolean" },
+        "stored": { "type": "boolean" }
       }
     },
     "masterReturnSummary": {

@@ -225,6 +225,7 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     envAllowlist: workflow.env_allowlist,
     previousVerification: readPreviousVerification(verificationPath),
     setupRevision: verificationHead.ok ? verificationHead.stdout : null,
+    setupCacheRoot: join(runDir(runId), "setup-cache"),
   });
   writePrivateFile(
     verificationPath,

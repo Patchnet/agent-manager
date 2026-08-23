@@ -87,6 +87,19 @@ Fresh Git worktrees do not inherit gitignored dependency directories such as
 Manager completes setup before starting Claude and fails the lane if setup does
 not pass.
 
+Within one run, equivalent pristine worktrees can reuse a private setup
+snapshot. The cache key includes the exact setup plan, worktree revision,
+Node/platform identity, and the effective setup environment. The first lane
+runs the command and records a complete file overlay. A later lane receives
+copied files in its own worktree; it never shares a writable dependency tree.
+
+Reuse is fail-safe. A revision or plan change is a miss. Baseline drift,
+unsupported file types, incomplete manifests, corrupt files, or an unsafe
+restore causes Agent Manager to run the declared setup command normally. Setup
+telemetry records `cache.outcome` as `hit`, `miss`, or `fallback`, along with a
+content-derived key and the reason. A cache error never substitutes for a
+successful setup command.
+
 Integration verification has the same rule. If `verification.commands` invokes
 `npm`, `npx`, `tsc`, or another common project-local Node binary, the workflow
 must contain a lockfile and the matching deterministic setup. For example:

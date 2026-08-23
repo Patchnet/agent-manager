@@ -1,5 +1,40 @@
 import { buildVerificationEnv } from "./environment.mjs";
 import { spawnCommandSync } from "./command.mjs";
+import {
+  createSetupCacheKey,
+  runSetupWithCache,
+} from "./dependency-cache.mjs";
+
+export function runSetup(
+  worktree,
+  setup = null,
+  {
+    envAllowlist = [],
+    sourceEnv = process.env,
+    setupRevision = null,
+    setupCacheRoot = null,
+    failureLabel = "setup",
+  } = {},
+) {
+  if (!setup?.commands?.length) {
+    return { state: "not-configured", commands: [], passed: true };
+  }
+  const run = () => runCommandPlan(worktree, setup, {
+    envAllowlist,
+    sourceEnv,
+    failureLabel,
+    revision: setupRevision,
+  });
+  if (!setupCacheRoot) return run();
+  return runSetupWithCache({
+    worktree,
+    cacheRoot: setupCacheRoot,
+    plan: setup,
+    revision: setupRevision,
+    environment: buildVerificationEnv(envAllowlist, sourceEnv),
+    runSetup: run,
+  });
+}
 
 export function runVerification(
   worktree,
@@ -9,6 +44,7 @@ export function runVerification(
     sourceEnv = process.env,
     previousVerification = null,
     setupRevision = null,
+    setupCacheRoot = null,
   } = {},
 ) {
   if (!verification?.commands?.length) {
@@ -20,17 +56,26 @@ export function runVerification(
   }
 
   if (verification.setup?.commands?.length) {
+    const expectedCacheKey = setupCacheRoot
+      ? createSetupCacheKey({
+          plan: verification.setup,
+          revision: setupRevision,
+          environment: buildVerificationEnv(envAllowlist, sourceEnv),
+        })
+      : null;
     const setup = canReuseSetup(
       previousVerification?.setup,
       verification.setup,
       setupRevision,
+      expectedCacheKey,
     )
       ? previousVerification.setup
-      : runCommandPlan(worktree, verification.setup, {
+      : runSetup(worktree, verification.setup, {
           envAllowlist,
           sourceEnv,
+          setupRevision,
+          setupCacheRoot,
           failureLabel: "verification setup",
-          revision: setupRevision,
         });
     if (!setup.passed) {
       return {
@@ -130,12 +175,13 @@ function runCommandPlan(
   };
 }
 
-function canReuseSetup(previous, plan, revision) {
+function canReuseSetup(previous, plan, revision, expectedCacheKey = null) {
   if (!revision || previous?.state !== "passed" || previous.passed !== true) return false;
   if (
     previous.revision !== revision ||
     previous.timeoutSec !== plan.timeout_sec ||
-    previous.commands?.length !== plan.commands.length
+    previous.commands?.length !== plan.commands.length ||
+    (expectedCacheKey && previous.cache?.key !== expectedCacheKey)
   ) {
     return false;
   }

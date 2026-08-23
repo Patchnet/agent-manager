@@ -32,7 +32,7 @@ import { buildRunIdentity } from "./identity.mjs";
 import { AGENT_MANAGER_VERSION } from "./version.mjs";
 import { writeReport } from "./report.mjs";
 import { integrateLanes } from "./integrate.mjs";
-import { runVerification } from "./verification.mjs";
+import { runSetup } from "./verification.mjs";
 import { mergeDependencyBranches, snapshotLaneAtEnd } from "./lane-snapshot.mjs";
 import { assertSafeSlug, runDir } from "./paths.mjs";
 import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
@@ -627,8 +627,10 @@ export async function runWorkflow(workflowPath, {
           ? `setup: ${lane.setup.commands[0].command}`
           : "worktree ready";
         persistStatus();
-        laneState.setup = runVerification(worktree, lane.setup, {
+        laneState.setup = runSetup(worktree, lane.setup, {
           envAllowlist: workflow.env_allowlist,
+          setupRevision: laneState.baseCommit,
+          setupCacheRoot: join(dir, "setup-cache"),
         });
         if (!laneState.setup.passed) {
           throw new Error(`lane setup failed: ${laneState.setup.error}`);
