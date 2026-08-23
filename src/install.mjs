@@ -7,12 +7,15 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { AGENT_MANAGER_VERSION } from "./version.mjs";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export const INSTALL_MARKER = ".agent-manager-install.json";
 
 // Each supported host reads skills from <root>/skills/<name>. Ship Gate is
 // deliberately absent: approval policy belongs to the target repository, not
@@ -76,6 +79,7 @@ export function installHost(host, {
 
   return {
     schema: "agent-manager.install.v1",
+    version: AGENT_MANAGER_VERSION,
     host,
     label: spec.label,
     scope: project ? "project" : "user",
@@ -108,8 +112,14 @@ function requireHost(host) {
 function planManagedPath({ source, target, force, kind }) {
   let action = "installed";
   if (existsSync(target)) {
-    if (contentDigest(source) === contentDigest(target)) {
+    const sourceDigest = contentDigest(source);
+    const targetDigest = contentDigest(target);
+    if (sourceDigest === targetDigest) {
       return { source, target, kind, action: "unchanged" };
+    }
+    const marker = readInstallMarker(target);
+    if (marker?.contentDigest === targetDigest) {
+      return { source, target, kind, action: "updated" };
     }
     if (!force) {
       throw new Error(
@@ -123,11 +133,13 @@ function planManagedPath({ source, target, force, kind }) {
 }
 
 function applyManagedPath({ source, target, kind, action }) {
-  if (action === "unchanged") return { kind, path: target, action };
-  if (action === "replaced") rmSync(target, { recursive: true, force: true });
-  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  cpSync(source, target, { recursive: true, force: true });
-  return { kind, path: target, action };
+  if (action !== "unchanged") {
+    if (["replaced", "updated"].includes(action)) rmSync(target, { recursive: true, force: true });
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+    cpSync(source, target, { recursive: true, force: true });
+  }
+  if (kind === "skill") writeInstallMarker(target);
+  return { kind, path: target, action, version: kind === "skill" ? AGENT_MANAGER_VERSION : null };
 }
 
 function contentDigest(root) {
@@ -137,6 +149,7 @@ function contentDigest(root) {
     if (stat.isDirectory()) {
       hash.update(`d:${relativePath}\n`);
       for (const entry of readdirSync(path).sort()) {
+        if (entry === INSTALL_MARKER) continue;
         visit(join(path, entry), relative(root, join(path, entry)));
       }
       return;
@@ -150,4 +163,25 @@ function contentDigest(root) {
   };
   visit(root);
   return hash.digest("hex");
+}
+
+function writeInstallMarker(target) {
+  const marker = {
+    schema: "agent-manager.skill-install.v1",
+    version: AGENT_MANAGER_VERSION,
+    contentDigest: contentDigest(target),
+  };
+  writeFileSync(join(target, INSTALL_MARKER), JSON.stringify(marker, null, 2) + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
+export function readInstallMarker(target) {
+  try {
+    const marker = JSON.parse(readFileSync(join(target, INSTALL_MARKER), "utf8"));
+    return marker?.schema === "agent-manager.skill-install.v1" ? marker : null;
+  } catch {
+    return null;
+  }
 }

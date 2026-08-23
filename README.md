@@ -503,6 +503,13 @@ platform-specific command adapters use the detected profile. On Windows, npm
 and other command scripts run through `cmd.exe` while authored lane commands
 are identified as PowerShell commands.
 
+Doctor also reports three separate versions: the inspected Agent Manager source
+checkout (when `--repo` points to one), the invoked runtime, and each installed
+host skill. When a host skill is missing or stale, `activation.command` gives
+one idempotent `agent-manager install <host>` action. Managed skills update only
+when their recorded content digest is unchanged; operator edits still fail
+closed for review.
+
 Install worker CLIs in the same OS environment that launches Agent Manager,
 restart that harness after PATH changes, and run `agent-manager doctor --json`
 there. Doctor provides structured remediation for missing harnesses. On Windows,
@@ -601,6 +608,9 @@ are passive readers, and the run supervisors and workers continue independently.
 An active run keeps the engine version it started with; only future runs use
 newly installed code. `watch-signal` is also safe to restart, but stop the old
 watcher first so two notification processes do not emit duplicate wakes.
+Detached watchers have a seven-day process TTL. Reaching it stops only the
+watcher; it does not cancel, fail, or retire a recoverable run. A reconciled
+`merged` or `released` status wakes watchers as terminal and makes them exit.
 
 ## Use each component standalone
 
@@ -761,6 +771,10 @@ planning:
     scope_verified: true
 
 verification:
+  setup:
+    commands:
+      - command: npm
+        args: [ci]
   commands:
     - command: npm
       args: [test]
@@ -829,8 +843,10 @@ agent-manager install codex --project /path/to/repo
 ```
 
 The installer is idempotent: an unchanged installation reports `unchanged`.
-If local files differ, it stops and tells you to review them; `--force`
-explicitly replaces them. It copies only files bundled with Agent Manager and
+Each managed skill records its runtime version and content digest. A later
+install safely updates an unmodified managed copy and reports `updated`. If
+local files differ from their recorded digest, it stops and tells you to review
+them; `--force` explicitly replaces them. It copies only files bundled with Agent Manager and
 does not download a host CLI or contact a network service. Install or reference
 Ship Gate separately because approval policy belongs to the target repository,
 not to the orchestration runtime. `agent-manager doctor` reports when no

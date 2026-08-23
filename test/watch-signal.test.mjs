@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +18,7 @@ const {
 } = await import("../src/watch-signal.mjs?watch-test");
 const { formatMonitorBoard, shouldMonitorExit } = await import("../src/monitor.mjs?watch-test");
 const { writeStatus } = await import("../src/status.mjs?watch-test");
+const { readMasterReturn, writeMasterReturn } = await import("../src/master-return.mjs?watch-test");
 
 test.after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -87,6 +88,21 @@ test("classifyWake distinguishes heartbeat, state_change, needs_input, terminal"
     lanes: [{ id: "core", state: "failed", harness: "claude", exitCode: 1 }],
   });
   assert.equal(classifyWake(running, failed).reason, "terminal");
+
+  const reconciled = sampleStatus({
+    state: "released",
+    reconciliation: {
+      schema: "agent-manager.external-reconciliation.v1",
+      state: "verified",
+      provider: "github",
+      reconciledAt: "2026-08-23T18:05:00.000Z",
+      priorState: "blocked",
+      targets: [],
+      release: null,
+    },
+    lanes: [{ id: "core", state: "done", harness: "claude", exitCode: 0 }],
+  });
+  assert.equal(classifyWake(running, reconciled).reason, "terminal");
 
   const shipping = sampleStatus({
     state: "shipping",
@@ -273,6 +289,44 @@ test("runWatchSignal refreshes status after a Master callback advances the run",
     sleep: async () => {},
   });
   assert.equal(wakes.length, 1);
+});
+
+test("stale watchers expire without changing a recoverable run", async () => {
+  const runId = "run-signal-watcher-ttl";
+  mkdirSync(join(root, ".runs", runId), { recursive: true });
+  writeStatus(runId, sampleStatus({ runId }));
+  writeMasterReturn(runId, {
+    schema: "agent-manager.master-return.v1",
+    host: "codex",
+    mode: "direct",
+    sessionId: "fixture-session",
+    source: "cli",
+    configuredAt: "2026-08-23T00:00:00.000Z",
+    state: "watching",
+    attempts: 0,
+    watcherPid: process.pid,
+  });
+  let clock = 1_000;
+  const result = await runWatchSignal(runId, {
+    watcherTtlSec: 1,
+    pollMs: 1,
+    maxTicks: 5,
+    now: () => clock,
+    sleep: async () => { clock += 1_100; },
+    write: () => {},
+  });
+  assert.deepEqual(result, {
+    reason: "watcher_expired",
+    runId,
+    state: "running",
+    recoverable: true,
+  });
+  const saved = JSON.parse(readFileSync(join(root, ".runs", runId, "status.json"), "utf8"));
+  assert.equal(saved.state, "running");
+  const channel = readMasterReturn(runId);
+  assert.equal(channel.state, "failed");
+  assert.equal(channel.watcherPid, undefined);
+  assert.match(channel.lastError, /watcher TTL reached.*run state is unchanged/);
 });
 
 test("monitor board exits only on delivery-terminal states", () => {

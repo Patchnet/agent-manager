@@ -9,13 +9,18 @@ const runsRoot = join(root, "runs");
 const claimsRoot = join(root, "claims");
 const repo = join(root, "repo");
 mkdirSync(repo, { recursive: true });
+writeFileSync(join(repo, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
 process.env.AGENT_MANAGER_DEV_ROOT = root;
 process.env.AGENT_MANAGER_RUNS_ROOT = runsRoot;
 process.env.AGENT_MANAGER_CLAIMS_ROOT = claimsRoot;
 
 test.after(() => rmSync(root, { recursive: true, force: true }));
 
-const { assertShellPolicyCoherence, loadWorkflow } = await import("../src/workflow.mjs?workflow-test");
+const {
+  assertShellPolicyCoherence,
+  loadWorkflow,
+  recommendedNodeDependencySetup,
+} = await import("../src/workflow.mjs?workflow-test");
 
 let counter = 0;
 function workflow(value) {
@@ -134,16 +139,10 @@ test("workflows that claim no shell permission keep the acceptEdits default", ()
   assert.equal(workflowValue.lanes[0].permission_mode, "acceptEdits");
 });
 
-test("integration verification setup normalizes separately without changing legacy workflows", () => {
-  const legacy = loadWorkflow(withLane({}, {
-    verification: {
-      commands: [{ command: "npm", args: ["test"] }],
-    },
-  }));
-  assert.deepEqual(legacy.verification, {
-    commands: [{ command: "npm", args: ["test"] }],
-    timeout_sec: 900,
-  });
+test("Node verification requires deterministic lockfile setup before worktrees run", () => {
+  assert.throws(() => loadWorkflow(withLane({}, {
+    verification: { commands: [{ command: "npm", args: ["test"] }] },
+  })), /lacks lockfile setup for package-lock\.json.*npm.*ci.*local tsc/);
 
   const configured = loadWorkflow(withLane(
     { harness: "claude", permission_mode: "auto" },
@@ -171,6 +170,23 @@ test("integration verification setup normalizes separately without changing lega
     "Bash(npm test*)",
   ]);
   assert.equal(configured.lanes[0].allowed_tools_source, "verification");
+
+  assert.throws(() => loadWorkflow(withLane({}, {
+    verification: { commands: [{ command: "tsc", args: ["--noEmit"] }] },
+  })), /verification invokes tsc --noEmit.*npm.*ci.*local tsc/);
+  assert.deepEqual(recommendedNodeDependencySetup(repo), {
+    lockfile: "package-lock.json",
+    commands: [{ command: "npm", args: ["ci"] }],
+    timeout_sec: 900,
+  });
+
+  rmSync(join(repo, "package-lock.json"));
+  const warned = loadWorkflow(withLane({}, {
+    verification: { commands: [{ command: "npx", args: ["tsc", "--noEmit"] }] },
+  }));
+  const warning = warned.lint_warnings.find((item) => item.type === "missing-node-dependency-setup");
+  assert.match(warning.message, /npx tsc --noEmit.*no supported lockfile.*before lanes run/);
+  writeFileSync(join(repo, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
 });
 
 test("integration verification setup rejects invalid or nested command plans", () => {

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { DEFAULT_MAX_CONCURRENCY, MAX_LANES } from "./constants.mjs";
 import { normalizePlanning, planningPrompt } from "./planning.mjs";
@@ -125,6 +125,8 @@ export function loadWorkflow(filePath, {
   const verification = normalizeVerification(doc.verification, "workflow.verification", {
     allowSetup: true,
   });
+  const dependencySetupWarning = assertNodeDependencySetup(verification, repoRoot);
+  if (dependencySetupWarning) lintWarnings.push(dependencySetupWarning);
   synthesizeAllowedTools(lanes, verification);
   const goalRefs = normalizeGoalRefs(doc.goal_refs);
   const planning = normalizePlanning(doc.planning, {
@@ -898,6 +900,63 @@ function normalizeVerification(input, label = "workflow.verification", { allowSe
     normalized.setup = normalizeVerification(input.setup, `${label}.setup`);
   }
   return normalized;
+}
+
+const NODE_VERIFICATION_COMMANDS = new Set([
+  "npm", "npx", "pnpm", "yarn", "bun", "bunx", "tsc", "eslint", "jest",
+  "prettier", "vite", "vitest",
+]);
+
+export function recommendedNodeDependencySetup(repoRoot) {
+  const candidates = [
+    ["npm-shrinkwrap.json", { command: "npm", args: ["ci"] }],
+    ["package-lock.json", { command: "npm", args: ["ci"] }],
+    ["pnpm-lock.yaml", { command: "corepack", args: ["pnpm", "install", "--frozen-lockfile"] }],
+    ["yarn.lock", { command: "corepack", args: ["yarn", "install", "--immutable"] }],
+    ["bun.lock", { command: "bun", args: ["install", "--frozen-lockfile"] }],
+    ["bun.lockb", { command: "bun", args: ["install", "--frozen-lockfile"] }],
+  ];
+  const found = candidates.find(([lockfile]) => existsSync(join(repoRoot, lockfile)));
+  if (!found) return null;
+  return {
+    lockfile: found[0],
+    commands: [found[1]],
+    timeout_sec: 900,
+  };
+}
+
+export function assertNodeDependencySetup(verification, repoRoot) {
+  const dependencyCommand = verification.commands.find((item) =>
+    NODE_VERIFICATION_COMMANDS.has(item.command.toLowerCase()));
+  if (!dependencyCommand) return null;
+  const recommended = recommendedNodeDependencySetup(repoRoot);
+  const label = `${dependencyCommand.command} ${dependencyCommand.args.join(" ")}`.trim();
+  if (!recommended) {
+    const message = `workflow verification invokes ${label} but the repository has no supported lockfile; ` +
+      "commit package-lock.json, npm-shrinkwrap.json, pnpm-lock.yaml, yarn.lock, or bun.lock, " +
+      "then add the matching workflow.verification.setup lockfile install before lanes run";
+    return {
+      type: "missing-node-dependency-setup",
+      command: label,
+      message,
+      remedy: "Add a supported lockfile and its deterministic workflow.verification.setup install command.",
+    };
+  }
+  const matches = verification.setup?.commands?.some((actual) => {
+    const expected = recommended.commands[0];
+    return actual.command === expected.command &&
+      actual.args.length === expected.args.length &&
+      actual.args.every((arg, index) => arg === expected.args[index]);
+  });
+  if (!matches) {
+    const expected = recommended.commands[0];
+    throw new Error(
+      `workflow verification invokes ${label} but lacks lockfile setup for ${recommended.lockfile}; ` +
+      `add workflow.verification.setup.commands: [{ command: "${expected.command}", args: ${JSON.stringify(expected.args)} }] ` +
+      "so fresh worktrees provision dependencies before verification (including local tsc)",
+    );
+  }
+  return null;
 }
 
 function normalizePolicy(input) {

@@ -448,6 +448,7 @@ function normalizeRun(status) {
       checks: status.ship.checks || [],
       ci: status.ship.ci || null,
     } : null,
+    reconciliation: status.reconciliation || null,
     blocker,
     needsInput: Boolean(blocker),
   };

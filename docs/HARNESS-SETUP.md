@@ -24,7 +24,11 @@ After an install or PATH change:
    start a session.
 
 Doctor reports the detected runtime and returns structured `setup` and
-`recommendation` fields for a missing worker harness.
+`recommendation` fields for a missing worker harness. It separately reports
+the inspected source-checkout version, invoked runtime version, and installed
+host-skill versions. Use its single `activation.command` to install or refresh
+one host safely. The installer updates only a managed copy whose recorded
+digest still matches; local edits fail closed.
 It reports that a CLI is not executable from the current process; it does not
 claim that the CLI is uninstalled. A stale PATH, a missing override, or the
 launching harness's sandbox can produce the same result.
@@ -82,6 +86,25 @@ Fresh Git worktrees do not inherit gitignored dependency directories such as
 `setup` command instead of giving the model package-install permission. Agent
 Manager completes setup before starting Claude and fails the lane if setup does
 not pass.
+
+Integration verification has the same rule. If `verification.commands` invokes
+`npm`, `npx`, `tsc`, or another common project-local Node binary, the workflow
+must contain a lockfile and the matching deterministic setup. For example:
+
+```yaml
+verification:
+  setup:
+    commands:
+      - { command: npm, args: [ci] }
+  commands:
+    - { command: npm, args: [test] }
+    - { command: npx, args: [tsc, --noEmit] }
+```
+
+Agent Manager validates this before lanes start and names the exact setup for
+`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, or a
+Bun lockfile. Setup evidence remains a separate, revision-bound phase and can
+be reused safely on retry.
 
 Auto mode availability also depends on the Claude account, provider, model,
 and administrative policy. If Claude rejects it at session startup, choose an

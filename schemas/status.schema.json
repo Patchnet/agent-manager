@@ -76,6 +76,20 @@
         "release": { "type": "object" }
       }
     },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "state", "provider", "reconciledAt", "priorState", "targets", "release"],
+      "properties": {
+        "schema": { "const": "agent-manager.external-reconciliation.v1" },
+        "state": { "const": "verified" },
+        "provider": { "type": "string", "minLength": 1 },
+        "reconciledAt": { "type": "string", "format": "date-time" },
+        "priorState": { "type": "string" },
+        "targets": { "type": "array", "items": { "type": "object" } },
+        "release": { "type": ["object", "null"] }
+      }
+    },
     "ship": {
       "type": "object",
       "required": ["schema", "state", "phase", "approve", "branch", "base", "remote"],
