@@ -10,8 +10,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import YAML from "yaml";
 import { ensurePrivateDir } from "./fs-safe.mjs";
 import { assertSafeSlug, runDir } from "./paths.mjs";
 
@@ -21,6 +22,21 @@ const MAX_GRANT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 const AUTH_SCHEMA = "agent-manager.authorization-grant.v1";
 const RECEIPT_SCHEMA = "agent-manager.authorization-receipt.v1";
 const REVOCATION_SCHEMA = "agent-manager.authorization-revocation.v1";
+const POLICY_SCHEMA = "agent-manager.automation-policy.v1";
+const POLICY_KEYS = new Set([
+  "schema", "enabled", "repository", "approval", "risk", "provider", "shipment", "revocation",
+]);
+const POLICY_REPOSITORY_KEYS = new Set(["path", "base_ref"]);
+const POLICY_APPROVAL_KEYS = new Set(["level", "operator", "approved_at", "expires_at"]);
+const POLICY_RISK_KEYS = new Set(["observed", "ceiling", "classes", "exceptions"]);
+const POLICY_PROVIDER_KEYS = new Set(["mode"]);
+const POLICY_SHIPMENT_KEYS = new Set([
+  "target", "repo", "worktree", "branch", "base", "remote", "pr", "commit_message",
+  "version", "summary", "poll_sec", "timeout_sec", "check_grace_sec", "retry_attempts",
+  "retry_base_ms",
+]);
+const POLICY_REVOCATION_KEYS = new Set(["revoked_at", "revoked_by", "reason"]);
+const MANUAL_RISK_CLASSES = new Set(["security", "authentication"]);
 
 export class AuthorizationError extends Error {
   constructor(code, message, action) {
@@ -65,6 +81,261 @@ export function resolveReviewerIdentity(status, role) {
   return { ...identity, identityDigest: digestCanonical(identity) };
 }
 
+export function loadAutomationPolicy(filePath, { repoOverride = null } = {}) {
+  if (!filePath) throw fail("policy-missing", "automation policy is required",
+    "Use the manual Ship Gate, or pass --automation-policy <file> to the accepting review.");
+  const path = resolve(filePath);
+  if (!existsSync(path)) throw fail("policy-missing", `automation policy not found: ${path}`,
+    "Use the manual Ship Gate, or restore the exact reviewed policy file.");
+  let document;
+  try {
+    const raw = readFileSync(path, "utf8");
+    document = extname(path).toLowerCase() === ".json" ? JSON.parse(raw) : YAML.parse(raw);
+  } catch (error) {
+    throw fail("policy-invalid", `automation policy parse failed: ${error.message}`,
+      "Use the manual Ship Gate, or repair and independently review the policy before accepting again.");
+  }
+  return normalizeAutomationPolicy(document, { policyPath: path, repoOverride });
+}
+
+export function normalizeAutomationPolicy(document, { policyPath, repoOverride = null } = {}) {
+  assertMapping(document, "automation policy");
+  assertKnownKeys(document, POLICY_KEYS, "automation policy");
+  if (document.schema !== POLICY_SCHEMA) {
+    throw fail("policy-invalid", `automation policy schema must be ${POLICY_SCHEMA}`,
+      "Use the manual Ship Gate, or update the policy to the supported schema.");
+  }
+  if (typeof document.enabled !== "boolean") {
+    throw fail("policy-invalid", "automation policy.enabled must be true or false",
+      "Use the manual Ship Gate, or set an explicit policy opt-in.");
+  }
+  const repository = assertMapping(document.repository, "automation policy.repository");
+  assertKnownKeys(repository, POLICY_REPOSITORY_KEYS, "automation policy.repository");
+  const repositoryPath = requiredText(repository.path, "automation policy repository path", 2_000);
+  const repositoryRoot = resolve(repoOverride || (isAbsolute(repositoryPath)
+    ? repositoryPath
+    : resolve(dirname(policyPath), repositoryPath)));
+  const baseRef = requiredText(repository.base_ref, "automation policy base ref", 240);
+
+  const approval = assertMapping(document.approval, "automation policy.approval");
+  assertKnownKeys(approval, POLICY_APPROVAL_KEYS, "automation policy.approval");
+  const approvedAt = dateFrom(approval.approved_at, "automation policy.approval.approved_at").toISOString();
+  const expiresAt = dateFrom(approval.expires_at, "automation policy.approval.expires_at").toISOString();
+
+  const risk = assertMapping(document.risk, "automation policy.risk");
+  assertKnownKeys(risk, POLICY_RISK_KEYS, "automation policy.risk");
+  const riskClasses = stringList(risk.classes, "automation policy.risk.classes");
+  const riskExceptions = stringList(risk.exceptions, "automation policy.risk.exceptions");
+
+  const provider = assertMapping(document.provider, "automation policy.provider");
+  assertKnownKeys(provider, POLICY_PROVIDER_KEYS, "automation policy.provider");
+  const shipment = assertMapping(document.shipment, "automation policy.shipment");
+  assertKnownKeys(shipment, POLICY_SHIPMENT_KEYS, "automation policy.shipment");
+
+  let revocation = null;
+  if (document.revocation != null) {
+    revocation = assertMapping(document.revocation, "automation policy.revocation");
+    assertKnownKeys(revocation, POLICY_REVOCATION_KEYS, "automation policy.revocation");
+    revocation = {
+      revoked_at: dateFrom(revocation.revoked_at, "automation policy.revocation.revoked_at").toISOString(),
+      revoked_by: requiredText(revocation.revoked_by, "automation policy revoker", 160),
+      reason: optionalText(revocation.reason, "automation policy revocation reason", 500),
+    };
+  }
+
+  const normalized = {
+    schema: POLICY_SCHEMA,
+    enabled: document.enabled,
+    repository: { path: repositoryPath, base_ref: baseRef },
+    approval: {
+      level: requiredEnum(approval.level, LEVELS, "automation policy approval level"),
+      operator: requiredText(approval.operator, "automation policy operator", 160),
+      approved_at: approvedAt,
+      expires_at: expiresAt,
+    },
+    risk: {
+      observed: requiredRisk(risk.observed, "automation policy observed risk"),
+      ceiling: requiredRisk(risk.ceiling, "automation policy risk ceiling"),
+      classes: riskClasses,
+      exceptions: riskExceptions,
+    },
+    provider: { mode: requiredText(provider.mode, "automation policy provider mode", 80) },
+    shipment: normalizePolicyShipment(shipment),
+    revocation,
+  };
+  return {
+    ...normalized,
+    absPath: resolve(policyPath),
+    repoRoot: repositoryRoot,
+    digest: digestCanonical(normalized),
+    document: normalized,
+  };
+}
+
+export function materializeReviewAuthorization(status, { policyPath } = {}, dependencies = {}) {
+  const policy = loadAutomationPolicy(policyPath);
+  assertAutomationPolicyReady(status, policy, dependencies);
+  return createAuthorizationGrant(status, {
+    ...policyShipmentOptions(policy.shipment),
+    level: policy.approval.level,
+    operator: policy.approval.operator,
+    operatorSource: "repo-automation-policy",
+    expiresAt: policy.approval.expires_at,
+    risk: policy.risk.observed,
+    riskCeiling: policy.risk.ceiling,
+    providerMode: policy.provider.mode,
+    repo: policy.repoRoot,
+    policyBinding: {
+      schema: policy.schema,
+      path: policy.absPath,
+      digest: policy.digest,
+    },
+    requireAcceptedReview: true,
+  }, dependencies);
+}
+
+function normalizePolicyShipment(shipment) {
+  return {
+    target: optionalText(shipment.target, "automation policy shipment target", 240),
+    repo: optionalText(shipment.repo, "automation policy shipment repo", 2_000),
+    worktree: optionalText(shipment.worktree, "automation policy shipment worktree", 2_000),
+    branch: optionalText(shipment.branch, "automation policy shipment branch", 240),
+    base: optionalText(shipment.base, "automation policy shipment base", 240),
+    remote: optionalText(shipment.remote, "automation policy shipment remote", 120),
+    pr: optionalText(shipment.pr, "automation policy shipment pull request", 240),
+    commit_message: optionalText(shipment.commit_message, "automation policy commit message", 200),
+    version: optionalText(shipment.version, "automation policy version", 80),
+    summary: optionalText(shipment.summary, "automation policy summary", 240),
+    poll_sec: boundedNumber(shipment.poll_sec ?? 10, "automation policy poll seconds", 1, 300),
+    timeout_sec: boundedNumber(shipment.timeout_sec ?? 1800, "automation policy timeout seconds", 1, 86_400),
+    check_grace_sec: boundedNumber(shipment.check_grace_sec ?? 90, "automation policy check grace seconds", 0, 900),
+    retry_attempts: boundedNumber(shipment.retry_attempts ?? 5, "automation policy retry attempts", 1, 10),
+    retry_base_ms: boundedNumber(shipment.retry_base_ms ?? 1_000, "automation policy retry base milliseconds", 100, 60_000),
+  };
+}
+
+function policyShipmentOptions(shipment) {
+  return {
+    target: shipment.target,
+    repo: shipment.repo,
+    worktree: shipment.worktree,
+    branch: shipment.branch,
+    base: shipment.base,
+    remote: shipment.remote,
+    pr: shipment.pr,
+    commitMessage: shipment.commit_message,
+    version: shipment.version,
+    summary: shipment.summary,
+    pollSec: shipment.poll_sec,
+    timeoutSec: shipment.timeout_sec,
+    checkGraceSec: shipment.check_grace_sec,
+    retryAttempts: shipment.retry_attempts,
+    retryBaseMs: shipment.retry_base_ms,
+  };
+}
+
+function assertAutomationPolicyReady(status, policy, dependencies = {}) {
+  if (policy.enabled !== true) {
+    throw fail("policy-disabled", "repo automation policy is not enabled",
+      "Use the manual Ship Gate, or obtain a new explicit repo policy opt-in.");
+  }
+  if (policy.revocation) {
+    throw fail("policy-revoked", "repo automation policy is revoked",
+      "Use the manual Ship Gate; a revoked policy cannot be reused.");
+  }
+  const now = dateFrom(dependencies.now?.() ?? new Date(), "current time");
+  const approvedAt = dateFrom(policy.approval.approved_at, "automation policy approval time");
+  const expiresAt = dateFrom(policy.approval.expires_at, "automation policy expiry");
+  if (approvedAt.getTime() > now.getTime() || expiresAt.getTime() <= now.getTime()) {
+    throw fail("policy-expired", "repo automation policy is not within its approved time window",
+      "Use the manual Ship Gate, or obtain a fresh bounded policy approval.");
+  }
+  if (expiresAt.getTime() - now.getTime() > MAX_GRANT_LIFETIME_MS) {
+    throw fail("policy-expiry", "repo automation policy expiry is more than 7 days away",
+      "Use the manual Ship Gate, or reduce the policy expiry to a bounded 7-day window.");
+  }
+  if (!sameResolvedPath(policy.repoRoot, status.repoRoot)) {
+    throw fail("policy-repo-drift", "repo automation policy is bound to a different repository",
+      "Use the manual Ship Gate, or review a policy scoped to this exact repository.");
+  }
+  const target = selectTarget(status, policy.shipment.target);
+  const targetBase = normalizeBaseRef(target.base || status.baseRef, policy.shipment.remote || "origin");
+  if (targetBase !== normalizeBaseRef(policy.repository.base_ref, policy.shipment.remote || "origin")) {
+    throw fail("policy-base-drift", "repo automation policy is bound to a different base branch",
+      "Use the manual Ship Gate, or review a policy for the current destination branch.");
+  }
+  if (RISKS[policy.risk.observed] > RISKS[policy.risk.ceiling]) {
+    throw fail("risk-ceiling", `observed risk ${policy.risk.observed} exceeds ceiling ${policy.risk.ceiling}`,
+      "Use the manual Ship Gate, reduce the risk, or obtain a policy with an adequate ceiling.");
+  }
+  const exceptions = new Set(policy.risk.exceptions);
+  const uncovered = policy.risk.classes.filter((riskClass) =>
+    MANUAL_RISK_CLASSES.has(riskClass) && !exceptions.has(riskClass));
+  if (uncovered.length) {
+    throw fail("risk-exception-missing", `manual risk class is not explicitly excepted: ${uncovered.join(", ")}`,
+      "Use the manual Ship Gate, or obtain an explicit risk exception for the exact class.");
+  }
+}
+
+function assertCurrentPolicyBinding(status, grant) {
+  if (!grant.policyBinding) return;
+  let policy;
+  try {
+    policy = loadAutomationPolicy(grant.policyBinding.path);
+  } catch (error) {
+    if (error instanceof AuthorizationError) throw error;
+    throw fail("policy-unavailable", "the bound repo automation policy cannot be loaded",
+      "Use the manual Ship Gate or start a new reviewed run with an available policy.");
+  }
+  if (policy.enabled !== true || policy.revocation) {
+    throw fail("policy-revoked", "the bound repo automation policy was disabled or revoked",
+      "Use the manual Ship Gate; do not reuse the revoked conditional grant.");
+  }
+  if (policy.digest !== grant.policyBinding.digest) {
+    throw fail("policy-drift", "the bound repo automation policy changed after review",
+      "Use the manual Ship Gate or start a new run with a new independent review of the changed policy.");
+  }
+  if (!sameResolvedPath(policy.repoRoot, status.repoRoot)) {
+    throw fail("policy-repo-drift", "the bound policy repository changed after review",
+      "Use the manual Ship Gate or start a new reviewed run for the current repository.");
+  }
+}
+
+function assertAcceptedReviewForPolicy(status) {
+  const review = status.delivery?.review;
+  if (review?.state !== "accepted" || !["accept", "accept-with-notes"].includes(review.verdict)) {
+    throw fail("review-inconclusive", "policy authorization can only be materialized by an accepting Delivery Review",
+      "Use the manual Ship Gate, or record the independent accepting review with --automation-policy in the same operation.");
+  }
+}
+
+function acceptedReviewDecisionDigest(status) {
+  const review = status.delivery?.review;
+  if (review?.state !== "accepted") return null;
+  const decision = (review.history || []).find((item) => item.pass === review.latestPass);
+  if (!decision) return null;
+  return digestCanonical({
+    pass: decision.pass,
+    verdict: decision.verdict,
+    reviewer: decision.reviewer,
+    reviewerIdentity: decision.reviewerIdentity || null,
+    notes: decision.notes || null,
+    decidedAt: decision.decidedAt,
+  });
+}
+
+function sameResolvedPath(left, right) {
+  if (!left || !right) return false;
+  const a = resolve(left);
+  const b = resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function normalizeBaseRef(value, remote) {
+  const text = String(value || "");
+  return text.startsWith(`${remote}/`) ? text.slice(remote.length + 1) : text;
+}
+
 export function createAuthorizationGrant(status, options = {}, dependencies = {}) {
   assertGrantableStatus(status);
   const now = dateFrom(dependencies.now?.() ?? new Date(), "current time");
@@ -92,12 +363,17 @@ export function createAuthorizationGrant(status, options = {}, dependencies = {}
   });
   const snapshot = evidenceSnapshot(status, target, dependencies);
   const expectedReviewer = resolveReviewerIdentity(status, "manager");
+  if (options.requireAcceptedReview === true) assertAcceptedReviewForPolicy(status);
+  const reviewDecisionDigest = acceptedReviewDecisionDigest(status);
   const reviewerPolicy = {
     type: "independent-manager",
     allowedReviewerKinds: ["manager"],
     requiredReviewerIdentityDigest: expectedReviewer.identityDigest,
     authorIdentityDigests: authorIdentities(status).map((item) => item.identityDigest).sort(),
   };
+  if (options.requireAcceptedReview === true) {
+    assertIndependentAcceptedReview(status, { reviewerPolicy });
+  }
   const body = {
     schema: AUTH_SCHEMA,
     runId: status.runId,
@@ -112,6 +388,8 @@ export function createAuthorizationGrant(status, options = {}, dependencies = {}
     permittedMutations: [...manifest.permittedMutations],
     providerMode,
     agentManagerVersion: status.agentManager?.version || "legacy/unrecorded",
+    reviewDecisionDigest,
+    policyBinding: options.policyBinding || null,
     operatorProvenance: {
       id: operator,
       source: requiredText(options.operatorSource || "cli", "operator source", 80),
@@ -285,6 +563,7 @@ function evaluateAuthorization(status, { grant, now, dependencies = {}, manifest
       throw fail("version-drift", "the Agent Manager version changed after authorization",
         "Start a new reviewed run and grant with the current runtime.");
     }
+    assertCurrentPolicyBinding(status, grant);
     const target = selectTarget(status, grant.manifest.target);
     const current = evidenceSnapshot(status, target, dependencies);
     if (current.reviewedBase !== grant.reviewedBase) {
@@ -296,6 +575,11 @@ function evaluateAuthorization(status, { grant, now, dependencies = {}, manifest
         "Revoke this grant, then use a new explicit manual Ship Gate or start a new reviewed run and grant.");
     }
     assertIndependentAcceptedReview(status, grant);
+    if (grant.reviewDecisionDigest
+      && acceptedReviewDecisionDigest(status) !== grant.reviewDecisionDigest) {
+      throw fail("review-drift", "the accepted Delivery Review decision changed after authorization",
+        "Use the manual Ship Gate or start a new run with a new independent review and policy grant.");
+    }
     if (status.state !== "ship_gate_pending") {
       throw fail("state-drift", `run state ${status.state} is not eligible for conditional advance`,
         "Do not use the grant. Inspect the current delivery outcome or start a new reviewed run and grant.");
@@ -625,6 +909,8 @@ function summarizeResult(grant, result) {
     grantDigest: grant.grantDigest,
     evidenceDigest: grant.evidenceDigest,
     manifestDigest: grant.manifestDigest,
+    policyDigest: grant.policyBinding?.digest || null,
+    reviewDecisionDigest: grant.reviewDecisionDigest || null,
     riskCeiling: grant.riskCeiling,
     providerMode: grant.providerMode,
     expiresAt: grant.expiresAt,
@@ -755,6 +1041,37 @@ function requiredRisk(value, label) {
   const risk = String(value || "");
   if (!(risk in RISKS)) throw new Error(`${label} must be low, moderate, high, or critical`);
   return risk;
+}
+
+function assertMapping(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw fail("policy-invalid", `${label} must be a mapping`,
+      "Use the manual Ship Gate, or repair and independently review the repo policy.");
+  }
+  return value;
+}
+
+function assertKnownKeys(value, allowed, label) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw fail("policy-invalid", `${label} contains unknown key: ${key}`,
+        "Use the manual Ship Gate, or remove the unsupported field and independently review the policy.");
+    }
+  }
+}
+
+function stringList(value, label) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw fail("policy-invalid", `${label} must be an array`,
+      "Use the manual Ship Gate, or repair and independently review the repo policy.");
+  }
+  const items = value.map((item, index) => requiredText(item, `${label}[${index}]`, 120));
+  if (new Set(items).size !== items.length) {
+    throw fail("policy-invalid", `${label} must not contain duplicates`,
+      "Use the manual Ship Gate, or repair and independently review the repo policy.");
+  }
+  return [...items].sort();
 }
 
 function boundedNumber(value, label, min, max) {

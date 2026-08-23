@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createE2eFixture } from "../test-support/e2e-fixture.mjs";
 
 const {
@@ -8,6 +10,8 @@ const {
   waitForStatus,
   waitForFeed,
   baseWorkflow,
+  root,
+  repo,
   close,
 } = await createE2eFixture();
 
@@ -243,4 +247,74 @@ test("a recovered verdict on a cancelled run persists without reviving the run",
   const decision = status.delivery.review.history.find((item) => item.pass === 1);
   assert.equal(decision.verdict, "reject");
   assert.equal(decision.recovered, true);
+});
+
+test("the accepting review creates policy authority and returns AUTO_CONTINUE shipping", async () => {
+  const runId = "run-review-policy-authorized";
+  const workflow = writeWorkflow("review-policy-authorized", baseWorkflow([{
+    id: "writer",
+    scope: "authorized.txt",
+    prompt: "write the authorized file",
+    fake: { write: { path: "authorized.txt", content: "authorized\n" } },
+  }]));
+  const policyPath = join(root, "review-policy.json");
+  writeFileSync(policyPath, JSON.stringify({
+    schema: "agent-manager.automation-policy.v1",
+    enabled: true,
+    repository: { path: repo, base_ref: "main" },
+    approval: {
+      level: "through-pr",
+      operator: "test-operator",
+      approved_at: new Date(Date.now() - 60_000).toISOString(),
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    },
+    risk: { observed: "low", ceiling: "moderate", classes: [], exceptions: [] },
+    provider: { mode: "fixture-provider" },
+    shipment: { commit_message: "feat: authorized review" },
+    revocation: null,
+  }, null, 2));
+
+  await runCli([
+    "run", workflow, "--detach", "--json", "--run-id", runId,
+    "--manager-harness", "codex", "--manager-model", "review-model",
+  ]);
+  await waitForStatus(runId, (status) => status.state === "delivery_review_pending");
+  const accepted = await review(runId, [
+    "--pass", "1", "--verdict", "accept", "--reviewer", "test-manager",
+    "--reviewer-role", "manager", "--automation-policy", policyPath,
+  ]);
+  assert.equal(accepted.authorization.valid, true);
+  assert.match(accepted.markdown, /Conditional authorization: \*\*ready\*\*/);
+  assert.match(accepted.markdown, /agent-manager ship run-review-policy-authorized --authorized --detach/);
+
+  const current = await waitForStatus(runId, (status) => status.state === "ship_gate_pending");
+  assert.equal(current.authorization.valid, true);
+  assert.equal(current.delivery.review.history[0].authorization.mode, "repo-policy");
+  await runCli(["cancel", runId]);
+
+  const fallbackRunId = "run-review-policy-fallback";
+  const fallbackWorkflow = writeWorkflow("review-policy-fallback", baseWorkflow([{
+    id: "writer",
+    scope: "fallback.txt",
+    prompt: "write the fallback file",
+    fake: { write: { path: "fallback.txt", content: "fallback\n" } },
+  }]));
+  const disabled = JSON.parse(readFileSync(policyPath, "utf8"));
+  disabled.enabled = false;
+  writeFileSync(policyPath, JSON.stringify(disabled, null, 2));
+  await runCli([
+    "run", fallbackWorkflow, "--detach", "--json", "--run-id", fallbackRunId,
+    "--manager-harness", "codex", "--manager-model", "review-model",
+  ]);
+  await waitForStatus(fallbackRunId, (status) => status.state === "delivery_review_pending");
+  const fallback = await review(fallbackRunId, [
+    "--pass", "1", "--verdict", "accept", "--reviewer", "test-manager",
+    "--reviewer-role", "manager", "--automation-policy", policyPath,
+  ]);
+  assert.equal(fallback.authorization.valid, false);
+  assert.equal(fallback.authorization.failureCode, "policy-disabled");
+  const fallbackStatus = await waitForStatus(fallbackRunId, (status) => status.state === "ship_gate_pending");
+  assert.equal(fallbackStatus.delivery.review.state, "accepted");
+  assert.equal(fallbackStatus.authorization.valid, false);
+  await runCli(["cancel", fallbackRunId]);
 });

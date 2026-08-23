@@ -5,10 +5,11 @@ validates a standing policy, triages local source fixtures, and writes
 **validated workflow YAML drafts** that Master Dev can kick off with
 `agent-manager run … --detach`.
 
-This is **not** full autopilot. The cycle does not start workers, commit, push,
-open a pull request, merge, tag, release, call a planner LLM, or bypass harness
-permissions. Scheduled or continuous unattended loops remain deferred until an
-explicit execute/detach phase lands.
+This is **not** continuous autopilot. Proposal cycles do not start workers,
+commit, push, open a pull request, merge, tag, release, call a planner LLM, or
+bypass harness permissions. An explicit policy-bound `director go --detach`
+may start one compiled Agent Manager run; all review and shipping mutations stay
+in the existing review and shipment state machines.
 
 The Director identity (`harness`, `model`, `reasoning`) is configured separately
 from worker identities. Worker harness/model defaults come from an optional
@@ -34,7 +35,7 @@ autopilot:
   enabled: true
   mode: pr-only
   source_filter: automation-ready
-  allowed_actions: [plan, run, review, commit, push, open-pr]
+  allowed_actions: [plan, run, review, commit, push, open-pr, ship]
   allowed_paths: [src/**, test/**, docs/**, src/lib/security/**, test/security/**]
   forbidden_risks: [security, authentication, billing, migrations, infrastructure]
   risk_exceptions:
@@ -45,6 +46,27 @@ autopilot:
   max_concurrency: 3
   correction_limit: 1
   on_blocker: quarantine-and-continue
+automation_policy:
+  schema: agent-manager.automation-policy.v1
+  enabled: true
+  repository:
+    path: ../target-repository
+    base_ref: main
+  approval:
+    level: through-pr
+    operator: release-operator
+    approved_at: 2026-08-23T12:00:00Z
+    expires_at: 2026-08-24T12:00:00Z
+  risk:
+    observed: moderate
+    ceiling: moderate
+    classes: []
+    exceptions: []
+  provider:
+    mode: github
+  shipment:
+    commit_message: "feat: approved Director change"
+  revocation: null
 ```
 
 `forbidden_risks` stay fail-closed. For CodeQL-class work, keep `security` in
@@ -62,6 +84,12 @@ Validation rejects disabled policies, modes other than `pr-only`, merge/tag/
 release or unknown actions, missing Director identity, unknown fields, invalid
 bounds, risk exceptions outside `allowed_paths`, and repositories that do not
 exist. Director mode never grants dangerous permissions.
+
+`automation_policy` is optional. When present, it must be explicitly enabled,
+unrevoked, bound to the same repository and base, limited to `through-pr`, and
+paired with `ship` in `allowed_actions`. Security-class source items still need
+the existing scoped Director `risk_exceptions`; the shipping policy does not
+broaden triage eligibility.
 
 ## Local source fixtures
 
@@ -139,7 +167,35 @@ JSON output include a `kickoff:` line per draft:
 agent-manager run "<path-to-draft.yaml>" --detach
 ```
 
-Master Dev owns that kickoff. Director does not auto-detach.
+Master Dev owns that kickoff for proposal cycles. They never auto-detach.
+
+When `automation_policy` is enabled, each draft also gets a normalized
+`<draft>.automation-policy.json` sidecar. The workflow planning packet binds its
+path and SHA-256 digest, and cycle output includes the exact accepting-review
+command. That independent review materializes the normal immutable shipping
+grant and hands it to the existing shipment state machine; Director does not
+create a second PR or release engine.
+
+## Run an explicitly authorized go cycle
+
+`director go` requires an enabled `automation_policy`, the `ship` action, and
+an explicit `--detach`. It refuses multiple workflow drafts so admission and
+launch remain one deterministic run transaction. Reduce `max_items_per_cycle`
+or raise `max_concurrency` when selected work would otherwise split.
+
+```powershell
+agent-manager director go `
+  --policy .\director-policy.yaml `
+  --items .\director-items.yaml `
+  --detach `
+  --json
+```
+
+The run ID is derived from the cycle and draft identity. Replaying the same go
+cycle reuses the persisted launch instead of starting another run. The detached
+run records the Director harness/model as its manager identity. When workers
+finish, that independent manager performs Delivery Review with the compiled
+policy sidecar; acceptance then hands the run to `ship --authorized --detach`.
 
 Only one Director cycle can hold a repository lease. A second cycle fails
 closed. Cycle selection is stable: priority descending, then source provider
@@ -162,9 +218,9 @@ keys are evidence only until a later execute phase consumes them.
 | In scope today | Not in scope yet |
 |---|---|
 | Policy + fixture triage | Planner LLM session |
-| Workflow YAML drafts + kickoff text | Auto `run --detach` |
+| Explicit single-run `director go --detach` | Multi-draft atomic launch |
 | Scoped `risk_exceptions` | Jared / GitHub / followup connectors |
-| Fail-closed unknown providers | Auto Delivery Review / Ship Gate |
+| Review-to-ship policy sidecars | Auto reviewer session |
 | `goal_refs` on drafts | Continuous / scheduled autopilot |
 
 Shipping must remain limited to policy-authorized `pr-only` behavior after

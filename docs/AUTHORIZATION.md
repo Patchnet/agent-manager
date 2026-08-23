@@ -1,19 +1,76 @@
 # Conditional shipping authorization
 
 Conditional authorization is an optional, provider-neutral alternative to a
-second interactive Ship Gate. It does not replace Delivery Review. The default
-remains an accepted Delivery Review followed by an explicit `through-pr` or
-`all` Ship Gate reply.
+second interactive Ship Gate. It does not replace Delivery Review. Repositories
+without an explicit policy keep the existing behavior: accepted Delivery
+Review followed by an explicit `through-pr` or `all` Ship Gate reply.
 
 A private immutable grant applies to one run and one delivery target. It records
 the exact approval level, reviewed base and head, evidence and manifest digests,
 risk ceiling, provider mode, runtime version, permitted mutations, independent
 reviewer policy, operator provenance, and expiry.
 
-## Create and use a grant
+## Repo policy: one acceptance
 
-Create a grant after worker completion freezes delivery evidence. Expiry must
-be within seven days.
+Store a public JSON or YAML policy in, or explicitly scoped to, the target
+repository. The policy is provider-neutral: `provider.mode` names the selected
+adapter contract but does not grant provider bypasses.
+
+```yaml
+schema: agent-manager.automation-policy.v1
+enabled: true
+repository:
+  path: .
+  base_ref: main
+approval:
+  level: through-pr
+  operator: release-operator
+  approved_at: 2026-08-23T12:00:00Z
+  expires_at: 2026-08-24T12:00:00Z
+risk:
+  observed: moderate
+  ceiling: moderate
+  classes: []
+  exceptions: []
+provider:
+  mode: github
+shipment:
+  commit_message: "feat: approved change"
+revocation: null
+```
+
+The approval window must be active and no more than seven days from the
+accepting review. `security` and `authentication` classes remain manual unless
+the same class is named in `risk.exceptions`. Set `enabled: false`, add a
+`revocation` record, or use the immutable grant revocation command to stop
+automation.
+
+The independent manager accepts and materializes the exact grant in one
+operation:
+
+```text
+agent-manager review <runId> --pass 1 --verdict accept \
+  --reviewer <label> --reviewer-role manager \
+  --automation-policy <policy-file>
+```
+
+If the policy is missing, disabled, revoked, expired, out of scope, above its
+risk ceiling, or lacks an explicit risk exception, the acceptance remains
+recorded but conditional authority is blocked. Cadence reports the reason and
+requires the manual Ship Gate. It never silently changes the approval level.
+
+When the policy is valid, cadence returns `conditional_authority_ready` and
+`AUTO_CONTINUE`. Launch exactly once:
+
+```text
+agent-manager ship <runId> --authorized --detach
+```
+
+## Manual grant compatibility
+
+The earlier explicit grant command remains available. It creates a grant after
+worker completion, then waits for an independently attributable review. Expiry
+must be within seven days.
 
 ```text
 agent-manager authorization create <runId> \
@@ -43,16 +100,13 @@ A reviewer label alone never proves independence. The run must have attributable
 manager harness plus model or thread metadata, and that identity must not
 collide with a worker author identity.
 
-When cadence reports `conditional_authority_ready`, launch exactly once:
-
-```text
-agent-manager ship <runId> --authorized --detach
-```
-
 The launch re-hashes the current base, head, worktree state, evidence, runtime
-version, provider mode, release version, risk, and execution manifest. It writes
 a separate immutable receipt before queueing. The ship supervisor validates the
 receipt and current evidence again before its first provider command.
+
+Policy grants also bind the normalized policy digest and the exact accepting
+review decision. Policy edits, provider changes, reviewer drift, or decision
+drift invalidate the grant.
 
 ## Inspect or revoke
 

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { RUNS_ROOT, assertSafeSlug } from "../paths.mjs";
 import { matchesScope, normalizeScopePath, scopePrefix } from "../scope.mjs";
+import { loadAutomationPolicy } from "../authorization.mjs";
 import { acquireRepositoryLease } from "./lease.mjs";
 import { loadDirectorPolicy, pathCoveredByAllowlist } from "./policy.mjs";
 import { IMPLEMENTED_PROVIDERS, loadDirectorSourceItems } from "./source-items.mjs";
@@ -132,12 +133,21 @@ function collectExistingDrafts(cycleDir) {
     .sort()
     .map((name) => {
       const path = join(workflowsDir, name);
+      const draftId = name.replace(/\.ya?ml$/i, "");
+      const automationPath = join(workflowsDir, `${draftId}.automation-policy.json`);
+      const automationPolicy = existsSync(automationPath)
+        ? loadAutomationPolicy(automationPath)
+        : null;
       return {
         path,
-        draftId: name.replace(/\.ya?ml$/i, ""),
+        draftId,
         sourceKeys: [],
         validateOk: true,
         kickoff: `agent-manager run ${JSON.stringify(path)} --detach`,
+        ...(automationPolicy ? {
+          automationPolicy: { path: automationPath, digest: automationPolicy.digest },
+          review: `agent-manager review <runId> --pass 1 --verdict accept --reviewer <manager-id> --reviewer-role manager --automation-policy ${JSON.stringify(automationPath)}`,
+        } : {}),
       };
     });
 }
@@ -153,14 +163,26 @@ export async function runDirectorCycle({
   stateRoot = defaultDirectorStateRoot(),
   cycleId = null,
   dryRun = false,
+  go = false,
+  launchDraft = null,
   now = () => new Date(),
 } = {}) {
-  if (dryRun !== true) {
+  if (go !== true && dryRun !== true) {
     throw new Error("Director proposal cycles require --dry-run; auto-detach worker launch is not enabled");
   }
+  if (go === true && dryRun === true) {
+    throw new Error("Director go is an explicit launch mode; do not combine it with --dry-run");
+  }
+  if (go === true && typeof launchDraft !== "function") {
+    throw new Error("Director go requires a detached workflow launcher");
+  }
   const policy = loadDirectorPolicy(policyPath, { repoOverride });
+  if (go === true && !policy.automationPolicy) {
+    throw new Error("Director go requires an explicitly enabled automation_policy");
+  }
   const source = loadDirectorSourceItems(itemsPath);
-  const derivedCycleId = `director-cycle-${sha256(`${policy.digest}\0${source.digest}`).slice(0, 20)}`;
+  const mode = go ? "go" : "proposal";
+  const derivedCycleId = `director-cycle-${sha256(`${mode}\0${policy.digest}\0${source.digest}`).slice(0, 20)}`;
   const id = assertSafeSlug(cycleId || derivedCycleId, "Director cycle id");
   const root = resolve(stateRoot);
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -191,10 +213,10 @@ export async function runDirectorCycle({
       ) {
         throw new Error(`Director cycle id ${id} has incompatible persisted state`);
       }
-      if (!["running", "dry-run-complete"].includes(state.status)) {
+      if (!["running", "dry-run-complete", "launched"].includes(state.status)) {
         throw new Error(`Director cycle id ${id} cannot resume from state ${state.status}`);
       }
-      if (state.status === "dry-run-complete") {
+      if (["dry-run-complete", "launched"].includes(state.status)) {
         drafts = collectExistingDrafts(cycleDir);
       }
     } else {
@@ -207,7 +229,8 @@ export async function runDirectorCycle({
         sourceDigest: source.digest,
         phase: "DISCOVER",
         status: "running",
-        dryRun: true,
+        dryRun: !go,
+        go,
         director: policy.director,
         createdAt: startedAt,
         updatedAt: startedAt,
@@ -264,13 +287,36 @@ export async function runDirectorCycle({
         atomicWriteJson(statePath, state);
       }
       if (state.phase === "VALIDATE") {
-        transition(state, "CLOSE", "proposal boundary reached; Master may kick off draft workflows with run --detach", now().toISOString());
+        if (go) {
+          if (!drafts.length) drafts = collectExistingDrafts(cycleDir);
+          if (drafts.length !== 1) {
+            throw new Error(
+              `Director go requires one atomic workflow draft; found ${drafts.length}. ` +
+              "Reduce max_items_per_cycle or raise max_concurrency so selected work compiles into one run.",
+            );
+          }
+          const draft = drafts[0];
+          const runId = assertSafeSlug(
+            `director-${sha256(`${id}\0${draft.draftId}`).slice(0, 24)}`,
+            "Director run id",
+          );
+          const launch = await launchDraft({ cycleId: id, runId, draft, policy });
+          state.launches = [{ runId, draftId: draft.draftId, ...launch }];
+          transition(state, "DETACH", `detached validated workflow as ${runId}`, now().toISOString());
+          atomicWriteJson(statePath, state);
+        } else {
+          transition(state, "CLOSE", "proposal boundary reached; Master may kick off draft workflows with run --detach", now().toISOString());
+          atomicWriteJson(statePath, state);
+        }
+      }
+      if (state.phase === "DETACH") {
+        transition(state, "CLOSE", "Director go handed the detached run to independent Delivery Review and the shared shipment state machine", now().toISOString());
         atomicWriteJson(statePath, state);
       }
       if (state.phase !== "CLOSE") {
         throw new Error(`Director cycle id ${id} cannot resume from phase ${state.phase}`);
       }
-      state.status = "dry-run-complete";
+      state.status = go ? "launched" : "dry-run-complete";
       atomicWriteJson(statePath, state);
       if (!drafts.length) drafts = collectExistingDrafts(cycleDir);
     }
@@ -279,7 +325,8 @@ export async function runDirectorCycle({
       schema: "agent-manager.director-cycle.v1",
       cycleId: id,
       status: state.status,
-      dryRun: true,
+      dryRun: !go,
+      go,
       repository: policy.repoRoot,
       director: policy.director,
       policyDigest: policy.digest,
@@ -291,6 +338,7 @@ export async function runDirectorCycle({
       skipped: state.items.skipped,
       transitions: state.transitions,
       drafts,
+      launches: state.launches || [],
       statePath,
       replayed: false,
     };

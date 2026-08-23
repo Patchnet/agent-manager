@@ -62,12 +62,14 @@ Also run when work is complete and you would otherwise ask “want me to commit?
     is always `WAIT_OPERATOR`. After approval, execute the authorized scope
     without asking for another confirmation; that execution is
     `AUTO_CONTINUE` until blocked or complete.
-11. A pre-existing conditional grant is a separate immutable operator record,
-    not a chat approval. It may skip interactive Ship Gate only after an
-    independently attributable acceptance and an unchanged
-    `conditional_authority_ready` result. Launch only with
+11. A conditional grant is an immutable operator record, not a chat approval.
+    An explicitly enabled repo policy may let the independently attributable
+    accepting Delivery Review materialize that grant in the same operation.
+    With an unchanged `conditional_authority_ready` result, that acceptance is
+    the only human approval: do not present a second Ship Gate. Launch only with
     `agent-manager ship <runId> --authorized --detach`. Never edit, override,
-    downgrade, or replay it.
+    downgrade, or replay it. Missing, blocked, expired, revoked, or drifted
+    policy authority returns to this manual Ship Gate with the failure visible.
 
 ## Approve vocabulary (operator replies with one)
 

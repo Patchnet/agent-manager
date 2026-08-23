@@ -26,6 +26,8 @@ const {
   consumeAuthorization,
   createAuthorizationGrant,
   inspectAuthorization,
+  loadAutomationPolicy,
+  materializeReviewAuthorization,
   resolveReviewerIdentity,
   revokeAuthorization,
 } = await import("../src/authorization.mjs?authorization-test");
@@ -155,11 +157,12 @@ test("authorization CLI creates, inspects, and revokes without exposing private 
     AGENT_MANAGER_RUNS_ROOT: runsRoot,
   };
   const cli = join(process.cwd(), "bin", "agent-manager.mjs");
+  const cliExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const createdText = execFileSync("node", [
     cli, "authorization", "create", current.runId,
     "--level", "through-pr",
     "--operator", "private-operator",
-    "--expires-at", "2026-08-21T12:00:00.000Z",
+    "--expires-at", cliExpiry,
     "--risk", "moderate",
     "--risk-ceiling", "moderate",
     "--provider-mode", "github",
@@ -182,6 +185,81 @@ test("authorization CLI creates, inspects, and revokes without exposing private 
   ], { encoding: "utf8", env }));
   assert.equal(revoked.authorization.state, "revoked");
   assert.doesNotMatch(JSON.stringify(revoked), /private-operator/);
+});
+
+function writeAutomationPolicy(name, overrides = {}) {
+  const path = join(root, `${name}.automation-policy.json`);
+  const document = {
+    schema: "agent-manager.automation-policy.v1",
+    enabled: true,
+    repository: { path: repo, base_ref: "main" },
+    approval: {
+      level: "through-pr",
+      operator: "policy-operator",
+      approved_at: "2026-08-20T11:00:00.000Z",
+      expires_at: "2026-08-21T12:00:00.000Z",
+    },
+    risk: { observed: "moderate", ceiling: "moderate", classes: [], exceptions: [] },
+    provider: { mode: "fixture-provider" },
+    shipment: { commit_message: "feat: policy approved change" },
+    revocation: null,
+    ...overrides,
+  };
+  writeFileSync(path, JSON.stringify(document, null, 2));
+  return { path, document };
+}
+
+test("an accepting review materializes an immutable repo-policy grant without a second approval", () => {
+  const current = status("run-auth-policy-review");
+  accept(current);
+  const policy = writeAutomationPolicy("same-review");
+  const loaded = loadAutomationPolicy(policy.path);
+  assert.equal(loaded.repoRoot, repo);
+
+  const result = materializeReviewAuthorization(current, { policyPath: policy.path }, { now: () => NOW });
+  assert.equal(result.grant.policyBinding.digest, loaded.digest);
+  assert.equal(result.grant.reviewDecisionDigest.length, 64);
+  assert.equal(inspectAuthorization(current, { now: () => NOW }).state, "ready");
+
+  policy.document.provider.mode = "changed-provider";
+  writeFileSync(policy.path, JSON.stringify(policy.document, null, 2));
+  const drift = inspectAuthorization(current, { now: () => NOW });
+  assert.equal(drift.code, "policy-drift");
+  assert.match(drift.action, /manual Ship Gate|new run/i);
+});
+
+test("repo policy opt-in, risk exceptions, expiry, and revocation fail closed", () => {
+  const disabled = status("run-auth-policy-disabled");
+  accept(disabled);
+  const disabledPolicy = writeAutomationPolicy("disabled", { enabled: false });
+  assert.throws(
+    () => materializeReviewAuthorization(disabled, { policyPath: disabledPolicy.path }, { now: () => NOW }),
+    (error) => error.code === "policy-disabled",
+  );
+
+  const security = status("run-auth-policy-security");
+  accept(security);
+  const securityPolicy = writeAutomationPolicy("security", {
+    risk: { observed: "high", ceiling: "high", classes: ["security"], exceptions: [] },
+  });
+  assert.throws(
+    () => materializeReviewAuthorization(security, { policyPath: securityPolicy.path }, { now: () => NOW }),
+    (error) => error.code === "risk-exception-missing",
+  );
+
+  const revoked = status("run-auth-policy-revoked-before-review");
+  accept(revoked);
+  const revokedPolicy = writeAutomationPolicy("revoked-before-review", {
+    revocation: {
+      revoked_at: "2026-08-20T11:30:00.000Z",
+      revoked_by: "policy-operator",
+      reason: "scope changed",
+    },
+  });
+  assert.throws(
+    () => materializeReviewAuthorization(revoked, { policyPath: revokedPolicy.path }, { now: () => NOW }),
+    (error) => error.code === "policy-revoked",
+  );
 });
 
 test("a reviewer label alone cannot activate conditional authority", () => {
