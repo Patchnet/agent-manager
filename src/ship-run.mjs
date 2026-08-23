@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -327,6 +327,12 @@ export function queueShip(runId, handoff) {
     prUrl: handoff.pr,
     targetId: handoff.targetId || null,
     mergeSha: handoff.targetId ? null : status.ship?.mergeSha || null,
+    releaseSha: status.ship?.releaseSha || null,
+    releasePrUrl: status.ship?.releasePrUrl || null,
+    releasePrNumber: status.ship?.releasePrNumber || null,
+    releaseBranch: status.ship?.releaseBranch || null,
+    releaseTransaction: status.ship?.releaseTransaction || null,
+    providerCapabilities: handoff.providerCapabilities || status.ship?.providerCapabilities || null,
     version: handoff.version,
     // Carried across attempts on purpose: a version plan stamped on an earlier attempt
     // is what a resumed ship has to re-validate against the target repo's base branch.
@@ -562,7 +568,18 @@ async function runFormal(runId, status, handoff, dependencies) {
     status = step(runId, status, "pr", "done", status.ship.prUrl || `#${status.ship.prNumber}`);
     status = step(runId, status, "merge", "done", status.ship.mergeSha || "already merged");
     if (handoff.approve === "through-pr") return status;
+    if (status.ship.releaseTransaction?.mode === "delivery-pr") {
+      return finalizeFormalReleaseFromMergedPr(runId, status, handoff, recordedPr, { exec });
+    }
     return await releaseFormal(runId, status, handoff, { exec, sleep, now });
+  }
+
+  if (handoff.approve === "all") {
+    status = await prepareFormalStamp(runId, status, handoff, handoff.worktree, "delivery-pr", {
+      exec,
+      sleep,
+      now,
+    });
   }
 
   assertNotCancelled(runId);
@@ -576,13 +593,59 @@ async function runFormal(runId, status, handoff, dependencies) {
   );
   status = step(runId, status, "push", "done", `${handoff.remote}/${handoff.branch}`);
 
+  const merged = await completeFormalPullRequest(runId, status, handoff, {
+    exec,
+    sleep,
+    now,
+    pr: recordedPr,
+    context: prContext,
+    urlField: "prUrl",
+    numberField: "prNumber",
+    prStep: "pr",
+    mergeStep: "merge",
+    prActivity: "finding or creating the pull request",
+    mergeActivity: "enabling squash auto-merge",
+    label: "pull request",
+    expectedHeadSha: status.ship.releaseTransaction?.mode === "delivery-pr"
+      ? status.ship.releaseTransaction.headSha || status.ship.releaseTransaction.stampCommitSha
+      : null,
+  });
+  status = merged.status;
+  status.ship.mergeSha = merged.pr.mergeCommit?.oid || merged.pr.mergeCommit || null;
+  status = step(runId, status, "merge", "done", status.ship.mergeSha || "merged");
+
+  if (handoff.approve === "through-pr") return status;
+
   assertNotCancelled(runId);
-  status = phase(runId, status, "pr", "finding or creating the pull request");
-  let pr = recordedPr;
+  return finalizeFormalReleaseFromMergedPr(runId, status, handoff, merged.pr, { exec });
+}
+
+async function completeFormalPullRequest(runId, status, handoff, options) {
+  const {
+    exec,
+    sleep,
+    now,
+    context,
+    urlField,
+    numberField,
+    prStep,
+    mergeStep,
+    prActivity,
+    mergeActivity,
+    label,
+    expectedHeadSha = null,
+  } = options;
+  assertNotCancelled(runId);
+  status = phase(runId, status, prStep, prActivity);
+  let pr = options.pr || null;
+  if (!pr && status.ship[urlField]) {
+    const recorded = await readPr(exec, handoff.worktree, status.ship[urlField], context);
+    pr = recorded.pr;
+    status.ship.remoteRetries = addRetries(status, recorded.retries);
+  }
   if (!pr) {
-    // A transient failure here would read as "no pull request exists" and open a
-    // duplicate, so the discovery read gets the same bounded retry as the poll.
-    const discovered = await readPr(exec, handoff.worktree, handoff.branch, prContext, false);
+    // Discovery is retried before creation so a transient read cannot duplicate a PR.
+    const discovered = await readPr(exec, handoff.worktree, handoff.branch, context, false);
     pr = discovered.pr;
     status.ship.remoteRetries = addRetries(status, discovered.retries);
   }
@@ -592,44 +655,205 @@ async function runFormal(runId, status, handoff, dependencies) {
       "gh",
       ["pr", "create", "--head", handoff.branch, "--base", handoff.base, "--fill"],
       handoff.worktree,
-      "create pull request",
+      `create ${label}`,
     );
     const url = created.stdout.split(/\r?\n/).find((line) => /^https?:\/\//.test(line.trim()))?.trim();
     if (!url) {
-      throw new ShipBlockedError("The pull request was created but its URL could not be read.", [
-        "Provide the pull request URL with --pr and rerun ship.",
+      throw new ShipBlockedError(`The ${label} was created but its URL could not be read.`, [
+        `Provide the ${label} URL and rerun shipping.`,
       ]);
     }
-    const opened = await readPr(exec, handoff.worktree, url, prContext);
+    const opened = await readPr(exec, handoff.worktree, url, context);
     pr = opened.pr;
     status.ship.remoteRetries = addRetries(status, opened.retries);
   }
   validatePrTarget(pr, handoff);
-  status.ship.prUrl = pr.url || handoff.pr;
-  status.ship.prNumber = pr.number || null;
-  status = step(runId, status, "pr", "done", status.ship.prUrl || `#${status.ship.prNumber}`);
+  status.ship[urlField] = pr.url || status.ship[urlField];
+  status.ship[numberField] = pr.number || null;
+  if (expectedHeadSha) {
+    status.ship.releaseTransaction.prUrl = status.ship[urlField];
+    status.ship.releaseTransaction.prNumber = status.ship[numberField];
+    status = save(runId, status);
+    verifyRemoteBranchHead(exec, handoff.worktree, handoff.remote, handoff.branch, expectedHeadSha);
+  }
+  const prTarget = status.ship[urlField] || String(status.ship[numberField]);
+  status = step(runId, status, prStep, "done", prTarget);
 
   assertNotCancelled(runId);
-  status = phase(runId, status, "merge", "enabling squash auto-merge");
+  status = phase(runId, status, mergeStep, mergeActivity);
   if (pr.state !== "MERGED") {
     must(
       exec,
       "gh",
-      ["pr", "merge", status.ship.prUrl || String(status.ship.prNumber), "--auto", "--squash"],
+      ["pr", "merge", prTarget, "--auto", "--squash"],
       handoff.worktree,
-      "enable pull request auto-merge",
+      `enable ${label} auto-merge`,
     );
   }
-  const merged = await waitForPr(runId, status, handoff, { exec, sleep, now });
+  const merged = await waitForPr(runId, status, handoff, { exec, sleep, now, prTarget });
   status = merged.status;
-  status.ship.mergeSha = merged.pr.mergeCommit?.oid || merged.pr.mergeCommit || null;
-  status.ship.prUrl = merged.pr.url || status.ship.prUrl;
-  status = step(runId, status, "merge", "done", status.ship.mergeSha || "merged");
+  status.ship[urlField] = merged.pr.url || status.ship[urlField];
+  return { status, pr: merged.pr };
+}
 
-  if (handoff.approve === "through-pr") return status;
+async function prepareFormalStamp(runId, status, handoff, cwd, mode, { exec, sleep, now }) {
+  status = phase(runId, status, "release", `binding ${handoff.version} to the approved ${mode}`);
+  status = await ensureVersionPlan(runId, status, handoff, cwd, { exec, sleep });
+  if (mode === "delivery-pr") {
+    status = verifyPriorDeliveryAncestry(runId, status, handoff, cwd, exec);
+  }
+  const currentHead = must(exec, "git", ["rev-parse", "HEAD"], cwd, "read approved ship head").stdout;
+  const existing = status.ship.releaseTransaction || null;
+  if (existing && (existing.mode !== mode || existing.version !== handoff.version)) {
+    throw new ShipBlockedError("The recorded release transaction does not match this approved shipment.", [
+      "Start a new Delivery Review and Ship Gate for the changed release transaction.",
+    ]);
+  }
+  if (existing?.stampCommitSha) {
+    const syncedHead = syncFormalTransactionHead(exec, cwd, handoff, existing, currentHead);
+    verifyVersionStamp(cwd, handoff.version, exec);
+    verifyStampManifestAtRef(exec, cwd, "HEAD", existing.manifest);
+    existing.headSha = syncedHead;
+    status = save(runId, status);
+    return step(runId, status, "release", "done", syncedHead);
+  }
 
-  assertNotCancelled(runId);
-  return await releaseFormal(runId, status, handoff, { exec, sleep, now });
+  const transaction = existing || {
+    schema: "agent-manager.release-transaction.v1",
+    mode,
+    version: handoff.version,
+    approvedHeadSha: currentHead,
+    stampCommitSha: null,
+    headSha: null,
+    manifest: null,
+    prUrl: null,
+    prNumber: null,
+    mergeSha: null,
+  };
+  if (transaction.approvedHeadSha !== currentHead) {
+    throw new ShipBlockedError("The approved branch changed before the release stamp could be applied.", [
+      "Review the new head and start a new Delivery Review and Ship Gate.",
+    ]);
+  }
+  status.ship.releaseTransaction = transaction;
+  status = save(runId, status);
+
+  const stamp = applyVersionStamp(cwd, handoff.version, handoff.summary, now());
+  verifyVersionStamp(cwd, handoff.version, exec);
+  must(exec, "git", ["add", ...stamp.files], cwd, "stage release stamp");
+  const staged = splitPaths(
+    must(exec, "git", ["diff", "--cached", "--name-only"], cwd, "inspect staged release stamp").stdout,
+  );
+  assertExactStampFiles(staged, stamp.files);
+  if (!staged.length) {
+    throw new ShipBlockedError("The approved release stamp produced no isolated commit.", [
+      "Verify the approved version and manifest, then start a new Ship Gate if they changed.",
+    ]);
+  }
+  const manifest = buildStampManifest(exec, cwd, handoff.version, stamp.files);
+  must(exec, "git", ["commit", "-m", `chore: release ${handoff.version}`], cwd, "commit release stamp");
+  const stampCommitSha = must(exec, "git", ["rev-parse", "HEAD"], cwd, "read release stamp commit").stdout;
+  const parentSha = must(exec, "git", ["rev-parse", "HEAD^"], cwd, "read release stamp parent").stdout;
+  if (parentSha !== transaction.approvedHeadSha) {
+    throw new ShipBlockedError("The release stamp is not a direct child of the approved branch head.", [
+      "Do not ship the drifted branch; start a new Delivery Review and Ship Gate.",
+    ]);
+  }
+  const committed = splitPaths(
+    must(
+      exec,
+      "git",
+      ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+      cwd,
+      "inspect release stamp commit",
+    ).stdout,
+  );
+  assertExactStampFiles(committed, stamp.files);
+  transaction.stampCommitSha = stampCommitSha;
+  transaction.headSha = stampCommitSha;
+  transaction.manifest = manifest;
+  status.ship.releaseSha = stampCommitSha;
+  status.ship.versionPlan.releaseSha = stampCommitSha;
+  status = save(runId, status);
+  return step(runId, status, "release", "done", stampCommitSha);
+}
+
+function syncFormalTransactionHead(exec, cwd, handoff, transaction, currentHead) {
+  const stampSha = transaction.stampCommitSha;
+  const containsStamp = (candidate) => exec(
+    "git",
+    ["merge-base", "--is-ancestor", stampSha, candidate],
+    { cwd },
+  ).ok;
+  if (!containsStamp(currentHead)) {
+    throw new ShipBlockedError("The approved release branch no longer contains its bound stamp commit.", [
+      "Restore the recorded branch or start a new Delivery Review and Ship Gate.",
+    ]);
+  }
+  const fetched = exec("git", ["fetch", handoff.remote, handoff.branch], { cwd });
+  if (!fetched.ok) return currentHead;
+  const remoteHeadResult = exec("git", ["rev-parse", `${handoff.remote}/${handoff.branch}`], { cwd });
+  if (!remoteHeadResult.ok || !remoteHeadResult.stdout) return currentHead;
+  const remoteHead = remoteHeadResult.stdout;
+  if (remoteHead === currentHead) return currentHead;
+  const canFastForward = exec("git", ["merge-base", "--is-ancestor", currentHead, remoteHead], { cwd }).ok;
+  if (canFastForward && containsStamp(remoteHead)) {
+    must(exec, "git", ["merge", "--ff-only", `${handoff.remote}/${handoff.branch}`], cwd, "update approved PR branch");
+    return remoteHead;
+  }
+  const localAhead = exec("git", ["merge-base", "--is-ancestor", remoteHead, currentHead], { cwd }).ok;
+  if (localAhead) return currentHead;
+  throw new ShipBlockedError("The remote release branch diverged from its immutable transaction.", [
+    "Do not force-push; review the branch drift and start a new Delivery Review if needed.",
+  ]);
+}
+
+function verifyPriorDeliveryAncestry(runId, status, handoff, cwd, exec) {
+  const prior = (status.delivery?.targets || []).filter((target) => target.id !== handoff.targetId);
+  if (!prior.length) return status;
+  const missing = prior.filter((target) => !target.mergeSha).map((target) => target.id);
+  if (missing.length) {
+    throw new ShipBlockedError(
+      `release is missing merge evidence for prior delivery target(s): ${missing.join(", ")}`,
+      ["Merge and verify every prior delivery target before stamping the final delivery PR."],
+    );
+  }
+  const baseSha = must(
+    exec,
+    "git",
+    ["rev-parse", `${handoff.remote}/${handoff.base}`],
+    cwd,
+    "read final delivery PR base",
+  ).stdout;
+  for (const target of prior) {
+    const result = exec("git", ["merge-base", "--is-ancestor", target.mergeSha, baseSha], { cwd });
+    if (!result.ok) {
+      throw new ShipBlockedError(
+        `final delivery PR base ${baseSha} does not contain prior merge ${target.mergeSha}`,
+        ["Update the base to contain every prior target merge, then rerun shipping."],
+      );
+    }
+  }
+  status.ship.verifiedMergeShas = prior.map((target) => target.mergeSha);
+  return save(runId, status);
+}
+
+function finalizeFormalReleaseFromMergedPr(runId, status, handoff, pr, { exec }) {
+  const transaction = status.ship.releaseTransaction;
+  const mergeSha = pr.mergeCommit?.oid || pr.mergeCommit || status.ship.mergeSha || null;
+  if (!transaction?.manifest || !mergeSha) {
+    throw new ShipBlockedError("The merged release pull request is missing immutable stamp evidence.", [
+      "Verify the merged PR and rerun shipping; do not publish a tag without the bound manifest.",
+    ]);
+  }
+  must(exec, "git", ["fetch", handoff.remote, handoff.base], handoff.worktree, "fetch merged release");
+  verifyStampManifestAtRef(exec, handoff.worktree, mergeSha, transaction.manifest);
+  transaction.mergeSha = mergeSha;
+  status.ship.releaseSha = mergeSha;
+  status.ship.versionPlan.releaseSha = mergeSha;
+  status = step(runId, status, "release-push", "skipped", "release stamp merged through the protected pull request");
+  status = step(runId, status, "ci", "done", "required pull-request checks completed before merge");
+  return tagRelease(runId, status, handoff, mergeSha, exec);
 }
 
 async function runSimple(runId, status, handoff, dependencies) {
@@ -670,45 +894,143 @@ async function releaseFormal(runId, status, handoff, dependencies) {
   const { exec, sleep, now } = dependencies;
   status = phase(runId, status, "release", `preparing ${handoff.version} on ${handoff.base}`);
   const releaseRoot = prepareReleaseWorkspace(runId, handoff, exec);
-  const releaseHandoff = { ...handoff, repoRoot: releaseRoot, releaseWorktree: releaseRoot };
+  const releaseBranch = `am/${runId}/release-${handoff.version}`;
+  const releaseHandoff = {
+    ...handoff,
+    repoRoot: releaseRoot,
+    worktree: releaseRoot,
+    branch: releaseBranch,
+    pr: status.ship.releasePrUrl || null,
+    releaseWorktree: releaseRoot,
+  };
   status.ship.releaseWorktree = releaseRoot;
+  status.ship.releaseBranch = releaseBranch;
   status = save(runId, status);
   const baseSha = must(exec, "git", ["rev-parse", "HEAD"], releaseRoot, "read release base").stdout;
   status = verifyDeliveryAncestry(runId, status, releaseHandoff, baseSha, exec);
-  status = await ensureVersionPlan(runId, status, handoff, releaseRoot, { exec, sleep });
-  const stamp = applyVersionStamp(releaseRoot, handoff.version, handoff.summary, now());
-  verifyVersionStamp(releaseRoot, handoff.version, exec);
-  must(exec, "git", ["add", ...stamp.files], releaseRoot, "stage release stamp");
-  const stampDirty = must(
-    exec,
-    "git",
-    ["status", "--porcelain=v1"],
-    releaseRoot,
-    "inspect release stamp",
-  ).stdout;
-  if (stampDirty) {
-    must(
-      exec,
-      "git",
-      ["commit", "-m", `chore: release ${handoff.version}`],
-      releaseRoot,
-      "commit release stamp",
-    );
-  }
-  const sha = must(exec, "git", ["rev-parse", "HEAD"], releaseRoot, "read release commit").stdout;
-  status.ship.releaseSha = sha;
-  status = step(runId, status, "release", "done", sha);
-
-  status = phase(runId, status, "release-push", `pushing ${handoff.base}`);
-  must(exec, "git", ["push", handoff.remote, `HEAD:${handoff.base}`], releaseRoot, "push release stamp");
-  status = step(runId, status, "release-push", "done", `${handoff.remote}/${handoff.base}`);
-
-  status = await waitForCiIfConfigured(runId, status, releaseRoot, sha, handoff, {
+  status = await prepareFormalStamp(runId, status, releaseHandoff, releaseRoot, "release-pr", {
     exec,
     sleep,
     now,
   });
-  return tagRelease(runId, status, releaseHandoff, sha, exec);
+  const releaseHeadSha = status.ship.releaseTransaction.headSha
+    || status.ship.releaseTransaction.stampCommitSha;
+
+  assertNotCancelled(runId);
+  status = phase(runId, status, "release-push", `pushing protected release branch ${releaseBranch}`);
+  must(
+    exec,
+    "git",
+    ["push", "--set-upstream", handoff.remote, releaseBranch],
+    releaseRoot,
+    "push release branch",
+  );
+  const prContext = remoteOptions(runId, handoff, sleep, "release pull request state");
+  const merged = await completeFormalPullRequest(runId, status, releaseHandoff, {
+    exec,
+    sleep,
+    now,
+    context: prContext,
+    urlField: "releasePrUrl",
+    numberField: "releasePrNumber",
+    prStep: "release-push",
+    mergeStep: "ci",
+    prActivity: "finding or creating the protected release pull request",
+    mergeActivity: "waiting for required release pull-request checks and merge",
+    label: "protected release pull request",
+    expectedHeadSha: releaseHeadSha,
+  });
+  status = merged.status;
+  const releaseSha = merged.pr.mergeCommit?.oid || merged.pr.mergeCommit || null;
+  if (!releaseSha) {
+    throw new ShipBlockedError("The release pull request merged without a readable merge commit.", [
+      "Verify the merged release PR, then rerun shipping.",
+    ]);
+  }
+  must(exec, "git", ["fetch", handoff.remote, handoff.base], releaseRoot, "fetch merged release");
+  verifyStampManifestAtRef(exec, releaseRoot, releaseSha, status.ship.releaseTransaction.manifest);
+  status.ship.releaseTransaction.mergeSha = releaseSha;
+  status.ship.releaseSha = releaseSha;
+  status.ship.versionPlan.releaseSha = releaseSha;
+  status = step(runId, status, "ci", "done", "release PR checks completed before merge");
+  return tagRelease(runId, status, releaseHandoff, releaseSha, exec);
+}
+
+function splitPaths(output) {
+  return String(output || "")
+    .split(/\r?\n/)
+    .map((path) => path.trim().replace(/\\/g, "/"))
+    .filter(Boolean)
+    .sort();
+}
+
+function assertExactStampFiles(observed, expected) {
+  const actual = [...observed].sort();
+  const approved = [...expected].map((path) => path.replace(/\\/g, "/")).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(approved)) {
+    throw new ShipBlockedError(
+      `Release stamp mutation drifted from its approved manifest: expected ${approved.join(", ")}; observed ${actual.join(", ") || "none"}.`,
+      ["Do not ship the drifted commit; review the changed manifest and rerun Ship Gate."],
+    );
+  }
+}
+
+function buildStampManifest(exec, cwd, version, files) {
+  const entries = [...files].sort().map((path) => ({
+    path: path.replace(/\\/g, "/"),
+    blob: must(exec, "git", ["hash-object", path], cwd, `hash ${path} release stamp`).stdout,
+  }));
+  return {
+    version,
+    files: entries,
+    digest: createHash("sha256").update(JSON.stringify({ version, files: entries })).digest("hex"),
+  };
+}
+
+function verifyStampManifestAtRef(exec, cwd, ref, manifest) {
+  if (!manifest?.version || !manifest?.files?.length || !manifest.digest) {
+    throw new ShipBlockedError("The release stamp manifest is missing or incomplete.", [
+      "Rerun the approved release transaction before publishing its tag.",
+    ]);
+  }
+  const entries = manifest.files.map((entry) => {
+    const blob = must(
+      exec,
+      "git",
+      ["rev-parse", `${ref}:${entry.path}`],
+      cwd,
+      `verify ${entry.path} in merged release`,
+    ).stdout;
+    return {
+      path: entry.path,
+      blob,
+    };
+  });
+  const digest = createHash("sha256")
+    .update(JSON.stringify({ version: manifest.version, files: entries }))
+    .digest("hex");
+  if (digest !== manifest.digest) {
+    throw new ShipBlockedError("The merged release content does not match the immutable stamp manifest.", [
+      "Do not publish the tag; inspect the merged PR and start a new Delivery Review if content changed.",
+    ]);
+  }
+}
+
+function verifyRemoteBranchHead(exec, cwd, remote, branch, expectedSha) {
+  const result = must(
+    exec,
+    "git",
+    ["ls-remote", "--heads", remote, `refs/heads/${branch}`],
+    cwd,
+    "re-check pushed release head",
+  );
+  const observed = result.stdout.split(/\s+/)[0] || null;
+  if (!expectedSha || observed !== expectedSha) {
+    throw new ShipBlockedError(
+      `Remote release head drifted before merge: expected ${expectedSha || "missing"}; observed ${observed || "missing"}.`,
+      ["Do not merge the drifted pull request; review its head and rerun Ship Gate."],
+    );
+  }
 }
 
 export function prepareReleaseWorkspace(runId, handoff, exec = execCommand) {
@@ -898,11 +1220,11 @@ export function classifyPrBlock(pr, { exec, cwd, insideCheckGrace = false } = {}
   return diagnoseBlockedMerge(pr, exec, cwd);
 }
 
-async function waitForPr(runId, status, handoff, { exec, sleep, now }) {
+async function waitForPr(runId, status, handoff, { exec, sleep, now, prTarget = null }) {
   const deadline = now() + handoff.timeoutSec * 1000;
   const checkRegistrationStartedAt = now();
   const prContext = remoteOptions(runId, handoff, sleep, "pull request state");
-  const target = () => status.ship.prUrl || String(status.ship.prNumber);
+  const target = () => prTarget || status.ship.prUrl || String(status.ship.prNumber);
   const grace = (candidate) =>
     isWithinCheckRegistrationGrace(
       candidate,
@@ -965,7 +1287,7 @@ async function waitForPr(runId, status, handoff, { exec, sleep, now }) {
       must(
         exec,
         "gh",
-        ["pr", "update-branch", status.ship.prUrl || String(status.ship.prNumber)],
+        ["pr", "update-branch", target()],
         handoff.worktree,
         "update pull request branch",
       );
@@ -1227,7 +1549,133 @@ function preflight(handoff, exec) {
   ensureCurrentBranch(exec, handoff.worktree, handoff.branch);
   if (handoff.flow === "formal") {
     assertPathInside(runDir(handoff.runId), handoff.worktree, "ship worktree");
+    const capabilities = inspectFormalProviderCapabilities(handoff, exec);
+    assertFormalProviderCapabilities(capabilities, handoff);
+    if (handoff.providerCapabilities) {
+      const expected = providerCapabilityFingerprint(handoff.providerCapabilities);
+      const observed = providerCapabilityFingerprint(capabilities);
+      if (expected !== observed) {
+        throw new ShipBlockedError("GitHub shipping capabilities changed after preflight.", [
+          "Review the repository policy or identity drift, then rerun Ship Gate.",
+        ]);
+      }
+    } else {
+      handoff.providerCapabilities = capabilities;
+    }
   }
+}
+
+/**
+ * Capture the provider facts that determine whether the selected Formal Flow can finish.
+ * The shape is intentionally provider-neutral even though GitHub is the current adapter.
+ */
+export function inspectFormalProviderCapabilities(handoff, exec = execCommand) {
+  const repository = must(
+    exec,
+    "gh",
+    ["repo", "view", "--json", "nameWithOwner,viewerPermission,autoMergeAllowed,squashMergeAllowed"],
+    handoff.worktree,
+    "inspect repository shipping capabilities",
+  );
+  const repo = parseJson(repository.stdout, "repository shipping capabilities");
+  const identity = must(
+    exec,
+    "gh",
+    ["api", "user", "--jq", ".login"],
+    handoff.worktree,
+    "inspect GitHub identity",
+  ).stdout;
+  const protectionResult = exec(
+    "gh",
+    ["api", `repos/{owner}/{repo}/branches/${encodeURIComponent(handoff.base)}/protection`],
+    { cwd: handoff.worktree },
+  );
+  let protection = null;
+  if (protectionResult.ok) {
+    protection = parseJson(protectionResult.stdout, "base branch protection");
+  } else if (!isUnprotectedBranchResponse(protectionResult)) {
+    throw new ShipBlockedError(
+      `Unable to inspect protection for ${handoff.base}: ${protectionResult.stderr || protectionResult.stdout || "unknown error"}`,
+      ["Grant read access to repository branch protection, then rerun Ship Gate."],
+    );
+  }
+  const requiredChecks = [
+    ...(protection?.required_status_checks?.contexts || []),
+    ...(protection?.required_status_checks?.checks || []).map((check) => check.context),
+  ].filter(Boolean);
+  const permission = String(repo.viewerPermission || "").toUpperCase();
+  const canWrite = ["WRITE", "MAINTAIN", "ADMIN"].includes(permission);
+  return {
+    schema: "agent-manager.provider-capabilities.v1",
+    provider: "github",
+    repository: repo.nameWithOwner || null,
+    identity: String(identity || "").trim() || null,
+    permission,
+    base: {
+      name: handoff.base,
+      protected: Boolean(protection),
+      requiredChecks: [...new Set(requiredChecks)].sort(),
+      requiredApprovals: Number(
+        protection?.required_pull_request_reviews?.required_approving_review_count || 0,
+      ),
+    },
+    autoMerge: Boolean(repo.autoMergeAllowed),
+    mergeMethod: repo.squashMergeAllowed ? "squash" : null,
+    releaseAllowed: canWrite,
+  };
+}
+
+function isUnprotectedBranchResponse(result) {
+  if (Number(result?.status) === 404) return true;
+  return /(?:404|branch not protected|protection is not enabled)/i.test(
+    `${result?.stderr || ""}\n${result?.stdout || ""}`,
+  );
+}
+
+function assertFormalProviderCapabilities(capabilities, handoff) {
+  if (!capabilities.repository || !capabilities.identity) {
+    throw new ShipBlockedError("GitHub repository or shipping identity could not be resolved.", [
+      "Authenticate gh for the target repository, then rerun Ship Gate.",
+    ]);
+  }
+  if (!capabilities.releaseAllowed) {
+    throw new ShipBlockedError(
+      `GitHub identity ${capabilities.identity} has ${capabilities.permission || "unknown"} permission; Formal Flow requires write permission.`,
+      ["Grant write permission to the shipping identity, then rerun Ship Gate."],
+    );
+  }
+  if (!capabilities.autoMerge) {
+    throw new ShipBlockedError("GitHub auto-merge is disabled for this repository.", [
+      "Enable repository auto-merge before approving Formal Flow shipping.",
+    ]);
+  }
+  if (capabilities.mergeMethod !== "squash") {
+    throw new ShipBlockedError("GitHub squash merge is disabled for this repository.", [
+      "Enable squash merge before approving Formal Flow shipping.",
+    ]);
+  }
+  if (capabilities.base.requiredApprovals > 0) {
+    throw new ShipBlockedError(
+      `${handoff.base} requires ${capabilities.base.requiredApprovals} GitHub approving review(s); the approved transaction cannot complete without another human approval.`,
+      [
+        "Set required approving reviews to 0 for the independently reviewed shipping path.",
+        "Keep the repository policy and ship outside automated Formal Flow.",
+      ],
+    );
+  }
+}
+
+function providerCapabilityFingerprint(capabilities) {
+  return JSON.stringify({
+    provider: capabilities?.provider || null,
+    repository: capabilities?.repository || null,
+    identity: capabilities?.identity || null,
+    permission: capabilities?.permission || null,
+    base: capabilities?.base || null,
+    autoMerge: Boolean(capabilities?.autoMerge),
+    mergeMethod: capabilities?.mergeMethod || null,
+    releaseAllowed: Boolean(capabilities?.releaseAllowed),
+  });
 }
 
 function ensureCurrentBranch(exec, cwd, branch) {

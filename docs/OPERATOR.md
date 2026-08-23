@@ -608,10 +608,12 @@ agent-manager ship <runId> \
   --detach --json
 ```
 
-Formal release stamping uses a private run-owned worktree. Local changes in the
-operator's shared checkout do not block or participate in the release. GitHub
-check registration has a 90-second grace period by default; override it with
-`--check-grace-sec <seconds>` when needed.
+Formal preflight inspects the GitHub repository, shipping identity and
+permission, base protection, required checks and review count, auto-merge, and
+squash-merge support before it commits or pushes. The frozen capability set is
+checked again by the detached supervisor; permission, identity, or policy drift
+fails closed. GitHub check registration has a 90-second grace period by
+default; override it with `--check-grace-sec <seconds>` when needed.
 
 Formal or Simple Flow through version and tag:
 
@@ -625,16 +627,26 @@ agent-manager ship <runId> \
 ```
 
 For a Formal delivery train, use `through-pr` on earlier targets and `all` only
-on the final target. Release stamping proves that every recorded target merge
-SHA is an ancestor of the release base. Simple Flow pushes the reviewed
-single/integrated worktree commit directly to its base branch and then tags it.
+on the final target. An open final delivery PR receives the deterministic stamp
+before its required checks and squash merge, so one feature release normally
+uses one PR. The stamp commit is bound to the approved version, exact file/blob
+manifest, and pre-stamp head. The pushed head is rechecked before auto-merge.
+Prior delivery merges must be present in the base.
 
-The detached supervisor commits only when the approved worktree is dirty,
-pushes the recorded branch, finds or creates the pull request, enables
-`gh pr merge --auto --squash`, and watches checks until merge. For `all`, it
-updates the existing version stamp set, runs `check:version` when provided,
-pushes the release commit, waits for configured GitHub Actions workflows, and
-then publishes the matching tag.
+If the final delivery PR is already merged, Formal Flow creates or reuses one
+run-owned release branch and PR from a private worktree. It verifies every
+recorded target merge in the base, waits for required checks, squash-merges the
+release PR, and tags that merge without another approval round. Retries reuse
+the same stamp commit and PR. Local changes in the operator's shared checkout
+do not block or participate in this fallback. Formal Flow never pushes a
+release stamp directly to the base. Simple Flow is unchanged: it pushes the
+reviewed single/integrated worktree commit directly to its base and then tags.
+
+The detached supervisor commits only approved work, pushes a non-base branch,
+finds or creates the pull request, enables `gh pr merge --auto --squash`, and
+watches required checks until merge. For `all`, it updates the existing version
+stamp set, runs `check:version` when provided, verifies the immutable stamp at
+the merge SHA, and then publishes the matching tag.
 
 Optional overrides are `--repo`, `--worktree`, `--branch`, `--base`,
 `--remote`, and `--pr`. Use them only when the run metadata is incomplete and

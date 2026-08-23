@@ -27,6 +27,7 @@ const {
   resolveShipBase,
   prepareShipHandoff,
   prepareReleaseWorkspace,
+  preflightShipHandoff,
   queueShip,
   resolveSpawnCommand,
   runShip,
@@ -44,6 +45,29 @@ function ok(stdout = "") {
 
 function fail(stderr = "failed") {
   return { ok: false, status: 1, stdout: "", stderr };
+}
+
+function providerCapabilityResponse(command, args, overrides = {}) {
+  if (command === "gh" && args[0] === "repo" && args[1] === "view") {
+    return ok(JSON.stringify({
+      nameWithOwner: "example/fixture",
+      viewerPermission: overrides.permission || "WRITE",
+      autoMergeAllowed: overrides.autoMerge ?? true,
+      squashMergeAllowed: overrides.squashMerge ?? true,
+    }));
+  }
+  if (command === "gh" && args[0] === "api" && args[1] === "user") {
+    return ok(overrides.identity || "ship-bot");
+  }
+  if (command === "gh" && args[0] === "api" && String(args[1]).includes("/protection")) {
+    return ok(JSON.stringify({
+      required_status_checks: { contexts: overrides.requiredChecks || ["quality"] },
+      required_pull_request_reviews: {
+        required_approving_review_count: overrides.requiredApprovals || 0,
+      },
+    }));
+  }
+  return null;
 }
 
 test("Windows npm commands run through cmd.exe without enabling shell mode", () => {
@@ -108,6 +132,8 @@ function writeRun(runId, overrides = {}) {
 function formalExec(branch, mode = "merged") {
   let views = 0;
   return (command, args) => {
+    const provider = providerCapabilityResponse(command, args);
+    if (provider) return provider;
     if (command === "git") {
       if (args.includes("--version")) return ok("git version test");
       if (args.includes("branch") && args.includes("--show-current")) return ok(branch);
@@ -173,6 +199,52 @@ test("ship handoff requires the exact approval and release inputs", () => {
   });
   assert.equal(handoff.flow, "formal");
   assert.equal(handoff.branch, `am/${runId}/integrate`);
+});
+
+test("Formal preflight freezes provider capabilities and fails before mutation on permission or policy drift", () => {
+  const runId = "run-provider-preflight";
+  writeRun(runId);
+  const handoff = prepareShipHandoff(runId, {
+    approve: "through-pr",
+    commitMessage: "feat: approved branch",
+  });
+  const calls = [];
+  const makeExec = (overrides = {}) => (command, args) => {
+    calls.push([command, ...args]);
+    const provider = providerCapabilityResponse(command, args, overrides);
+    if (provider) return provider;
+    if (command === "git" && args.includes("--version")) return ok("git version test");
+    if (command === "git" && args.includes("branch")) return ok(handoff.branch);
+    if (command === "git") return ok();
+    if (command === "gh" && args[0] === "--version") return ok("gh version test");
+    if (command === "gh" && args[0] === "auth") return ok("authenticated");
+    return fail(`unexpected command: ${command} ${args.join(" ")}`);
+  };
+
+  preflightShipHandoff(handoff, makeExec());
+  assert.equal(handoff.providerCapabilities.base.protected, true);
+  assert.deepEqual(handoff.providerCapabilities.base.requiredChecks, ["quality"]);
+  assert.equal(handoff.providerCapabilities.identity, "ship-bot");
+  assert.throws(
+    () => preflightShipHandoff(handoff, makeExec({ identity: "different-bot" })),
+    /capabilities changed after preflight/,
+  );
+
+  const denied = { ...handoff, providerCapabilities: null };
+  assert.throws(
+    () => preflightShipHandoff(denied, makeExec({ permission: "READ" })),
+    /requires write permission/,
+  );
+  const reviews = { ...handoff, providerCapabilities: null };
+  assert.throws(
+    () => preflightShipHandoff(reviews, makeExec({ requiredApprovals: 1 })),
+    /requires 1 GitHub approving review/,
+  );
+  assert.equal(
+    calls.some((call) => call[0] === "git" && ["add", "commit", "push"].includes(call[1])),
+    false,
+    "capability failures happen before any repository mutation",
+  );
 });
 
 test("a symbolic base ref is a moving pointer or a bare commit, not a branch", () => {
@@ -364,7 +436,136 @@ test("formal release preparation uses a private worktree and leaves a dirty shar
   );
 });
 
-test("Formal all release completes while the shared checkout is dirty", async () => {
+test("Formal all stamps the open delivery PR, waits for its required check, and never pushes the base", async () => {
+  const runId = "run-formal-one-pr";
+  const repo = join(root, "formal-one-pr-repo");
+  const remote = join(root, "formal-one-pr-remote.git");
+  const laneWorktree = join(runsRoot, runId, "lane", "wt");
+  const branch = `am/${runId}/lane`;
+  mkdirSync(repo, { recursive: true });
+  mkdirSync(join(runsRoot, runId, "lane"), { recursive: true });
+  execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
+  execFileSync("git", ["init", "--bare", "-b", "main", remote], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "config", "user.name", "Test"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "config", "user.email", "test@example.invalid"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", remote], { stdio: "ignore" });
+  writeFileSync(
+    join(repo, "Version.md"),
+    "---\nenabled: true\ncurrent: 1.0.0\ndev_flow: formal\n---\n\n# Version History\n\n## 1.0.0 - 2026-07-01\n\nInitial release.\n",
+  );
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "one-pr-fixture", version: "1.0.0" }, null, 2) + "\n");
+  execFileSync("git", ["-C", repo, "add", "-A"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "commit", "-m", "chore: base"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "push", "-u", "origin", "main"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "worktree", "add", "-b", branch, laneWorktree, "main"], { stdio: "ignore" });
+  writeFileSync(join(laneWorktree, "feature.txt"), "approved feature\n");
+
+  writeRun(runId, {
+    repoRoot: repo,
+    integrate: undefined,
+    delivery: {
+      schema: "agent-manager.delivery.v1",
+      mode: "single",
+      state: "ship_gate_pending",
+      releaseRequired: true,
+      review: { state: "accepted", latestPass: 1, verdict: "accept", reviewer: "test-manager", history: [] },
+      targets: [{
+        id: "lane",
+        laneId: "lane",
+        state: "changes_ready",
+        branch,
+        base: "main",
+        worktree: laneWorktree,
+        changedFiles: ["feature.txt"],
+        prUrl: "https://example.invalid/pull/11",
+        mergeSha: null,
+      }],
+      release: { state: "pending", sha: null, tag: null, verifiedMergeShas: [] },
+    },
+  });
+  const handoff = prepareShipHandoff(runId, {
+    approve: "all",
+    target: "lane",
+    commitMessage: "feat: approved feature",
+    version: "1.1.0",
+    summary: "Ship the approved feature and release stamp together.",
+    pollSec: 1,
+    timeoutSec: 5,
+  });
+  queueShip(runId, handoff);
+  const calls = [];
+  let mergeRequested = false;
+  let postMergeViews = 0;
+  let releaseSha = null;
+  const exec = (command, args, options) => {
+    calls.push([command, ...args]);
+    const provider = providerCapabilityResponse(command, args);
+    if (provider) return provider;
+    if (command === "gh" && args[0] === "--version") return ok("gh version test");
+    if (command === "gh" && args[0] === "auth") return ok("authenticated");
+    if (command === "gh" && args[0] === "pr" && args[1] === "merge") {
+      mergeRequested = true;
+      return ok();
+    }
+    if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+      if (mergeRequested) postMergeViews += 1;
+      if (mergeRequested && postMergeViews >= 2) {
+        releaseSha = execFileSync(
+          "git",
+          ["--git-dir", remote, "rev-parse", `refs/heads/${branch}`],
+          { encoding: "utf8" },
+        ).trim();
+        execFileSync("git", ["--git-dir", remote, "update-ref", "refs/heads/main", releaseSha]);
+        return ok(JSON.stringify({
+          state: "MERGED",
+          mergeStateStatus: "UNKNOWN",
+          mergeable: "UNKNOWN",
+          statusCheckRollup: [{ name: "quality", status: "COMPLETED", conclusion: "SUCCESS" }],
+          url: "https://example.invalid/pull/11",
+          number: 11,
+          headRefName: branch,
+          baseRefName: "main",
+          mergeCommit: { oid: releaseSha },
+        }));
+      }
+      return ok(JSON.stringify({
+        state: "OPEN",
+        mergeStateStatus: mergeRequested ? "BLOCKED" : "CLEAN",
+        mergeable: "MERGEABLE",
+        statusCheckRollup: mergeRequested
+          ? [{ name: "quality", status: "IN_PROGRESS", conclusion: null }]
+          : [],
+        url: "https://example.invalid/pull/11",
+        number: 11,
+        headRefName: branch,
+        baseRefName: "main",
+      }));
+    }
+    return execCommand(command, args, options);
+  };
+  const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
+  assert.equal(result.state, "released", result.ship.error);
+  assert.equal(result.ship.releaseTransaction.mode, "delivery-pr");
+  assert.equal(result.ship.releasePrUrl, null);
+  assert.equal(result.ship.releaseSha, releaseSha);
+  assert.equal(postMergeViews, 2, "the required check is observed before the merged state");
+  assert.equal(
+    calls.some((call) => call[0] === "gh" && call[1] === "pr" && call[2] === "create"),
+    false,
+    "the existing delivery PR remains the only PR",
+  );
+  assert.equal(
+    calls.some((call) => call[0] === "git" && call[1] === "push" && call.includes("HEAD:main")),
+    false,
+    "Formal Flow never pushes a stamp directly to the base",
+  );
+  assert.match(
+    execFileSync("git", ["--git-dir", remote, "show", "main:Version.md"], { encoding: "utf8" }),
+    /current: 1\.1\.0/,
+  );
+});
+
+test("Formal protected release PR is reused on retry while the shared checkout stays dirty", async () => {
   const runId = "run-formal-dirty-release";
   const repo = join(root, "formal-dirty-repo");
   const remote = join(root, "formal-dirty-remote.git");
@@ -422,10 +623,33 @@ test("Formal all release completes while the shared checkout is dirty", async ()
     timeoutSec: 5,
   });
   queueShip(runId, handoff);
+  let releasePrCreated = false;
+  let releasePrCreateCount = 0;
+  let releaseMergeRequested = false;
+  let allowReleaseMerge = false;
+  let releasePrMerged = false;
+  let releaseSha = null;
   const exec = (command, args, options) => {
+    const provider = providerCapabilityResponse(command, args);
+    if (provider) return provider;
     if (command === "gh" && args[0] === "--version") return ok("gh version test");
     if (command === "gh" && args[0] === "auth") return ok("authenticated");
     if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+      const target = String(args[2]);
+      if (target.includes("release-") && !releasePrCreated) return fail("no pull requests found");
+      if (target.includes("pull/10") || target.includes("release-")) {
+        return ok(JSON.stringify({
+          state: releasePrMerged ? "MERGED" : "OPEN",
+          mergeStateStatus: releasePrMerged ? "UNKNOWN" : releaseMergeRequested && !allowReleaseMerge ? "DIRTY" : "CLEAN",
+          mergeable: releasePrMerged ? "UNKNOWN" : releaseMergeRequested && !allowReleaseMerge ? "CONFLICTING" : "MERGEABLE",
+          statusCheckRollup: releasePrMerged ? [{ name: "quality", status: "COMPLETED", conclusion: "SUCCESS" }] : [],
+          url: "https://example.invalid/pull/10",
+          number: 10,
+          headRefName: `am/${runId}/release-1.1.0`,
+          baseRefName: "main",
+          mergeCommit: releasePrMerged ? { oid: releaseSha } : null,
+        }));
+      }
       return ok(JSON.stringify({
         state: "MERGED",
         mergeStateStatus: "UNKNOWN",
@@ -438,10 +662,46 @@ test("Formal all release completes while the shared checkout is dirty", async ()
         mergeCommit: { oid: mergeSha },
       }));
     }
+    if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+      releasePrCreated = true;
+      releasePrCreateCount += 1;
+      return ok("https://example.invalid/pull/10");
+    }
+    if (command === "gh" && args[0] === "pr" && args[1] === "merge") {
+      releaseMergeRequested = true;
+      if (!allowReleaseMerge) return ok();
+      releaseSha = execFileSync(
+        "git",
+        ["--git-dir", remote, "rev-parse", `refs/heads/am/${runId}/release-1.1.0`],
+        { encoding: "utf8" },
+      ).trim();
+      execFileSync("git", ["--git-dir", remote, "update-ref", "refs/heads/main", releaseSha]);
+      releasePrMerged = true;
+      return ok();
+    }
     return execCommand(command, args, options);
   };
-  const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
-  assert.equal(result.state, "released");
+  const blocked = await runShip(runId, handoff, { exec, sleep: async () => {} });
+  assert.equal(blocked.state, "blocked");
+  assert.match(blocked.ship.error, /merge conflicts/);
+  assert.equal(releasePrCreateCount, 1);
+
+  allowReleaseMerge = true;
+  releaseMergeRequested = false;
+  const retry = prepareShipHandoff(runId, {
+    approve: "all",
+    target: "lane",
+    version: "1.1.0",
+    summary: "Release from an isolated workspace.",
+    pollSec: 1,
+    timeoutSec: 5,
+  });
+  queueShip(runId, retry);
+  const result = await runShip(runId, retry, { exec, sleep: async () => {} });
+  assert.equal(result.state, "released", result.ship.error);
+  assert.equal(result.ship.attempt, 2);
+  assert.equal(result.ship.releasePrUrl, "https://example.invalid/pull/10");
+  assert.equal(releasePrCreateCount, 1, "the blocked release PR is reused instead of duplicated");
   assert.equal(result.ship.tag, "v1.1.0");
   assert.match(result.ship.releaseWorktree, /ship[\\/]release[\\/]wt$/);
   assert.equal(execFileSync("git", ["-C", repo, "branch", "--show-current"], { encoding: "utf8" }).trim(), "main");

@@ -24,8 +24,10 @@ Read [reporting.md](./reporting.md) before posting any ship status.
 2. Map the approval exactly:
    - `through-pr`: commit if needed, push, create or find the pull request,
      enable squash auto-merge, and stop after merge.
-   - `all`: perform `through-pr`, then create the approved version stamp,
-     push it, wait for release CI when configured, and publish the tag.
+   - `all`: when the delivery PR is open, bind the approved version stamp to
+     that branch before final CI and squash merge, then tag the merge. When the
+     delivery PR is already merged, create or reuse one protected release PR,
+     wait for its required checks and squash merge, then tag that merge.
 3. Always run `agent-manager ship ... --detach`. Never poll CI or merge in the
    host chat after handoff.
 4. Pass the approved commit message, version, and public release summary. Do
@@ -36,6 +38,9 @@ Read [reporting.md](./reporting.md) before posting any ship status.
    operator to click Merge.
 7. Do not bypass reviews, branch protection, failed CI, version checks, merge
    conflicts, or authentication failures.
+   Formal preflight must resolve the repository, shipping identity, permission,
+   protected-base policy, required checks/reviews, auto-merge, and squash-merge
+   support before any commit or push. Capability or identity drift fails closed.
 8. A blocked ship phase escalates once with actionable options. Do not guess,
    open another Delivery Review pass, or silently downgrade `all` to
    `through-pr`.
@@ -51,15 +56,18 @@ Read [reporting.md](./reporting.md) before posting any ship status.
 11. A delivery train ships one declared target at a time with `--target <id>`.
     A target with no changed files must fail closed. A completed target does not
     mean the overall run is complete while other targets remain.
-12. Use `all` only on the final delivery target. Before a release stamp or tag,
-    require every target merge SHA and prove each is an ancestor of the release
-    commit.
+12. Use `all` only on the final delivery target. Before a fallback release PR,
+    require every target merge SHA and prove each is an ancestor of its base.
+    For a one-PR release, prove prior target merges are in the base and record
+    the final target's squash merge before tagging.
 13. End every board with the reporting transition. Continue automatically for
     detached progress and already-approved train targets. Wait only for a
     blocker or new Ship Gate authority. Never report a completed target and
     stop without naming and taking the next authorized action.
-14. Formal release work runs only in the private release worktree under the run
-    directory. Never switch, clean, stamp, or require a clean shared checkout.
+14. Formal Flow never pushes `HEAD:<base>`. An open delivery PR receives the
+    stamp in its approved run-owned worktree. Only the already-merged fallback
+    uses the private release worktree under the run directory. Never switch,
+    clean, stamp, or require a clean shared checkout.
 15. Allow the bounded check-registration grace period before diagnosing a
     missing required check. Routine CI registration and execution are wait
     states, not operator blockers.
@@ -133,7 +141,8 @@ override.
 - `state`: `queued | running | blocked | done | failed | cancelled`
 - `phase`: `preflight | commit | push | pr | merge | release | release-push | ci | tag | done`
 - delivery target id, approval, branch, base, remote, pull-request URL, merge SHA, release SHA,
-  tag, steps, last activity, and optional `needsInput`
+  optional fallback release-PR URL, immutable release transaction/provider
+  capability evidence, tag, steps, last activity, and optional `needsInput`
 
 Private ship artifacts are stored under
 `$AGENT_MANAGER_RUNS_ROOT/<runId>/ship/`.

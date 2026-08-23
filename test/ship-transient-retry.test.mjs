@@ -34,6 +34,25 @@ function fail(stderr = "failed") {
   return { ok: false, status: 1, stdout: "", stderr };
 }
 
+function providerCapabilityResponse(command, args) {
+  if (command === "gh" && args[0] === "repo" && args[1] === "view") {
+    return ok(JSON.stringify({
+      nameWithOwner: "example/fixture",
+      viewerPermission: "WRITE",
+      autoMergeAllowed: true,
+      squashMergeAllowed: true,
+    }));
+  }
+  if (command === "gh" && args[0] === "api" && args[1] === "user") return ok("ship-bot");
+  if (command === "gh" && args[0] === "api" && String(args[1]).includes("/protection")) {
+    return ok(JSON.stringify({
+      required_status_checks: { contexts: ["quality"] },
+      required_pull_request_reviews: { required_approving_review_count: 0 },
+    }));
+  }
+  return null;
+}
+
 function writeRun(runId, overrides = {}) {
   const dir = join(runsRoot, runId);
   const worktree = join(dir, "integrate", "wt");
@@ -81,9 +100,11 @@ function writeRun(runId, overrides = {}) {
  * entry is either an exec result (an injected transport failure) or a PR payload.
  */
 function prExec(branch, prViews) {
-  const calls = { prView: 0 };
+  const calls = { prView: 0, prCreate: 0, updateBranch: 0 };
   const queue = [...prViews];
   const exec = (command, args) => {
+    const provider = providerCapabilityResponse(command, args);
+    if (provider) return provider;
     if (command === "git") {
       if (args.includes("--version")) return ok("git version test");
       if (args.includes("branch") && args.includes("--show-current")) return ok(branch);
@@ -109,7 +130,14 @@ function prExec(branch, prViews) {
       }));
     }
     if (command === "gh" && args[0] === "pr" && args[1] === "merge") return ok();
-    if (command === "gh" && args[0] === "api") return fail("no protection");
+    if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+      calls.prCreate += 1;
+      return ok("https://example.invalid/pull/12");
+    }
+    if (command === "gh" && args[0] === "pr" && args[1] === "update-branch") {
+      calls.updateBranch += 1;
+      return ok();
+    }
     return fail(`unexpected command: ${command} ${args.join(" ")}`);
   };
   exec.calls = calls;
@@ -195,6 +223,26 @@ test("a transient GitHub error is retried with backoff and never blocks the ship
   assert.equal(result.ship.remoteRetries, 2, "both transport failures were retried");
   assert.deepEqual(delays.slice(0, 2), [1_000, 2_000], "backoff grew between attempts");
   assert.equal(exec.calls.prView, 4);
+});
+
+test("a behind delivery branch is updated in place without opening a new pull request", async () => {
+  const runId = "run-ship-behind-update";
+  writeRun(runId);
+  const handoff = prepareShipHandoff(runId, {
+    approve: "through-pr",
+    pollSec: 1,
+    timeoutSec: 5,
+  });
+  queueShip(runId, handoff);
+  const exec = prExec(handoff.branch, [
+    { state: "OPEN", mergeStateStatus: "CLEAN" },
+    { state: "OPEN", mergeStateStatus: "BEHIND" },
+    MERGED,
+  ]);
+  const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
+  assert.equal(result.state, "merged");
+  assert.equal(exec.calls.updateBranch, 1);
+  assert.equal(exec.calls.prCreate, 0, "the existing pull request is retained");
 });
 
 test("consecutive transient failures block only after the retry budget is spent", async () => {

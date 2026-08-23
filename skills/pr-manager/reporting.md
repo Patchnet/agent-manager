@@ -48,6 +48,8 @@ outcome.
 | **branch** | `<branch>` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **PR** | `<URL or n/a>` |
+| **release PR** | `<ship.releasePrUrl or n/a>` |
+| **release transaction** | `<ship.releaseTransaction.mode or n/a>` |
 | **last activity** | `<ship.lastActivity>` |
 
 | Step | State | Detail |
@@ -76,6 +78,7 @@ When `ship.phase=ci` or GitHub check telemetry is present, append:
 | **phase** | `<ship.phase>` |
 | **target** | `<ship.targetId or single>` |
 | **PR** | `<URL or n/a>` |
+| **release PR** | `<ship.releasePrUrl or n/a>` |
 | **state** | `blocked` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 
@@ -109,6 +112,7 @@ Operator direction. PR Manager does not bypass or guess.
 | **overall delivery** | `<status.state>` |
 | **approval** | `through-pr \| all` |
 | **PR** | `<URL or n/a>` |
+| **release PR** | `<ship.releasePrUrl or n/a>` |
 | **merge SHA** | `<SHA or n/a>` |
 | **release SHA** | `<SHA or n/a>` |
 | **tag** | `<tag or n/a>` |
