@@ -40,6 +40,47 @@ test("lane setup completes before the worker starts and records evidence", async
   assert.equal(readFileSync(join(status.lanes[0].worktree, "setup.txt"), "utf8"), "ready\n");
 });
 
+test("equivalent lanes reuse copied setup output without sharing mutable files", async () => {
+  const runId = "run-test-lane-setup-cache";
+  const sharedSetup = {
+    timeout_sec: 30,
+    commands: [{
+      command: "node",
+      args: ["-e", "require('node:fs').writeFileSync('AGENTS.md','cached setup output\\n')"],
+    }],
+  };
+  const workflow = writeWorkflow("lane-setup-cache", baseWorkflow([
+    {
+      id: "cache-source",
+      scope: "source.txt",
+      prompt: "write source fixture",
+      setup: sharedSetup,
+      fake: { write: { path: "source.txt", content: "source\n" } },
+    },
+    {
+      id: "cache-consumer",
+      scope: "consumer.txt",
+      prompt: "write consumer fixture",
+      setup: sharedSetup,
+      fake: { write: { path: "consumer.txt", content: "consumer\n" } },
+    },
+  ]));
+
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  const status = await waitForStatus(runId, (item) => item.state === "delivery_review_pending");
+  const miss = status.lanes.find((lane) => lane.setup.cache?.outcome === "miss");
+  const hit = status.lanes.find((lane) => lane.setup.cache?.outcome === "hit");
+  assert.ok(miss);
+  assert.ok(hit);
+  assert.equal(miss.setup.cache.stored, true);
+  assert.equal(hit.setup.cache.restored, true);
+  assert.equal(hit.setup.commands[0].cached, true);
+  assert.equal(readFileSync(join(hit.worktree, "AGENTS.md"), "utf8"), "cached setup output\n");
+
+  writeFileSync(join(hit.worktree, "AGENTS.md"), "consumer mutation\n");
+  assert.equal(readFileSync(join(miss.worktree, "AGENTS.md"), "utf8"), "cached setup output\n");
+});
+
 test("scope violations fail the lane and publish run_failed", async () => {
   const runId = "run-test-scope";
   const workflow = writeWorkflow("scope", baseWorkflow([

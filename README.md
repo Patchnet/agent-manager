@@ -428,6 +428,7 @@ These filled examples follow the canonical
 ## What the core provides
 
 - One isolated Git worktree per lane
+- Private run-local setup snapshots that restore independent dependency copies
 - Claude and Codex harnesses behind one workflow format
 - Detached launch with authoritative `status.json`
 - Actionable Master handoff for Codex, Claude Code, and Cursor
