@@ -206,6 +206,12 @@ export function formatStatus(status) {
     if (status.delivery.release?.tag) lines.push(`      release: ${status.delivery.release.tag}  sha=${status.delivery.release.sha || "-"}`);
     lines.push("");
   }
+  if (status.reconciliation) {
+    lines.push(
+      `reconciliation: ${status.reconciliation.state}  provider=${status.reconciliation.provider}  at=${status.reconciliation.reconciledAt || "-"}`,
+      "",
+    );
+  }
   if (status.authorization) {
     lines.push(`authorization: ${status.authorization.state}  level=${status.authorization.level || "-"}  valid=${status.authorization.valid ? "yes" : "no"}`);
     lines.push(`      grant: ${status.authorization.grantDigest || "-"}`);
@@ -347,6 +353,13 @@ function eventFingerprint(status) {
           grantDigest: status.authorization.grantDigest,
           receiptDigest: status.authorization.receiptDigest || null,
           failureCode: status.authorization.failureCode || null,
+        }
+      : null,
+    reconciliation: status.reconciliation
+      ? {
+          state: status.reconciliation.state,
+          provider: status.reconciliation.provider,
+          reconciledAt: status.reconciliation.reconciledAt,
         }
       : null,
   });

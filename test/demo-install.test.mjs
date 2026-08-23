@@ -28,6 +28,7 @@ import { formatDoctor, runDoctor } from "../src/doctor.mjs";
 import {
   hostNames,
   hostSkillsRoot,
+  INSTALL_MARKER,
   installCursor,
   installHost,
   INSTALLED_SKILLS,
@@ -253,7 +254,31 @@ test("Doctor gives the exact host-skill install action", (t) => {
 
   installHost("codex", { home });
   const after = runDoctor({ repo: ROOT, home });
-  assert.equal(after.checks.find((check) => check.name === "host skill").detail, "installed for: codex");
+  assert.match(after.checks.find((check) => check.name === "host skill").detail, /^installed for: codex@\d+\.\d+\.\d+/);
+  assert.equal(after.versions.runtimeVersion, after.version);
+  assert.deepEqual(after.versions.installedHostSkills.map((item) => item.host), ["codex"]);
+  assert.equal(after.versions.installedHostSkills[0].version, after.version);
+  assert.equal(after.activation.required, false);
+});
+
+test("Doctor detects a stale managed skill and the idempotent activation action repairs its receipt", (t) => {
+  const home = scratch("am-install-activation-");
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  installHost("codex", { home });
+  const markerPath = join(hostSkillsRoot("codex", { home }), "agent-manager", INSTALL_MARKER);
+  const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+  writeFileSync(markerPath, JSON.stringify({ ...marker, version: "0.0.0" }));
+
+  const stale = runDoctor({ repo: ROOT, home });
+  assert.equal(stale.versions.drift, true);
+  assert.equal(stale.activation.command, "agent-manager install codex");
+  assert.equal(stale.activation.required, true);
+
+  const activated = installHost("codex", { home });
+  assert.equal(activated.results.every((item) => item.action === "unchanged"), true);
+  const current = runDoctor({ repo: ROOT, home });
+  assert.equal(current.activation.required, false);
+  assert.equal(current.versions.drift, false);
 });
 
 test("the reference fake workflow remains a documented placeholder", () => {

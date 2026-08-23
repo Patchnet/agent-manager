@@ -138,6 +138,23 @@ export function masterReturnSummary(channel) {
   };
 }
 
+/** Mark only the watcher owned by this process as stopped. Run state is untouched. */
+export function finalizeMasterReturnWatcher(runId, reason, {
+  pid = process.pid,
+  at = new Date().toISOString(),
+} = {}) {
+  const channel = readMasterReturn(runId);
+  if (!channel || channel.watcherPid !== pid) return null;
+  const next = {
+    ...channel,
+    ...(reason === "watcher_ttl"
+      ? { state: "failed", lastError: `return watcher TTL reached at ${at}; run state is unchanged` }
+      : channel.state === "watching" ? { state: "configured" } : {}),
+  };
+  delete next.watcherPid;
+  return writeMasterReturn(runId, next);
+}
+
 export function shouldReturnToMaster(payload) {
   if (!payload) return false;
   if (["needs_input", "terminal"].includes(payload.reason)) return true;

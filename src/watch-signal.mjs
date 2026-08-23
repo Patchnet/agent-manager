@@ -2,9 +2,11 @@ import { RUNS_ROOT } from "./paths.mjs";
 import { isTerminalState, latestRunId, readStatus } from "./status.mjs";
 import { deriveOperatorCadence, OPERATOR_TRANSITIONS } from "./cadence.mjs";
 import { createNotifier, notifyEnabled } from "./notify.mjs";
+import { finalizeMasterReturnWatcher } from "./master-return.mjs";
 
 const DEFAULT_POLL_MS = 2_000;
 const DEFAULT_HEARTBEAT_SEC = 180;
+export const DEFAULT_WATCHER_TTL_SEC = 7 * 24 * 60 * 60;
 
 /**
  * Stable fingerprint of run/lane states that should wake Master Dev.
@@ -165,6 +167,7 @@ export async function runWatchSignal(runId, {
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
   maxTicks = Infinity,
+  watcherTtlSec = DEFAULT_WATCHER_TTL_SEC,
   notify = null,
   notifier = null,
   env = process.env,
@@ -183,6 +186,7 @@ export async function runWatchSignal(runId, {
   let previous = null;
   let lastHeartbeatAt = 0;
   let ticks = 0;
+  const watcherStartedAt = now();
 
   const emitWake = async (payload, status) => {
     write(formatWakeLine(id, payload));
@@ -208,6 +212,7 @@ export async function runWatchSignal(runId, {
       if (next && isTerminalState(next.state)) {
         const payload = buildPayload(next, "terminal");
         await emitWake(payload, next);
+        finalizeMasterReturnWatcher(id, "terminal");
         return payload;
       }
       if (next) {
@@ -248,7 +253,23 @@ export async function runWatchSignal(runId, {
         // state changes reset the heartbeat clock so pulses stay spaced
         lastHeartbeatAt = now();
       }
-      if (payload.reason === "terminal") return payload;
+      if (payload.reason === "terminal") {
+        finalizeMasterReturnWatcher(id, "terminal");
+        return payload;
+      }
+    }
+
+    if (Number.isFinite(watcherTtlSec) && watcherTtlSec >= 0 &&
+      now() - watcherStartedAt >= watcherTtlSec * 1000) {
+      const expired = {
+        reason: "watcher_expired",
+        runId: id,
+        state: next?.state || null,
+        recoverable: !isTerminalState(next?.state),
+      };
+      write(`watch-signal ${id} watcher TTL reached; run state unchanged (${expired.state || "missing"})`);
+      finalizeMasterReturnWatcher(id, "watcher_ttl");
+      return expired;
     }
 
     await sleep(pollMs);
