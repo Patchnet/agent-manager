@@ -114,11 +114,16 @@ export function deriveOperatorCadence(status, { wakeReason = "state_change" } = 
             "PR Manager · Authorized handoff",
           );
         }
+        const recordedFailure = !authorization.exists && status.authorization?.valid === false
+          ? status.authorization
+          : null;
+        const action = authorization.action || recordedFailure?.nextAction
+          || "Use the manual Ship Gate or create a new reviewed grant.";
         return cadence(
           "conditional_authority_blocked",
           OPERATOR_TRANSITIONS.WAIT_OPERATOR,
-          authorization.action || "Use the manual Ship Gate or create a new reviewed grant.",
-          [authorization.action || "operator review required"],
+          action,
+          [action],
           "Agent Manager · Authorization escalation",
         );
       }

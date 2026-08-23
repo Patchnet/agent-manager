@@ -15,7 +15,11 @@ import {
 import { GoalModelError, linkGoalArtifact, updateArtifactLink } from "./goals.mjs";
 import { ratificationGap } from "./ratify.mjs";
 import { writeReport } from "./report.mjs";
-import { resolveReviewerIdentity } from "./authorization.mjs";
+import {
+  AuthorizationError,
+  materializeReviewAuthorization,
+  resolveReviewerIdentity,
+} from "./authorization.mjs";
 
 const AWAITING_REVIEW_STATES = ["delivery_review_pending", "correction_pending", "ship_gate_pending"];
 /**
@@ -33,6 +37,7 @@ export function buildDeliveryReview(runId, {
   verdict = null,
   reviewer = null,
   reviewerRole = null,
+  automationPolicy = null,
   notes = null,
   recovered = false,
 } = {}) {
@@ -59,6 +64,32 @@ export function buildDeliveryReview(runId, {
   if (verdict) {
     const reviewerIdentity = resolveReviewerIdentity(status, reviewerRole);
     recordReviewDecision(status, { pass, verdict, reviewer, reviewerIdentity, notes });
+    if (automationPolicy && ["accept", "accept-with-notes"].includes(verdict)) {
+      try {
+        const materialized = materializeReviewAuthorization(status, { policyPath: automationPolicy });
+        const reviewDecision = status.delivery.review.history.find((item) => item.pass === pass);
+        reviewDecision.authorization = {
+          mode: "repo-policy",
+          policyDigest: materialized.grant.policyBinding.digest,
+          grantDigest: materialized.grant.grantDigest,
+        };
+        status.authorization = materialized.summary;
+      } catch (error) {
+        const failureCode = error instanceof AuthorizationError ? error.code : "policy-invalid";
+        const nextAction = error instanceof AuthorizationError
+          ? error.action
+          : "Use the manual Ship Gate, or repair and independently review the repo policy in a new run.";
+        status.authorization = {
+          schema: "agent-manager.authorization-summary.v1",
+          state: "blocked",
+          valid: false,
+          level: null,
+          grantDigest: null,
+          failureCode,
+          nextAction,
+        };
+      }
+    }
     stampRecovery(status, pass, recoveredFrom);
     // A cancelled run stays cancelled. `writeStatus` refuses to move a run off
     // `cancelled` while its cancel marker exists, so leaving the verdict's own
@@ -100,6 +131,11 @@ export function buildDeliveryReview(runId, {
     `- Reviewer: ${decision?.reviewer || "-"}`,
     `- Decided: ${decision?.decidedAt || "-"}`,
     `- Notes: ${decision?.notes || "-"}`,
+    `- Conditional authorization: ${status.authorization?.valid
+      ? `**ready** (grant \`${status.authorization.grantDigest}\`)`
+      : status.authorization
+        ? `**blocked** (${status.authorization.failureCode || "policy-invalid"}; manual Ship Gate required)`
+        : "not enabled; manual Ship Gate required"}`,
     `- Structural preflight: **${structuralPreflight.ok ? "passed" : "failed"}**`,
     ...(recoveredFrom || status.delivery?.review?.recoveredFrom
       ? [`- Recovered review: **recorded from \`${recoveredFrom || status.delivery.review.recoveredFrom}\`**`]
@@ -216,6 +252,7 @@ export function buildDeliveryReview(runId, {
     state: status.state,
     path,
     decisionPath: decision ? decisionPath : null,
+    authorization: status.authorization || null,
     markdown,
   };
 }
@@ -577,6 +614,13 @@ function reviewTransition(decision, pass, status) {
       return {
         mode: "TERMINAL",
         nextAction: "Post the accepted review-only outcome and complete source-system closeout.",
+        input: "`none`",
+      };
+    }
+    if (status.authorization?.valid) {
+      return {
+        mode: "AUTO_CONTINUE",
+        nextAction: `Launch \`agent-manager ship ${status.runId} --authorized --detach\`; the accepting review already materialized the immutable grant.`,
         input: "`none`",
       };
     }

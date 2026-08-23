@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { matchesScope, normalizeScopePath, scopePrefix } from "../scope.mjs";
+import { normalizeAutomationPolicy } from "../authorization.mjs";
 import {
   assertKnownKeys,
   assertMapping,
@@ -12,7 +13,7 @@ import {
   stringArray,
 } from "./util.mjs";
 
-const POLICY_KEYS = new Set(["schema", "repository", "director", "autopilot", "workers"]);
+const POLICY_KEYS = new Set(["schema", "repository", "director", "autopilot", "workers", "automation_policy"]);
 const REPOSITORY_KEYS = new Set(["path", "base_ref"]);
 const DIRECTOR_KEYS = new Set(["harness", "model", "reasoning"]);
 const WORKERS_KEYS = new Set(["harness_default", "model_default"]);
@@ -22,7 +23,7 @@ const AUTOPILOT_KEYS = new Set([
   "correction_limit", "on_blocker",
 ]);
 const RISK_EXCEPTION_KEYS = new Set(["risk", "require_labels", "allowed_paths"]);
-const PR_ONLY_ACTIONS = new Set(["plan", "run", "review", "commit", "push", "open-pr"]);
+const PR_ONLY_ACTIONS = new Set(["plan", "run", "review", "commit", "push", "open-pr", "ship"]);
 const FORBIDDEN_ACTIONS = new Set(["merge", "tag", "release", "auto-merge", "dangerous-permissions"]);
 const REASONING_LEVELS = new Set(["low", "medium", "high", "xhigh"]);
 const WORKER_HARNESSES = new Set(["claude", "codex", "cursor", "fake"]);
@@ -125,6 +126,7 @@ export function normalizeDirectorPolicy(document, { policyPath, repoOverride = n
   const baseRef = repository.base_ref === undefined
     ? "HEAD"
     : nonEmptyString(repository.base_ref, "Director policy.repository.base_ref");
+  const repoRoot = resolveRepository(repositoryPath, policyPath, repoOverride);
 
   const director = assertMapping(document.director, "Director policy.director");
   assertKnownKeys(director, DIRECTOR_KEYS, "Director policy.director");
@@ -160,6 +162,24 @@ export function normalizeDirectorPolicy(document, { policyPath, repoOverride = n
   const allowedPaths = policyPaths(autopilot.allowed_paths, "Director policy.autopilot.allowed_paths").sort();
   const riskExceptions = normalizeRiskExceptions(autopilot.risk_exceptions, allowedPaths);
   const workers = normalizeWorkers(document.workers);
+  const automationPolicy = document.automation_policy === undefined
+    ? null
+    : normalizeAutomationPolicy(document.automation_policy, { policyPath });
+  if (automationPolicy) {
+    if (automationPolicy.enabled !== true || automationPolicy.revocation) {
+      throw new Error("Director automation_policy must be explicitly enabled and not revoked");
+    }
+    if (!samePath(automationPolicy.repoRoot, repoRoot)
+      || automationPolicy.repository.base_ref !== baseRef) {
+      throw new Error("Director automation_policy must bind the same repository and base_ref");
+    }
+    if (automationPolicy.approval.level !== "through-pr") {
+      throw new Error("Director pr-only automation_policy approval.level must be through-pr");
+    }
+    if (!allowedActions.includes("ship")) {
+      throw new Error("Director automation_policy requires autopilot.allowed_actions to include ship");
+    }
+  }
 
   const normalizedDocument = stableValue({
     schema: document.schema,
@@ -179,14 +199,28 @@ export function normalizeDirectorPolicy(document, { policyPath, repoOverride = n
       correction_limit: boundedInteger(autopilot.correction_limit, 0, 1, "Director policy.autopilot.correction_limit"),
       on_blocker: autopilot.on_blocker,
     },
+    ...(automationPolicy ? { automation_policy: automationPolicy.document } : {}),
   });
 
   return {
     ...normalizedDocument,
     absPath: policyPath,
-    repoRoot: resolveRepository(repositoryPath, policyPath, repoOverride),
+    repoRoot,
+    automationPolicy: automationPolicy
+      ? {
+          document: automationPolicy.document,
+          digest: automationPolicy.digest,
+          sourcePath: automationPolicy.absPath,
+        }
+      : null,
     digest: sha256(normalizedDocument),
   };
+}
+
+function samePath(left, right) {
+  const a = resolve(left);
+  const b = resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 export function loadDirectorPolicy(filePath, options = {}) {

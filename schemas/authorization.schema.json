@@ -8,6 +8,7 @@
     "schema", "runId", "level", "reviewedBase", "reviewedHead",
     "evidenceDigest", "manifestDigest", "riskCeiling", "reviewerPolicy",
     "expiresAt", "permittedMutations", "providerMode", "agentManagerVersion",
+    "reviewDecisionDigest", "policyBinding",
     "operatorProvenance", "manifest", "grantDigest"
   ],
   "properties": {
@@ -40,6 +41,12 @@
     },
     "providerMode": { "type": "string", "minLength": 1, "maxLength": 80 },
     "agentManagerVersion": { "type": "string", "minLength": 1 },
+    "reviewDecisionDigest": {
+      "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+    },
+    "policyBinding": {
+      "oneOf": [{ "$ref": "#/$defs/policyBinding" }, { "type": "null" }]
+    },
     "operatorProvenance": {
       "type": "object",
       "additionalProperties": false,
@@ -56,6 +63,91 @@
   "$defs": {
     "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "risk": { "enum": ["low", "moderate", "high", "critical"] },
+    "policyBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "path", "digest"],
+      "properties": {
+        "schema": { "const": "agent-manager.automation-policy.v1" },
+        "path": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "automationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "enabled", "repository", "approval", "risk", "provider", "shipment", "revocation"],
+      "properties": {
+        "schema": { "const": "agent-manager.automation-policy.v1" },
+        "enabled": { "type": "boolean" },
+        "repository": {
+          "type": "object", "additionalProperties": false,
+          "required": ["path", "base_ref"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "base_ref": { "type": "string", "minLength": 1 }
+          }
+        },
+        "approval": {
+          "type": "object", "additionalProperties": false,
+          "required": ["level", "operator", "approved_at", "expires_at"],
+          "properties": {
+            "level": { "enum": ["through-pr", "all"] },
+            "operator": { "type": "string", "minLength": 1 },
+            "approved_at": { "type": "string", "format": "date-time" },
+            "expires_at": { "type": "string", "format": "date-time" }
+          }
+        },
+        "risk": {
+          "type": "object", "additionalProperties": false,
+          "required": ["observed", "ceiling", "classes", "exceptions"],
+          "properties": {
+            "observed": { "$ref": "#/$defs/risk" },
+            "ceiling": { "$ref": "#/$defs/risk" },
+            "classes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+            "exceptions": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "provider": {
+          "type": "object", "additionalProperties": false,
+          "required": ["mode"], "properties": { "mode": { "type": "string", "minLength": 1 } }
+        },
+        "shipment": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "target": { "type": ["string", "null"] },
+            "repo": { "type": ["string", "null"] },
+            "worktree": { "type": ["string", "null"] },
+            "branch": { "type": ["string", "null"] },
+            "base": { "type": ["string", "null"] },
+            "remote": { "type": ["string", "null"] },
+            "pr": { "type": ["string", "null"] },
+            "commit_message": { "type": ["string", "null"] },
+            "version": { "type": ["string", "null"] },
+            "summary": { "type": ["string", "null"] },
+            "poll_sec": { "type": "number", "minimum": 1, "maximum": 300 },
+            "timeout_sec": { "type": "number", "minimum": 1, "maximum": 86400 },
+            "check_grace_sec": { "type": "number", "minimum": 0, "maximum": 900 },
+            "retry_attempts": { "type": "number", "minimum": 1, "maximum": 10 },
+            "retry_base_ms": { "type": "number", "minimum": 100, "maximum": 60000 }
+          }
+        },
+        "revocation": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["revoked_at", "revoked_by", "reason"],
+              "properties": {
+                "revoked_at": { "type": "string", "format": "date-time" },
+                "revoked_by": { "type": "string", "minLength": 1 },
+                "reason": { "type": ["string", "null"] }
+              }
+            }
+          ]
+        }
+      }
+    },
     "receipt": {
       "type": "object",
       "additionalProperties": false,

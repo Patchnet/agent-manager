@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,6 +120,7 @@ function usage() {
     "  agent-manager config show [--json]",
     "  agent-manager director validate --policy <file> [--repo <path>] [--json]",
     "  agent-manager director cycle --policy <file> --items <file> --dry-run [options] [--json]",
+    "  agent-manager director go --policy <file> --items <file> --detach [options] [--json]",
     "    options: --repo <path> --state-dir <path> --cycle-id <id>",
     "  agent-manager brain init [--json]",
     "  agent-manager brain status [--repo <path>] [--json]",
@@ -138,7 +139,7 @@ function usage() {
     "  agent-manager ratify <runId> <laneId> --reason <text> [--by <id>] [--json]",
     "    records Master acceptance of a guardrail-failed lane's violations so",
     "    `integrate --force-lanes failed-with-snapshot` may fold it",
-    "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--reviewer-role manager] [--notes <text>]] [--recovered] [--json]",
+    "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--reviewer-role manager] [--automation-policy <file>] [--notes <text>]] [--recovered] [--json]",
     "    --recovered: record a verdict on a blocked, failed, or cancelled run",
     "  agent-manager closeout <runId> --operator <id> [--reason <text>] [--no-artifacts] [--json]",
     "    accept-without-ship terminal: files run outputs, ends the run as `filed`",
@@ -369,6 +370,8 @@ function parseDirectorFlags(rest) {
     stateDir: null,
     cycleId: null,
     dryRun: false,
+    go: action === "go",
+    detach: false,
     json: false,
   };
   if (action === "dry-cycle") {
@@ -386,6 +389,7 @@ function parseDirectorFlags(rest) {
   for (let index = 1; index < rest.length; index += 1) {
     const arg = rest[index];
     if (arg === "--dry-run") flags.dryRun = true;
+    else if (arg === "--detach") flags.detach = true;
     else if (arg === "--json") flags.json = true;
     else if (valued.has(arg)) {
       const value = rest[++index];
@@ -398,6 +402,27 @@ function parseDirectorFlags(rest) {
     }
   }
   return flags;
+}
+
+function launchDirectorDraft({ runId, draft, policy }) {
+  const existing = readStatus(runId);
+  if (existing) {
+    return {
+      state: "detached",
+      replayed: true,
+      telemetry: join(runDir(runId), "status.json"),
+    };
+  }
+  const launched = spawnSync(process.execPath, [
+    selfPath, "run", draft.path, "--detach", "--json", "--run-id", runId,
+    "--manager-harness", policy.director.harness,
+    "--manager-model", policy.director.model,
+    "--title", `Director ${draft.draftId}`,
+  ], { encoding: "utf8", windowsHide: true });
+  if (launched.status !== 0) {
+    throw new Error(`Director go failed to detach ${draft.draftId}: ${String(launched.stderr || launched.stdout).trim()}`);
+  }
+  return { ...JSON.parse(launched.stdout), replayed: false };
 }
 
 function identityOverrides(flags, masterReturn = null) {
@@ -883,6 +908,7 @@ async function main() {
         repository: policy.repoRoot,
         mode: policy.autopilot.mode,
         director: policy.director,
+        automationPolicyDigest: policy.automationPolicy?.digest || null,
       };
       console.log(flags.json ? JSON.stringify(payload) : [
         `valid: ${payload.policy}`,
@@ -890,10 +916,14 @@ async function main() {
         `mode: ${payload.mode}`,
         `director: ${payload.director.harness}/${payload.director.model} (${payload.director.reasoning})`,
         `policy digest: ${payload.policyDigest}`,
+        `automation policy: ${payload.automationPolicyDigest || "manual Ship Gate"}`,
       ].join("\n"));
       return;
     }
-    if (flags.action === "cycle") {
+    if (["cycle", "go"].includes(flags.action)) {
+      if (flags.action === "go" && !flags.detach) {
+        throw new Error("director go requires --detach");
+      }
       const result = await runDirectorCycle({
         policyPath: flags.policy,
         itemsPath: flags.items,
@@ -901,10 +931,16 @@ async function main() {
         stateRoot: flags.stateDir || undefined,
         cycleId: flags.cycleId,
         dryRun: flags.dryRun,
+        go: flags.go,
+        launchDraft: flags.go ? launchDirectorDraft : null,
       });
       const draftLines = (result.drafts || []).flatMap((draft) => [
         `draft: ${draft.path}${draft.validateOk ? "" : " (invalid)"}`,
         `kickoff: ${draft.kickoff}`,
+        ...(draft.automationPolicy ? [
+          `automation policy: ${draft.automationPolicy.path} (${draft.automationPolicy.digest})`,
+          `accepted review: ${draft.review}`,
+        ] : []),
       ]);
       console.log(flags.json ? JSON.stringify(result) : [
         `cycle: ${result.cycleId}`,
@@ -917,11 +953,13 @@ async function main() {
         `drafts: ${(result.drafts || []).length}`,
         ...draftLines,
         `state: ${result.statePath}`,
-        "execution: proposal/dry-run; Master kickoff via run --detach (no auto launch)",
+        result.go
+          ? `execution: detached ${result.launches.map((launch) => launch.runId).join(", ")}; independent Delivery Review owns the policy handoff`
+          : "execution: proposal/dry-run; Master kickoff via run --detach (no auto launch)",
       ].join("\n"));
       return;
     }
-    throw new Error("director requires validate or cycle");
+    throw new Error("director requires validate, cycle, or go");
   }
 
   if (cmd === "run") {
@@ -1169,7 +1207,7 @@ async function main() {
   }
 
   if (cmd === "review") {
-    const runId = firstPositional(args.slice(1), ["--pass", "--verdict", "--reviewer", "--reviewer-role", "--notes"])
+    const runId = firstPositional(args.slice(1), ["--pass", "--verdict", "--reviewer", "--reviewer-role", "--automation-policy", "--notes"])
       || latestRunId();
     if (!runId) throw new Error("review requires <runId>");
     const result = buildDeliveryReview(runId, {
@@ -1177,6 +1215,7 @@ async function main() {
       verdict: flagValue("--verdict"),
       reviewer: flagValue("--reviewer"),
       reviewerRole: flagValue("--reviewer-role"),
+      automationPolicy: flagValue("--automation-policy"),
       notes: flagValue("--notes"),
       recovered: args.includes("--recovered"),
     });

@@ -22,6 +22,16 @@
         "identityDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "policyDigest", "grantDigest"],
+      "properties": {
+        "mode": { "const": "repo-policy" },
+        "policyDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "grantDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
     "notes": { "type": ["string", "null"] },
     "decidedAt": { "type": "string", "format": "date-time" }
   }

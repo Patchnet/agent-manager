@@ -74,6 +74,26 @@ function writeItems(path, items) {
   }, null, 2));
 }
 
+function enableShippingPolicy(fx) {
+  fx.policy.autopilot.allowed_actions.push("ship");
+  fx.policy.automation_policy = {
+    schema: "agent-manager.automation-policy.v1",
+    enabled: true,
+    repository: { path: "./repo", base_ref: "main" },
+    approval: {
+      level: "through-pr",
+      operator: "director-operator",
+      approved_at: "2026-08-23T12:00:00.000Z",
+      expires_at: "2026-08-24T12:00:00.000Z",
+    },
+    risk: { observed: "moderate", ceiling: "moderate", classes: [], exceptions: [] },
+    provider: { mode: "fixture-provider" },
+    shipment: { commit_message: "feat: director approved change" },
+    revocation: null,
+  };
+  writeFileSync(fx.policyPath, JSON.stringify(fx.policy, null, 2));
+}
+
 test("Director policy fails closed outside the pr-only boundary", () => {
   const fx = fixture();
   try {
@@ -216,6 +236,84 @@ test("dry cycle writes validated workflow drafts and kickoff commands", async ()
     assert.match(workflow, /goal-am-feature/);
     assert.match(workflow, /harness_default:\s*claude/);
     assert.match(result.transitions.find((entry) => entry.to === "PLAN").decision, /wrote 1 validated workflow draft/);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test("Director drafts carry a bounded review-to-ship policy without launching", async () => {
+  const fx = fixture();
+  try {
+    enableShippingPolicy(fx);
+    writeItems(fx.itemsPath, [item("authorized-draft")]);
+    const result = await runDirectorCycle({
+      policyPath: fx.policyPath,
+      itemsPath: fx.itemsPath,
+      stateRoot: fx.stateRoot,
+      dryRun: true,
+    });
+    const draft = result.drafts[0];
+    assert.equal(result.status, "dry-run-complete");
+    assert.equal(draft.validateOk, true);
+    assert.equal(existsSync(draft.automationPolicy.path), true);
+    assert.match(draft.automationPolicy.digest, /^[0-9a-f]{64}$/);
+    assert.match(draft.review, /--reviewer-role manager --automation-policy/);
+    const workflow = readFileSync(draft.path, "utf8");
+    assert.match(workflow, /automation-policy:/);
+    assert.match(workflow, /An independent accepting Delivery Review may materialize this policy/);
+    assert.doesNotMatch(result.transitions.at(-1).decision, /launched|detached worker/i);
+
+    const replay = await runDirectorCycle({
+      policyPath: fx.policyPath,
+      itemsPath: fx.itemsPath,
+      stateRoot: fx.stateRoot,
+      dryRun: true,
+    });
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.drafts[0].automationPolicy.digest, draft.automationPolicy.digest);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test("Director go explicitly detaches one deterministic run into the shared review and ship path", async () => {
+  const fx = fixture();
+  try {
+    enableShippingPolicy(fx);
+    writeItems(fx.itemsPath, [item("go-run", { goal_refs: ["goal-director-go"] })]);
+    const launches = [];
+    const result = await runDirectorCycle({
+      policyPath: fx.policyPath,
+      itemsPath: fx.itemsPath,
+      stateRoot: fx.stateRoot,
+      go: true,
+      launchDraft: async (request) => {
+        launches.push(request);
+        return { state: "detached", telemetry: join(fx.stateRoot, `${request.runId}.status.json`) };
+      },
+    });
+    assert.equal(result.status, "launched");
+    assert.equal(result.go, true);
+    assert.equal(result.dryRun, false);
+    assert.equal(launches.length, 1);
+    assert.equal(launches[0].runId, result.launches[0].runId);
+    assert.match(result.launches[0].runId, /^director-[0-9a-f]{24}$/);
+    assert.deepEqual(result.transitions.map((entry) => entry.to), [
+      "DISCOVER", "TRIAGE", "PLAN", "VALIDATE", "DETACH", "CLOSE",
+    ]);
+    assert.match(result.transitions.at(-1).decision, /independent Delivery Review.*shared shipment state machine/i);
+
+    const replay = await runDirectorCycle({
+      policyPath: fx.policyPath,
+      itemsPath: fx.itemsPath,
+      stateRoot: fx.stateRoot,
+      go: true,
+      launchDraft: async () => {
+        throw new Error("replay must not launch again");
+      },
+    });
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.launches[0].runId, result.launches[0].runId);
   } finally {
     rmSync(fx.root, { recursive: true, force: true });
   }

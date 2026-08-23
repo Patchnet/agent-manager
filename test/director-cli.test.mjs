@@ -114,6 +114,7 @@ test("Director CLI is discoverable and fails closed without policy or dry-run", 
   const help = run(["--help"]);
   assert.match(help, /agent-manager director validate/);
   assert.match(help, /agent-manager director cycle/);
+  assert.match(help, /agent-manager director go/);
 
   const missingPolicy = spawnSync(process.execPath, [cli, "director", "validate", "--json"], {
     cwd: process.cwd(), encoding: "utf8", windowsHide: true,
@@ -129,6 +130,20 @@ test("Director CLI is discoverable and fails closed without policy or dry-run", 
     ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
     assert.notEqual(liveCycle.status, 0);
     assert.match(liveCycle.stderr, /require --dry-run/);
+
+    const goWithoutDetach = spawnSync(process.execPath, [
+      cli, "director", "go", "--policy", fx.policyPath, "--items", fx.itemsPath,
+      "--state-dir", fx.stateRoot, "--json",
+    ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
+    assert.notEqual(goWithoutDetach.status, 0);
+    assert.match(goWithoutDetach.stderr, /director go requires --detach/);
+
+    const goWithoutPolicy = spawnSync(process.execPath, [
+      cli, "director", "go", "--policy", fx.policyPath, "--items", fx.itemsPath,
+      "--state-dir", fx.stateRoot, "--detach", "--json",
+    ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
+    assert.notEqual(goWithoutPolicy.status, 0);
+    assert.match(goWithoutPolicy.stderr, /requires an explicitly enabled automation_policy/);
   } finally {
     rmSync(fx.root, { recursive: true, force: true });
   }
