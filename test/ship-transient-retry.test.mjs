@@ -34,16 +34,39 @@ function fail(stderr = "failed") {
   return { ok: false, status: 1, stdout: "", stderr };
 }
 
+function tagActionsResponse(command, args, remote, tag) {
+  if (command !== "gh" || args[0] !== "run" || args[1] !== "list") return null;
+  const sha = args[args.indexOf("--commit") + 1];
+  const published = execCommand(
+    "git",
+    ["ls-remote", "--tags", remote, `refs/tags/${tag}`],
+    { cwd: root },
+  ).stdout;
+  return ok(JSON.stringify(published ? [{
+    databaseId: 1,
+    status: "completed",
+    conclusion: "success",
+    url: "https://example.invalid/actions/1",
+    workflowName: "Publish",
+    event: "push",
+    headSha: sha,
+  }] : []));
+}
+
 function providerCapabilityResponse(command, args) {
   if (command === "gh" && args[0] === "repo" && args[1] === "view") {
     return ok(JSON.stringify({
       nameWithOwner: "example/fixture",
       viewerPermission: "WRITE",
-      autoMergeAllowed: true,
-      squashMergeAllowed: true,
     }));
   }
   if (command === "gh" && args[0] === "api" && args[1] === "user") return ok("ship-bot");
+  if (command === "gh" && args[0] === "api" && args[1] === "repos/{owner}/{repo}") {
+    return ok(JSON.stringify({
+      allow_auto_merge: true,
+      allow_squash_merge: true,
+    }));
+  }
   if (command === "gh" && args[0] === "api" && String(args[1]).includes("/protection")) {
     return ok(JSON.stringify({
       required_status_checks: { contexts: ["quality"] },
@@ -239,7 +262,10 @@ test("a behind delivery branch is updated in place without opening a new pull re
     { state: "OPEN", mergeStateStatus: "BEHIND" },
     MERGED,
   ]);
-  const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
+  const result = await runShip(runId, handoff, {
+    exec,
+    sleep: async () => {},
+  });
   assert.equal(result.state, "merged");
   assert.equal(exec.calls.updateBranch, 1);
   assert.equal(exec.calls.prCreate, 0, "the existing pull request is retained");
@@ -525,6 +551,8 @@ test("a resumed ship refuses to stamp a version the base branch has passed", asy
   const exec = (command, args, options) => {
     if (command === "gh" && args[0] === "--version") return ok("gh version test");
     if (command === "gh" && args[0] === "auth") return ok("authenticated");
+    const tagActions = tagActionsResponse(command, args, remote, "v1.20.0");
+    if (tagActions) return tagActions;
     return execCommand(command, args, options);
   };
   const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
@@ -638,9 +666,15 @@ test("a ship whose base advanced under it keeps a version that is still ahead", 
   const exec = (command, args, options) => {
     if (command === "gh" && args[0] === "--version") return ok("gh version test");
     if (command === "gh" && args[0] === "auth") return ok("authenticated");
+    const tagActions = tagActionsResponse(command, args, remote, "v1.20.0");
+    if (tagActions) return tagActions;
     return execCommand(command, args, options);
   };
-  const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
+  const result = await runShip(runId, handoff, {
+    exec,
+    sleep: async () => {},
+    tagRegistrationGraceMs: 0,
+  });
 
   assert.equal(result.state, "released");
   assert.equal(result.ship.tag, "v1.20.0");

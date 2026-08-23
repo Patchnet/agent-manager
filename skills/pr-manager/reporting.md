@@ -123,7 +123,8 @@ Operator direction. PR Manager does not bypass or guess.
 
 - `<short evidence-backed result from ship steps>`
 - `<remaining targets or release requirement; n/a only when overall delivery is terminal>`
-- GitHub Release: **not created**
+- GitHub Release: **not directly created by PR Manager**; the tag-triggered
+  repository workflow may create one
 
 ### Transition
 

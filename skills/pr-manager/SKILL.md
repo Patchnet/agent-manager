@@ -51,7 +51,10 @@ Read [reporting.md](./reporting.md) before posting any ship status.
    name to stay the CI job id (commonly `quality`) — not a marketing
    `name:` label. Prefer restoring the job display name over changing
    protection.
-10. Do not create a GitHub Release. Release-note publication remains a separate
+10. PR Manager does not directly create a GitHub Release. A repository workflow
+    triggered by the approved tag may create one. Snapshot Actions runs before
+    pushing the tag, then wait for every newly registered run for the release
+    SHA. Release-note publication outside that workflow remains a separate
     reviewed action.
 11. A delivery train ships one declared target at a time with `--target <id>`.
     A target with no changed files must fail closed. A completed target does not

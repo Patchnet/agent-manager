@@ -23,6 +23,7 @@ const {
   execCommand,
   isSymbolicBaseRef,
   isWithinCheckRegistrationGrace,
+  observeTagTriggeredRuns,
   resolveDefaultBaseBranch,
   resolveShipBase,
   prepareShipHandoff,
@@ -47,23 +48,49 @@ function fail(stderr = "failed") {
   return { ok: false, status: 1, stdout: "", stderr };
 }
 
+function tagActionsResponse(command, args, remote, tag = "v1.1.0") {
+  if (command !== "gh" || args[0] !== "run" || args[1] !== "list") return null;
+  const sha = args[args.indexOf("--commit") + 1];
+  const published = execCommand(
+    "git",
+    ["ls-remote", "--tags", remote, `refs/tags/${tag}`],
+    { cwd: root },
+  ).stdout;
+  return ok(JSON.stringify(published ? [{
+    databaseId: 1,
+    status: "completed",
+    conclusion: "success",
+    url: "https://example.invalid/actions/1",
+    workflowName: "Publish",
+    event: "push",
+    headSha: sha,
+  }] : []));
+}
+
 function providerCapabilityResponse(command, args, overrides = {}) {
   if (command === "gh" && args[0] === "repo" && args[1] === "view") {
     return ok(JSON.stringify({
       nameWithOwner: "example/fixture",
       viewerPermission: overrides.permission || "WRITE",
-      autoMergeAllowed: overrides.autoMerge ?? true,
-      squashMergeAllowed: overrides.squashMerge ?? true,
     }));
   }
   if (command === "gh" && args[0] === "api" && args[1] === "user") {
     return ok(overrides.identity || "ship-bot");
   }
+  if (command === "gh" && args[0] === "api" && args[1] === "repos/{owner}/{repo}") {
+    if (overrides.settingsFailure) return fail("settings unavailable");
+    if (overrides.settingsJson) return ok(overrides.settingsJson);
+    return ok(JSON.stringify({
+      allow_auto_merge: overrides.autoMerge ?? true,
+      allow_squash_merge: overrides.squashMerge ?? true,
+    }));
+  }
   if (command === "gh" && args[0] === "api" && String(args[1]).includes("/protection")) {
     return ok(JSON.stringify({
       required_status_checks: { contexts: overrides.requiredChecks ?? ["quality"] },
       required_pull_request_reviews: {
-        required_approving_review_count: overrides.requiredApprovals || 0,
+        required_approving_review_count:
+          overrides.requiredApprovalsEvidence ?? overrides.requiredApprovals ?? 0,
       },
     }));
   }
@@ -222,6 +249,12 @@ test("Formal preflight freezes provider capabilities and fails before mutation o
   };
 
   preflightShipHandoff(handoff, makeExec());
+  const repoView = calls.find((call) => call[0] === "gh" && call[1] === "repo");
+  assert.deepEqual(repoView, ["gh", "repo", "view", "--json", "nameWithOwner,viewerPermission"]);
+  assert.equal(
+    calls.some((call) => call[0] === "gh" && call[1] === "api" && call[2] === "repos/{owner}/{repo}"),
+    true,
+  );
   assert.equal(handoff.providerCapabilities.base.protected, true);
   assert.deepEqual(handoff.providerCapabilities.base.requiredChecks, ["quality"]);
   assert.equal(handoff.providerCapabilities.identity, "ship-bot");
@@ -244,6 +277,24 @@ test("Formal preflight freezes provider capabilities and fails before mutation o
   assert.throws(
     () => preflightShipHandoff(noRequiredCi, makeExec({ requiredChecks: [] })),
     /no inspectable required CI checks/,
+  );
+  const malformedApprovals = { ...handoff, providerCapabilities: null };
+  assert.throws(
+    () => preflightShipHandoff(
+      malformedApprovals,
+      makeExec({ requiredApprovalsEvidence: "unknown" }),
+    ),
+    /no inspectable required-review evidence/,
+  );
+  const malformedSettings = { ...handoff, providerCapabilities: null };
+  assert.throws(
+    () => preflightShipHandoff(malformedSettings, makeExec({ settingsJson: "[]" })),
+    /malformed repository merge settings evidence/,
+  );
+  const failedSettings = { ...handoff, providerCapabilities: null };
+  assert.throws(
+    () => preflightShipHandoff(failedSettings, makeExec({ settingsFailure: true })),
+    /inspect repository merge settings failed/,
   );
   assert.equal(
     calls.some((call) => call[0] === "git" && ["add", "commit", "push"].includes(call[1])),
@@ -506,6 +557,8 @@ test("Formal all stamps the open delivery PR, waits for its required check, and 
     calls.push([command, ...args]);
     const provider = providerCapabilityResponse(command, args);
     if (provider) return provider;
+    const tagActions = tagActionsResponse(command, args, remote);
+    if (tagActions) return tagActions;
     if (command === "gh" && args[0] === "--version") return ok("gh version test");
     if (command === "gh" && args[0] === "auth") return ok("authenticated");
     if (command === "gh" && args[0] === "pr" && args[1] === "merge") {
@@ -548,7 +601,11 @@ test("Formal all stamps the open delivery PR, waits for its required check, and 
     }
     return execCommand(command, args, options);
   };
-  const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
+  const result = await runShip(runId, handoff, {
+    exec,
+    sleep: async () => {},
+    tagRegistrationGraceMs: 0,
+  });
   assert.equal(result.state, "released", result.ship.error);
   assert.equal(result.ship.releaseTransaction.mode, "delivery-pr");
   assert.equal(result.ship.releasePrUrl, null);
@@ -637,6 +694,8 @@ test("Formal protected release PR is reused on retry while the shared checkout s
   const exec = (command, args, options) => {
     const provider = providerCapabilityResponse(command, args);
     if (provider) return provider;
+    const tagActions = tagActionsResponse(command, args, remote);
+    if (tagActions) return tagActions;
     if (command === "gh" && args[0] === "--version") return ok("gh version test");
     if (command === "gh" && args[0] === "auth") return ok("authenticated");
     if (command === "gh" && args[0] === "pr" && args[1] === "view") {
@@ -702,7 +761,11 @@ test("Formal protected release PR is reused on retry while the shared checkout s
     timeoutSec: 5,
   });
   queueShip(runId, retry);
-  const result = await runShip(runId, retry, { exec, sleep: async () => {} });
+  const result = await runShip(runId, retry, {
+    exec,
+    sleep: async () => {},
+    tagRegistrationGraceMs: 0,
+  });
   assert.equal(result.state, "released", result.ship.error);
   assert.equal(result.ship.attempt, 2);
   assert.equal(result.ship.releasePrUrl, "https://example.invalid/pull/10");
@@ -844,27 +907,55 @@ test("Simple all shipping stamps, pushes, waits for CI, and tags", async () => {
     timeoutSec: 5,
   });
   queueShip(runId, handoff);
+  let actionReads = 0;
+  const actionReadTagPresence = [];
   const exec = (command, args, options) => {
     if (command === "gh" && args[0] === "--version") return ok("gh version test");
     if (command === "gh" && args[0] === "auth" && args[1] === "status") return ok("authenticated");
     if (command === "gh" && args[0] === "run" && args[1] === "list") {
-      return ok(JSON.stringify([{
+      actionReads += 1;
+      const sha = args[args.indexOf("--commit") + 1];
+      actionReadTagPresence.push(
+        execCommand("git", ["ls-remote", "--tags", remote, "refs/tags/v1.1.0"], { cwd: repo }).stdout,
+      );
+      const runs = [{
         databaseId: 1,
         status: "completed",
         conclusion: "success",
         url: "https://example.invalid/actions/1",
         workflowName: "CI",
         event: "push",
-      }]));
+        headSha: sha,
+      }];
+      if (actionReads >= 3) {
+        runs.push({
+          databaseId: 2,
+          status: "completed",
+          conclusion: "success",
+          url: "https://example.invalid/actions/2",
+          workflowName: "Publish",
+          event: "push",
+          headSha: sha,
+        });
+      }
+      return ok(JSON.stringify(runs));
     }
     return execCommand(command, args, options);
   };
-  const result = await runShip(runId, handoff, { exec, sleep: async () => {} });
+  const result = await runShip(runId, handoff, {
+    exec,
+    sleep: async () => {},
+    tagRegistrationGraceMs: 0,
+  });
   assert.equal(result.state, "released");
   assert.equal(result.ship.tag, "v1.1.0");
   assert.equal(result.ship.ci.state, "green");
-  assert.equal(result.ship.ci.runs[0].workflow, "CI");
+  assert.equal(result.ship.ci.runs[0].workflow, "Publish");
   assert.equal(result.ship.ci.runs[0].status, "completed");
+  assert.deepEqual(result.ship.releaseCi.beforeRunIds, ["1"]);
+  assert.deepEqual(result.ship.releaseCi.runs.map((run) => run.id), ["2"]);
+  assert.equal(actionReadTagPresence[1], "", "the Actions snapshot precedes the tag push");
+  assert.notEqual(actionReadTagPresence[2], "", "new Actions runs are discovered after the tag push");
   assert.equal(result.delivery.targets[0].state, "merged");
   assert.equal(result.delivery.targets[0].mergeSha, result.ship.releaseSha);
   assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version, "1.1.0");
@@ -873,6 +964,156 @@ test("Simple all shipping stamps, pushes, waits for CI, and tags", async () => {
     true,
   );
   assert.equal(existsSync(join(runsRoot, runId, "ship", "summary.json")), true);
+});
+
+test("tag-triggered release CI blocks with the failed workflow URL", async () => {
+  const runId = "run-tag-ci-failure";
+  const sha = "release-sha";
+  const status = writeRun(runId);
+  status.ship = {
+    state: "running",
+    phase: "tag",
+    steps: [],
+    remoteRetries: 0,
+    releaseCi: {
+      sha,
+      state: "snapshotted",
+      beforeRunIds: ["10"],
+      runs: [],
+    },
+  };
+  writeStatus(runId, status);
+  const exec = (command, args) => {
+    assert.equal(command, "gh");
+    assert.deepEqual(args.slice(0, 2), ["run", "list"]);
+    return ok(JSON.stringify([
+      {
+        databaseId: 10,
+        status: "completed",
+        conclusion: "success",
+        workflowName: "Branch CI",
+        url: "https://example.invalid/actions/10",
+        event: "push",
+        headSha: sha,
+      },
+      {
+        databaseId: 11,
+        status: "completed",
+        conclusion: "failure",
+        workflowName: "Publish",
+        url: "https://example.invalid/actions/11",
+        event: "push",
+        headSha: sha,
+      },
+    ]));
+  };
+  await assert.rejects(
+    observeTagTriggeredRuns(
+      runId,
+      status,
+      { repoRoot: root, timeoutSec: 5, pollSec: 1, retryAttempts: 1 },
+      sha,
+      { exec, sleep: async () => {}, now: () => 0 },
+    ),
+    /Publish \(https:\/\/example\.invalid\/actions\/11\)/,
+  );
+  assert.equal(readStatus(runId).ship.releaseCi.state, "failed");
+});
+
+test("tag-triggered release CI retains later runs and waits for every run", async () => {
+  const runId = "run-tag-ci-later-registration";
+  const sha = "release-sha";
+  const status = writeRun(runId);
+  status.ship = {
+    state: "running",
+    phase: "tag",
+    steps: [],
+    remoteRetries: 0,
+    releaseCi: {
+      sha,
+      state: "snapshotted",
+      beforeRunIds: [],
+      runs: [],
+    },
+  };
+  writeStatus(runId, status);
+  let clock = 0;
+  let reads = 0;
+  const run = (id, runStatus, conclusion) => ({
+    databaseId: id,
+    status: runStatus,
+    conclusion,
+    workflowName: `Publish ${id}`,
+    url: `https://example.invalid/actions/${id}`,
+    event: "push",
+    headSha: sha,
+  });
+  const result = await observeTagTriggeredRuns(
+    runId,
+    status,
+    { repoRoot: root, timeoutSec: 10, pollSec: 1, retryAttempts: 1 },
+    sha,
+    {
+      exec: () => {
+        reads += 1;
+        if (reads === 1) return ok(JSON.stringify([run(1, "completed", "success")]));
+        if (reads === 2) {
+          return ok(JSON.stringify([
+            run(1, "completed", "success"),
+            run(2, "in_progress", null),
+          ]));
+        }
+        return ok(JSON.stringify([
+          run(1, "completed", "success"),
+          run(2, "completed", "success"),
+        ]));
+      },
+      sleep: async () => {
+        clock += 1_000;
+      },
+      now: () => clock,
+      tagRegistrationGraceMs: 2_000,
+    },
+  );
+  assert.equal(reads, 3);
+  assert.deepEqual(result.ship.releaseCi.runs.map((item) => item.id), ["1", "2"]);
+  assert.equal(result.ship.releaseCi.state, "green");
+});
+
+test("tag-triggered release CI records not configured after bounded registration grace", async () => {
+  const runId = "run-tag-ci-not-configured";
+  const sha = "release-sha";
+  const status = writeRun(runId);
+  status.ship = {
+    state: "running",
+    phase: "tag",
+    steps: [],
+    remoteRetries: 0,
+    releaseCi: {
+      sha,
+      state: "snapshotted",
+      beforeRunIds: [],
+      runs: [],
+    },
+  };
+  writeStatus(runId, status);
+  let clock = 0;
+  const result = await observeTagTriggeredRuns(
+    runId,
+    status,
+    { repoRoot: root, timeoutSec: 60, pollSec: 1, retryAttempts: 1 },
+    sha,
+    {
+      exec: () => ok("[]"),
+      sleep: async () => {
+        clock += 30_000;
+      },
+      now: () => clock,
+    },
+  );
+  assert.equal(result.ship.releaseCi.state, "not_configured");
+  assert.equal(result.ship.ci.state, "not_configured");
+  assert.match(result.ship.steps.find((step) => step.name === "ci").detail, /not configured/);
 });
 
 test("CLI ship detaches and completes in the background", async () => {
@@ -905,6 +1146,12 @@ test("CLI ship detaches and completes in the background", async () => {
       '  console.log("gh version test");',
       '} else if (process.argv[2] === "auth" && process.argv[3] === "status") {',
       '  console.log("authenticated");',
+      '} else if (process.argv[2] === "run" && process.argv[3] === "list") {',
+      '  const { execFileSync } = await import("node:child_process");',
+      '  const sha = process.argv[process.argv.indexOf("--commit") + 1];',
+      '  let tagged = false;',
+      '  try { execFileSync("git", ["rev-parse", "--verify", "refs/tags/v1.1.0"], { stdio: "ignore" }); tagged = true; } catch {}',
+      '  console.log(JSON.stringify(tagged ? [{ databaseId: 1, status: "completed", conclusion: "success", url: "https://example.invalid/actions/1", workflowName: "Publish", event: "push", headSha: sha }] : []));',
       "} else {",
       '  console.error("unexpected fake gh command");',
       "  process.exitCode = 2;",
@@ -937,6 +1184,10 @@ test("CLI ship detaches and completes in the background", async () => {
       "1.1.0",
       "--summary",
       "Add detached shipping.",
+      "--poll-sec",
+      "1",
+      "--timeout-sec",
+      "2",
       "--detach",
       "--json",
     ],
@@ -967,7 +1218,7 @@ test("diagnoseBlockedMerge detects required check name mismatch", () => {
     mergeStateStatus: "BLOCKED",
     mergeable: "MERGEABLE",
     reviewDecision: "",
-    baseRefName: "main",
+    baseRefName: "release/next",
     statusCheckRollup: [
       {
         name: "Quality + mandatory Chromium journey",
@@ -978,12 +1229,15 @@ test("diagnoseBlockedMerge detects required check name mismatch", () => {
   };
   const exec = (command, args) => {
     assert.equal(command, "gh");
-    assert.ok(args.includes("repos/{owner}/{repo}/branches/main/protection/required_status_checks"));
-    return ok(JSON.stringify(["quality"]));
+    assert.ok(args.includes("repos/{owner}/{repo}/branches/release%2Fnext/protection/required_status_checks"));
+    return ok(JSON.stringify({
+      contexts: ["quality"],
+      checks: [{ context: "browser" }],
+    }));
   };
   const error = diagnoseBlockedMerge(pr, exec, root);
   assert.ok(error instanceof ShipBlockedError);
-  assert.match(error.message, /exact name: quality/);
+  assert.match(error.message, /exact name: browser, quality/);
   assert.match(error.message, /Quality \+ mandatory Chromium journey/);
   assert.ok(error.options.some((option) => /display name/i.test(option)));
   assert.ok(error.options.some((option) => /human PR approval/i.test(option)));

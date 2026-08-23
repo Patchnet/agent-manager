@@ -49,6 +49,7 @@ const REMOTE_RETRY_ATTEMPTS = 5;
 const REMOTE_RETRY_BASE_MS = 1_000;
 const REMOTE_RETRY_MAX_MS = 30_000;
 const BLOCK_CONFIRM_MAX_MS = 15_000;
+const TAG_RUN_REGISTRATION_GRACE_MS = 30_000;
 
 /**
  * Failures that mean "GitHub did not answer", not "GitHub answered no". A ship that
@@ -332,6 +333,7 @@ export function queueShip(runId, handoff) {
     releasePrNumber: status.ship?.releasePrNumber || null,
     releaseBranch: status.ship?.releaseBranch || null,
     releaseTransaction: status.ship?.releaseTransaction || null,
+    releaseCi: status.ship?.releaseCi || null,
     providerCapabilities: handoff.providerCapabilities || status.ship?.providerCapabilities || null,
     version: handoff.version,
     // Carried across attempts on purpose: a version plan stamped on an earlier attempt
@@ -398,6 +400,8 @@ export async function runShip(runId, handoff, dependencies = {}) {
   const sleep =
     dependencies.sleep || ((ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)));
   const now = dependencies.now || (() => Date.now());
+  const tagRegistrationGraceMs =
+    dependencies.tagRegistrationGraceMs ?? TAG_RUN_REGISTRATION_GRACE_MS;
   const id = assertSafeSlug(runId, "run id");
   const shipDir = ensurePrivateDir(join(runDir(id), "ship"));
   const lockPath = join(shipDir, "ship.lock");
@@ -426,9 +430,19 @@ export async function runShip(runId, handoff, dependencies = {}) {
     preflight(handoff, exec);
     assertNotCancelled(id);
     if (handoff.flow === "formal") {
-      status = await runFormal(id, status, handoff, { exec, sleep, now });
+      status = await runFormal(id, status, handoff, {
+        exec,
+        sleep,
+        now,
+        tagRegistrationGraceMs,
+      });
     } else {
-      status = await runSimple(id, status, handoff, { exec, sleep, now });
+      status = await runSimple(id, status, handoff, {
+        exec,
+        sleep,
+        now,
+        tagRegistrationGraceMs,
+      });
     }
     const completedAt = new Date(now()).toISOString();
     status.ship.state = "done";
@@ -569,7 +583,11 @@ async function runFormal(runId, status, handoff, dependencies) {
     status = step(runId, status, "merge", "done", status.ship.mergeSha || "already merged");
     if (handoff.approve === "through-pr") return status;
     if (status.ship.releaseTransaction?.mode === "delivery-pr") {
-      return finalizeFormalReleaseFromMergedPr(runId, status, handoff, recordedPr, { exec });
+      return await finalizeFormalReleaseFromMergedPr(runId, status, handoff, recordedPr, {
+        exec,
+        sleep,
+        now,
+      });
     }
     return await releaseFormal(runId, status, handoff, { exec, sleep, now });
   }
@@ -617,7 +635,11 @@ async function runFormal(runId, status, handoff, dependencies) {
   if (handoff.approve === "through-pr") return status;
 
   assertNotCancelled(runId);
-  return finalizeFormalReleaseFromMergedPr(runId, status, handoff, merged.pr, { exec });
+  return await finalizeFormalReleaseFromMergedPr(runId, status, handoff, merged.pr, {
+    exec,
+    sleep,
+    now,
+  });
 }
 
 async function completeFormalPullRequest(runId, status, handoff, options) {
@@ -838,7 +860,8 @@ function verifyPriorDeliveryAncestry(runId, status, handoff, cwd, exec) {
   return save(runId, status);
 }
 
-function finalizeFormalReleaseFromMergedPr(runId, status, handoff, pr, { exec }) {
+async function finalizeFormalReleaseFromMergedPr(runId, status, handoff, pr, dependencies) {
+  const { exec } = dependencies;
   const transaction = status.ship.releaseTransaction;
   const mergeSha = pr.mergeCommit?.oid || pr.mergeCommit || status.ship.mergeSha || null;
   if (!transaction?.manifest || !mergeSha) {
@@ -853,7 +876,7 @@ function finalizeFormalReleaseFromMergedPr(runId, status, handoff, pr, { exec })
   status.ship.versionPlan.releaseSha = mergeSha;
   status = step(runId, status, "release-push", "skipped", "release stamp merged through the protected pull request");
   status = step(runId, status, "ci", "done", "required pull-request checks completed before merge");
-  return tagRelease(runId, status, handoff, mergeSha, exec);
+  return await tagRelease(runId, status, handoff, mergeSha, dependencies);
 }
 
 async function runSimple(runId, status, handoff, dependencies) {
@@ -887,7 +910,7 @@ async function runSimple(runId, status, handoff, dependencies) {
     sleep,
     now,
   });
-  return tagRelease(runId, status, simpleHandoff, sha, exec);
+  return await tagRelease(runId, status, simpleHandoff, sha, dependencies);
 }
 
 async function releaseFormal(runId, status, handoff, dependencies) {
@@ -953,7 +976,7 @@ async function releaseFormal(runId, status, handoff, dependencies) {
   status.ship.releaseSha = releaseSha;
   status.ship.versionPlan.releaseSha = releaseSha;
   status = step(runId, status, "ci", "done", "release PR checks completed before merge");
-  return tagRelease(runId, status, releaseHandoff, releaseSha, exec);
+  return await tagRelease(runId, status, releaseHandoff, releaseSha, dependencies);
 }
 
 function splitPaths(output) {
@@ -1389,7 +1412,188 @@ async function waitForCiIfConfigured(
   ]);
 }
 
-function tagRelease(runId, status, handoff, sha, exec) {
+async function readActionsRuns(runId, status, handoff, sha, dependencies, label) {
+  const { exec, sleep } = dependencies;
+  const poll = await execRemote(
+    exec,
+    "gh",
+    [
+      "run",
+      "list",
+      "--commit",
+      sha,
+      "--limit",
+      "1000",
+      "--json",
+      "databaseId,status,conclusion,url,workflowName,event,headSha",
+    ],
+    handoff.repoRoot,
+    remoteOptions(runId, handoff, sleep, label),
+  );
+  if (!poll.result.ok) {
+    throw new ShipBlockedError(
+      `${label} failed${poll.transient ? ` after ${poll.attempts} attempts` : ""}: ${poll.result.stderr || poll.result.stdout || "unknown error"}`,
+      ["Resolve the GitHub Actions query failure and rerun ship.", "Abandon the ship phase."],
+    );
+  }
+  status.ship.remoteRetries = addRetries(status, poll.retries);
+  let parsed;
+  try {
+    parsed = JSON.parse(String(poll.result.stdout || "null"));
+  } catch (error) {
+    throw new ShipBlockedError(`GitHub returned invalid ${label} JSON: ${error.message}`, [
+      "Inspect GitHub Actions and rerun ship.",
+    ]);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new ShipBlockedError(`GitHub returned malformed ${label} evidence.`, [
+      "Inspect GitHub Actions and rerun ship.",
+    ]);
+  }
+  const runs = parsed.map((run) => ({
+    id: run?.databaseId == null ? "" : String(run.databaseId),
+    workflow: run?.workflowName || null,
+    status: run?.status || null,
+    conclusion: run?.conclusion || null,
+    url: run?.url || null,
+    event: run?.event || null,
+    headSha: run?.headSha || null,
+  }));
+  if (runs.some((run) => !run.id || run.headSha !== sha)) {
+    throw new ShipBlockedError(`GitHub returned incomplete ${label} evidence for ${sha}.`, [
+      "Inspect GitHub Actions and rerun ship.",
+    ]);
+  }
+  return runs;
+}
+
+export async function observeTagTriggeredRuns(runId, status, handoff, sha, dependencies) {
+  const { sleep, now } = dependencies;
+  const baseline = status.ship.releaseCi;
+  if (baseline?.sha !== sha || !Array.isArray(baseline.beforeRunIds)) {
+    throw new ShipBlockedError("The release tag has no valid pre-push GitHub Actions snapshot.", [
+      "Do not move the tag; restore the recorded ship evidence or review the release manually.",
+    ]);
+  }
+  const before = new Set(baseline.beforeRunIds.map(String));
+  const discovered = new Map(
+    (Array.isArray(baseline.runs) ? baseline.runs : []).map((run) => [String(run.id), run]),
+  );
+  const started = now();
+  const deadline = started + handoff.timeoutSec * 1000;
+  const registrationGraceMs =
+    dependencies.tagRegistrationGraceMs ?? TAG_RUN_REGISTRATION_GRACE_MS;
+  const registrationDeadline = Math.min(deadline, started + registrationGraceMs);
+  status = phase(runId, status, "ci", `discovering tag-triggered workflows for ${sha.slice(0, 12)}`);
+  while (now() <= deadline) {
+    assertNotCancelled(runId);
+    const observed = await readActionsRuns(
+      runId,
+      status,
+      handoff,
+      sha,
+      dependencies,
+      "tag-triggered release CI",
+    );
+    for (const run of observed) {
+      if (!before.has(run.id)) discovered.set(run.id, run);
+    }
+    const runs = [...discovered.values()];
+    const pending = runs.filter((run) => run.status !== "completed");
+    const unsuccessful = runs.filter(
+      (run) => run.status === "completed" && String(run.conclusion || "").toLowerCase() !== "success",
+    );
+    const observedAt = now();
+    status.ship.releaseCi = {
+      ...baseline,
+      state: unsuccessful.length
+        ? "failed"
+        : runs.length && !pending.length && observedAt >= registrationDeadline
+          ? "green"
+          : runs.length
+            ? "running"
+            : "registering",
+      runs,
+      observedAt: new Date(observedAt).toISOString(),
+    };
+    status.ship.ci = {
+      state: status.ship.releaseCi.state,
+      runs,
+    };
+    status.ship.lastActivity = runs.length
+      ? `tag-triggered release CI (${pending.length} pending)`
+      : "waiting for GitHub to register tag-triggered release CI";
+    status = save(runId, status);
+    if (unsuccessful.length) {
+      const evidence = unsuccessful.map(
+        (run) => `${run.workflow || run.id}${run.url ? ` (${run.url})` : ""}`,
+      );
+      throw new ShipBlockedError(`Tag-triggered release CI failed: ${evidence.join(", ")}`, [
+        "Fix the failed workflow and rerun ship without moving the published tag.",
+        "Reject or abandon the release.",
+      ]);
+    }
+    if (runs.length && !pending.length && observedAt >= registrationDeadline) {
+      return step(
+        runId,
+        status,
+        "ci",
+        "done",
+        `${runs.length} tag-triggered workflow run(s) green`,
+      );
+    }
+    if (!runs.length && observedAt >= registrationDeadline) {
+      status.ship.releaseCi = {
+        ...status.ship.releaseCi,
+        state: "not_configured",
+      };
+      status.ship.ci = { state: "not_configured", runs: [] };
+      status = save(runId, status);
+      return step(
+        runId,
+        status,
+        "ci",
+        "skipped",
+        "downstream release CI is not configured",
+      );
+    }
+    await sleep(handoff.pollSec * 1000);
+  }
+  if (!discovered.size) {
+    status.ship.releaseCi = {
+      ...status.ship.releaseCi,
+      state: "not_configured",
+    };
+    status.ship.ci = { state: "not_configured", runs: [] };
+    status = save(runId, status);
+    return step(
+      runId,
+      status,
+      "ci",
+      "skipped",
+      "downstream release CI is not configured",
+    );
+  }
+  const finalRuns = [...discovered.values()];
+  if (finalRuns.every(
+    (run) => run.status === "completed"
+      && String(run.conclusion || "").toLowerCase() === "success",
+  )) {
+    return step(
+      runId,
+      status,
+      "ci",
+      "done",
+      `${finalRuns.length} tag-triggered workflow run(s) green`,
+    );
+  }
+  throw new ShipBlockedError("Timed out waiting for tag-triggered release CI.", [
+    "Inspect GitHub Actions and rerun ship without moving the published tag.",
+  ]);
+}
+
+async function tagRelease(runId, status, handoff, sha, dependencies) {
+  const { exec, now } = dependencies;
   const tag = `v${handoff.version}`;
   status = phase(runId, status, "tag", `publishing ${tag}`);
   const local = exec("git", ["rev-parse", `refs/tags/${tag}^{}`], { cwd: handoff.repoRoot });
@@ -1412,12 +1616,36 @@ function tagRelease(runId, status, handoff, sha, exec) {
         "Choose a new version; published tags must not move.",
       ]);
     }
+    if (status.ship.releaseCi?.sha !== sha || !Array.isArray(status.ship.releaseCi.beforeRunIds)) {
+      throw new ShipBlockedError(
+        `${tag} already exists remotely, but its pre-push GitHub Actions snapshot is unavailable.`,
+        ["Do not move the tag; review the release workflow evidence manually."],
+      );
+    }
   } else {
+    const beforeRuns = await readActionsRuns(
+      runId,
+      status,
+      handoff,
+      sha,
+      dependencies,
+      "pre-tag GitHub Actions snapshot",
+    );
+    status.ship.releaseCi = {
+      sha,
+      state: "snapshotted",
+      beforeRunIds: beforeRuns.map((run) => run.id),
+      snapshotAt: new Date(now()).toISOString(),
+      observedAt: null,
+      runs: [],
+    };
+    status = save(runId, status);
     if (!local.ok) must(exec, "git", ["tag", tag, sha], handoff.repoRoot, "create release tag");
     must(exec, "git", ["push", handoff.remote, tag], handoff.repoRoot, "push release tag");
   }
   status.ship.tag = tag;
-  return step(runId, status, "tag", "done", tag);
+  status = step(runId, status, "tag", "done", tag);
+  return await observeTagTriggeredRuns(runId, status, handoff, sha, dependencies);
 }
 
 export function applyVersionStamp(repoRoot, version, summary, timestamp = Date.now()) {
@@ -1573,11 +1801,24 @@ export function inspectFormalProviderCapabilities(handoff, exec = execCommand) {
   const repository = must(
     exec,
     "gh",
-    ["repo", "view", "--json", "nameWithOwner,viewerPermission,autoMergeAllowed,squashMergeAllowed"],
+    ["repo", "view", "--json", "nameWithOwner,viewerPermission"],
     handoff.worktree,
     "inspect repository shipping capabilities",
   );
-  const repo = parseJson(repository.stdout, "repository shipping capabilities");
+  const repo = parseProviderEvidence(
+    repository.stdout,
+    "repository identity and permission",
+  );
+  const settings = parseProviderEvidence(
+    must(
+      exec,
+      "gh",
+      ["api", "repos/{owner}/{repo}"],
+      handoff.worktree,
+      "inspect repository merge settings",
+    ).stdout,
+    "repository merge settings",
+  );
   const identity = must(
     exec,
     "gh",
@@ -1592,17 +1833,29 @@ export function inspectFormalProviderCapabilities(handoff, exec = execCommand) {
   );
   let protection = null;
   if (protectionResult.ok) {
-    protection = parseJson(protectionResult.stdout, "base branch protection");
+    protection = parseProviderEvidence(protectionResult.stdout, "base branch protection");
   } else if (!isUnprotectedBranchResponse(protectionResult)) {
     throw new ShipBlockedError(
       `Unable to inspect protection for ${handoff.base}: ${protectionResult.stderr || protectionResult.stdout || "unknown error"}`,
       ["Grant read access to repository branch protection, then rerun Ship Gate."],
     );
   }
+  const contexts = protection?.required_status_checks?.contexts;
+  const checks = protection?.required_status_checks?.checks;
+  const reviews = protection?.required_pull_request_reviews;
+  let requiredApprovals = null;
+  if (reviews === null) {
+    requiredApprovals = 0;
+  } else if (
+    Number.isInteger(reviews?.required_approving_review_count)
+    && reviews.required_approving_review_count >= 0
+  ) {
+    requiredApprovals = reviews.required_approving_review_count;
+  }
   const requiredChecks = [
-    ...(protection?.required_status_checks?.contexts || []),
-    ...(protection?.required_status_checks?.checks || []).map((check) => check.context),
-  ].filter(Boolean);
+    ...(Array.isArray(contexts) ? contexts : []),
+    ...(Array.isArray(checks) ? checks.map((check) => check?.context) : []),
+  ].filter((context) => typeof context === "string" && context);
   const permission = String(repo.viewerPermission || "").toUpperCase();
   const canWrite = ["WRITE", "MAINTAIN", "ADMIN"].includes(permission);
   return {
@@ -1615,14 +1868,29 @@ export function inspectFormalProviderCapabilities(handoff, exec = execCommand) {
       name: handoff.base,
       protected: Boolean(protection),
       requiredChecks: [...new Set(requiredChecks)].sort(),
-      requiredApprovals: Number(
-        protection?.required_pull_request_reviews?.required_approving_review_count || 0,
-      ),
+      requiredApprovals,
     },
-    autoMerge: Boolean(repo.autoMergeAllowed),
-    mergeMethod: repo.squashMergeAllowed ? "squash" : null,
+    autoMerge: settings.allow_auto_merge === true,
+    mergeMethod: settings.allow_squash_merge === true ? "squash" : null,
     releaseAllowed: canWrite,
   };
+}
+
+function parseProviderEvidence(value, label) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(value || "null"));
+  } catch (error) {
+    throw new ShipBlockedError(`GitHub returned invalid ${label} JSON: ${error.message}`, [
+      "Resolve the GitHub capability query and rerun Ship Gate.",
+    ]);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ShipBlockedError(`GitHub returned malformed ${label} evidence.`, [
+      "Resolve the GitHub capability query and rerun Ship Gate.",
+    ]);
+  }
+  return parsed;
 }
 
 function isUnprotectedBranchResponse(result) {
@@ -1659,6 +1927,15 @@ function assertFormalProviderCapabilities(capabilities, handoff) {
       `${handoff.base} has no inspectable required CI checks; Formal Flow cannot prove CI will gate auto-merge.`,
       [
         `Protect ${handoff.base} and configure at least one required status check before approving Formal Flow shipping.`,
+        "Keep the repository policy and ship outside automated Formal Flow.",
+      ],
+    );
+  }
+  if (!Number.isInteger(capabilities.base.requiredApprovals)) {
+    throw new ShipBlockedError(
+      `${handoff.base} has no inspectable required-review evidence; Formal Flow cannot prove the approval policy.`,
+      [
+        `Grant access to inspect ${handoff.base} branch protection, then rerun Ship Gate.`,
         "Keep the repository policy and ship outside automated Formal Flow.",
       ],
     );
@@ -1813,16 +2090,20 @@ export function requiredStatusContexts(exec, cwd, baseBranch) {
     "gh",
     [
       "api",
-      `repos/{owner}/{repo}/branches/${baseBranch}/protection/required_status_checks`,
-      "--jq",
-      ".contexts // []",
+      `repos/{owner}/{repo}/branches/${encodeURIComponent(baseBranch)}/protection/required_status_checks`,
     ],
     { cwd },
   );
   if (!result.ok) return null;
   try {
     const parsed = JSON.parse(String(result.stdout || "null"));
-    return Array.isArray(parsed) ? parsed.map(String) : null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const contexts = Array.isArray(parsed.contexts) ? parsed.contexts : [];
+    const checks = Array.isArray(parsed.checks) ? parsed.checks : [];
+    return [...new Set([
+      ...contexts,
+      ...checks.map((check) => check?.context),
+    ].filter((context) => typeof context === "string" && context))].sort();
   } catch {
     return null;
   }

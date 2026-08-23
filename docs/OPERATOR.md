@@ -646,7 +646,10 @@ The detached supervisor commits only approved work, pushes a non-base branch,
 finds or creates the pull request, enables `gh pr merge --auto --squash`, and
 watches required checks until merge. For `all`, it updates the existing version
 stamp set, runs `check:version` when provided, verifies the immutable stamp at
-the merge SHA, and then publishes the matching tag.
+the merge SHA, snapshots existing Actions runs for that SHA, and then publishes
+the matching tag. It discovers every newly registered run for the release SHA
+and waits for all of them to succeed. If none registers within the bounded
+grace period, status records downstream release CI as not configured.
 
 Optional overrides are `--repo`, `--worktree`, `--branch`, `--base`,
 `--remote`, and `--pr`. Use them only when the run metadata is incomplete and
@@ -662,7 +665,9 @@ Read `status.json.ship` on every wake. Report with
 [`skills/pr-manager/reporting.md`](../skills/pr-manager/reporting.md). A
 blocked ship phase is resumable by correcting the external condition and
 rerunning the same detached command. Cancel with the normal `cancel` command.
-The ship phase never bypasses failed checks or creates a GitHub Release.
+The ship phase never bypasses failed checks and does not directly create a
+GitHub Release. A repository workflow triggered by its approved tag may create
+one.
 
 ## Cancellation and retention
 
