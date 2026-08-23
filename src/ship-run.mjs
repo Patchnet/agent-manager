@@ -1654,6 +1654,15 @@ function assertFormalProviderCapabilities(capabilities, handoff) {
       "Enable squash merge before approving Formal Flow shipping.",
     ]);
   }
+  if (!capabilities.base.protected || capabilities.base.requiredChecks.length === 0) {
+    throw new ShipBlockedError(
+      `${handoff.base} has no inspectable required CI checks; Formal Flow cannot prove CI will gate auto-merge.`,
+      [
+        `Protect ${handoff.base} and configure at least one required status check before approving Formal Flow shipping.`,
+        "Keep the repository policy and ship outside automated Formal Flow.",
+      ],
+    );
+  }
   if (capabilities.base.requiredApprovals > 0) {
     throw new ShipBlockedError(
       `${handoff.base} requires ${capabilities.base.requiredApprovals} GitHub approving review(s); the approved transaction cannot complete without another human approval.`,

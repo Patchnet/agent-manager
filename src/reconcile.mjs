@@ -58,6 +58,12 @@ export async function reconcileExternalDelivery(status, {
         `delivery target ${target.id} recorded merge ${target.mergeSha}, but provider reports ${mergeSha}`,
       );
     }
+    if (!Array.isArray(pr.checks) || pr.checks.length === 0) {
+      throw new ReconciliationError(
+        "checks-unavailable",
+        `pull request ${prRef} has no required CI check evidence; reconciliation cannot prove CI gated the merge`,
+      );
+    }
     if (pr.requiredChecksSatisfied !== true) {
       const detail = failedOrPendingChecks(pr.checks).join(", ") || "required-check evidence unavailable";
       throw new ReconciliationError("checks-unverified", `pull request ${prRef} checks are not verified: ${detail}`);
@@ -213,7 +219,7 @@ export function createGitHubProvider({ cwd, remote = "origin", exec = execute } 
         head: pr.headRefName || null,
         base: pr.baseRefName || null,
         checks,
-        requiredChecksSatisfied: failedOrPendingChecks(checks).length === 0,
+        requiredChecksSatisfied: checks.length > 0 && failedOrPendingChecks(checks).length === 0,
       };
     },
     async inspectTag(tag) {
@@ -248,6 +254,40 @@ export function createGitHubProvider({ cwd, remote = "origin", exec = execute } 
       return ["ahead", "identical"].includes(String(compare.status).toLowerCase());
     },
   };
+}
+
+export function parseReconcileArgs(args = []) {
+  const flags = { runId: null, provider: "github", json: false };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--json") flags.json = true;
+    else if (arg === "--provider") {
+      const value = args[++index];
+      if (!value) throw new Error("--provider requires a value");
+      flags.provider = value;
+    } else if (arg.startsWith("-")) throw new Error(`unknown reconcile flag: ${arg}`);
+    else if (flags.runId) throw new Error(`unexpected reconcile argument: ${arg}`);
+    else flags.runId = arg;
+  }
+  if (!flags.runId) throw new Error("reconcile requires <runId>");
+  if (flags.provider !== "github") {
+    throw new Error(`unsupported reconcile provider: ${flags.provider}; current adapter: github`);
+  }
+  return flags;
+}
+
+export function formatReconciliation(status) {
+  const targets = status.reconciliation?.targets || [];
+  return [
+    `reconciled: ${status.runId}`,
+    `state: ${status.state}`,
+    `provider: ${status.reconciliation?.provider || "unknown"}`,
+    `targets: ${targets.length}`,
+    ...targets.map((target) => `target ${target.id}: ${target.pr} @ ${target.mergeSha}`),
+    ...(status.reconciliation?.release
+      ? [`release: ${status.reconciliation.release.tag} @ ${status.reconciliation.release.sha}`]
+      : []),
+  ].join("\n");
 }
 
 function assertMergedPullRequest(target, pr) {

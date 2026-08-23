@@ -61,7 +61,7 @@ function providerCapabilityResponse(command, args, overrides = {}) {
   }
   if (command === "gh" && args[0] === "api" && String(args[1]).includes("/protection")) {
     return ok(JSON.stringify({
-      required_status_checks: { contexts: overrides.requiredChecks || ["quality"] },
+      required_status_checks: { contexts: overrides.requiredChecks ?? ["quality"] },
       required_pull_request_reviews: {
         required_approving_review_count: overrides.requiredApprovals || 0,
       },
@@ -239,6 +239,11 @@ test("Formal preflight freezes provider capabilities and fails before mutation o
   assert.throws(
     () => preflightShipHandoff(reviews, makeExec({ requiredApprovals: 1 })),
     /requires 1 GitHub approving review/,
+  );
+  const noRequiredCi = { ...handoff, providerCapabilities: null };
+  assert.throws(
+    () => preflightShipHandoff(noRequiredCi, makeExec({ requiredChecks: [] })),
+    /no inspectable required CI checks/,
   );
   assert.equal(
     calls.some((call) => call[0] === "git" && ["add", "commit", "push"].includes(call[1])),

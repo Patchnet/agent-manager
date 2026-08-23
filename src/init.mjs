@@ -5,6 +5,7 @@ import { DEFAULT_MAX_CONCURRENCY, MAX_LANES } from "./constants.mjs";
 import { writePrivateFile } from "./fs-safe.mjs";
 import { assertPathInside } from "./paths.mjs";
 import { resolveGitRef } from "./worktree.mjs";
+import { recommendedNodeDependencySetup } from "./workflow.mjs";
 
 export function initWorkflow({ repo = process.cwd(), output = "agent-manager.yaml", request = "Implement the requested change", harnesses = ["claude", "codex"] } = {}) {
   const target = resolve(repo, output);
@@ -74,6 +75,17 @@ export function initWorkflow({ repo = process.cwd(), output = "agent-manager.yam
     },
     lanes,
   };
+  const dependencySetup = recommendedNodeDependencySetup(repo);
+  if (dependencySetup) {
+    workflow.verification = {
+      setup: {
+        commands: dependencySetup.commands,
+        timeout_sec: dependencySetup.timeout_sec,
+      },
+      commands: [{ command: "npm", args: ["test"] }],
+      timeout_sec: 900,
+    };
+  }
   writePrivateFile(target, YAML.stringify(workflow), "utf8");
   return { path: target, contextPath: null, planningReady: false, workflow };
 }

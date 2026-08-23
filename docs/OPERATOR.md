@@ -883,6 +883,19 @@ CLI flow instead of duplicating them.
 Ship Gate is installed or referenced separately because it is repository-owned
 approval policy, not part of the orchestration runtime.
 
+## Reconcile stale external delivery
+
+If GitHub completed an approved delivery while the local supervisor was
+interrupted, verify the provider evidence and repair the delivery ledger with:
+
+```bash
+agent-manager reconcile <runId> --provider github
+```
+
+Reconciliation fails closed unless the recorded pull request is merged, at
+least one CI check is present and successful, and any release tag contains the
+verified merge. An empty GitHub check rollup is never accepted as successful CI.
+
 ## Public repository hygiene
 
 Run these checks before proposing a public change:

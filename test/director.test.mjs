@@ -241,6 +241,26 @@ test("dry cycle writes validated workflow drafts and kickoff commands", async ()
   }
 });
 
+test("Director Node drafts compile deterministic lockfile setup before verification", async () => {
+  const fx = fixture();
+  try {
+    writeFileSync(join(fx.repo, "package.json"), JSON.stringify({ scripts: { test: "tsc --noEmit" } }));
+    writeFileSync(join(fx.repo, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
+    writeItems(fx.itemsPath, [item("node-workflow")]);
+    const result = await runDirectorCycle({
+      policyPath: fx.policyPath,
+      itemsPath: fx.itemsPath,
+      stateRoot: fx.stateRoot,
+      dryRun: true,
+    });
+    assert.equal(result.drafts[0].validateOk, true);
+    const workflow = readFileSync(result.drafts[0].path, "utf8");
+    assert.match(workflow, /setup:[\s\S]*command: npm[\s\S]*- ci[\s\S]*commands:[\s\S]*- test/);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
 test("Director drafts carry a bounded review-to-ship policy without launching", async () => {
   const fx = fixture();
   try {

@@ -3,7 +3,7 @@ import { basename, join } from "node:path";
 import YAML from "yaml";
 import { assertSafeSlug } from "../paths.mjs";
 import { loadAutomationPolicy } from "../authorization.mjs";
-import { loadWorkflow } from "../workflow.mjs";
+import { loadWorkflow, recommendedNodeDependencySetup } from "../workflow.mjs";
 
 function safeLaneId(itemId, index) {
   const raw = String(itemId || `item-${index + 1}`)
@@ -128,6 +128,17 @@ function buildWorkflowDocument({
     },
     lanes,
   };
+  const dependencySetup = recommendedNodeDependencySetup(policy.repoRoot);
+  if (dependencySetup) {
+    document.verification = {
+      setup: {
+        commands: dependencySetup.commands,
+        timeout_sec: dependencySetup.timeout_sec,
+      },
+      commands: [{ command: "npm", args: ["test"] }],
+      timeout_sec: 900,
+    };
+  }
   return document;
 }
 

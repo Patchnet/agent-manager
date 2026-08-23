@@ -26,6 +26,7 @@ import { assertPlanningReady } from "../src/planning.mjs";
 import { ratifyLane } from "../src/ratify.mjs";
 import { prepareReply, resumeLane } from "../src/reply.mjs";
 import { buildDeliveryReview, closeoutRun, fileRunArtifacts } from "../src/review.mjs";
+import { formatReconciliation, parseReconcileArgs, reconcileRun } from "../src/reconcile.mjs";
 import { newRunId, runWorkflow } from "../src/run.mjs";
 import {
   blockQueuedShip,
@@ -146,6 +147,8 @@ function usage() {
     "  agent-manager file-artifacts <runId> [--json]",
     "  agent-manager next-action <runId> [--json]",
     "  agent-manager delivery-ready <runId> [--require merged|released] [--json]",
+    "  agent-manager reconcile <runId> [--provider github] [--json]",
+    "    verifies provider PR/check/tag ancestry evidence before repairing a stale delivery ledger",
     "  agent-manager authorization create <runId> --level through-pr|all --operator <id> --expires-at <iso> --risk <level> --risk-ceiling <level> --provider-mode <mode> [ship inputs] [--json]",
     "  agent-manager authorization inspect <runId> [--json]",
     "  agent-manager authorization revoke <runId> --operator <id> [--reason <text>] [--json]",
@@ -1299,6 +1302,13 @@ async function main() {
       `state: ${result.state}`,
     ].join("\n"));
     if (!result.ready) process.exitCode = 2;
+    return;
+  }
+
+  if (cmd === "reconcile") {
+    const flags = parseReconcileArgs(args.slice(1));
+    const result = await reconcileRun(flags.runId);
+    console.log(flags.json ? JSON.stringify(result) : formatReconciliation(result));
     return;
   }
 

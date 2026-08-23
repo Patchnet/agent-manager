@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.22.0
+current: 1.23.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.23.0 - 2026-08-23
+
+Streamline internal shipping, runtime activation, and truthful delivery.
 
 ## 1.22.0 - 2026-08-21
 
