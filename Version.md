@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.23.0
+current: 1.23.1
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.23.1 - 2026-08-24
+
+Repair GitHub Formal Flow and cache dependency setup.
 
 ## 1.23.0 - 2026-08-23
 
