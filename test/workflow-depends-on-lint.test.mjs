@@ -74,7 +74,10 @@ test("the advisory never fails the load", () => {
 
 test("a declared depends_on silences the warning", () => {
   const workflow = load(CROSSING_TREE, [{ ...UI_LANE, depends_on: ["core"] }, CORE_LANE]);
-  assert.deepEqual(workflow.lint_warnings, []);
+  assert.equal(
+    workflow.lint_warnings.some((warning) => warning.type === "missing-depends-on"),
+    false,
+  );
 });
 
 test("a transitive depends_on silences the warning", () => {
@@ -86,7 +89,10 @@ test("a transitive depends_on silences the warning", () => {
       CORE_LANE,
     ],
   );
-  assert.deepEqual(workflow.lint_warnings, []);
+  assert.equal(
+    workflow.lint_warnings.some((warning) => warning.type === "missing-depends-on"),
+    false,
+  );
 });
 
 test("disjoint scopes with no import edge stay silent", () => {

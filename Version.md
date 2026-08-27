@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.23.1
+current: 1.24.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.24.0 - 2026-08-27
+
+Add selected-harness preflight, serialized-topology guidance, portable-script line-ending guards, and single-lane initialization defaults.
 
 ## 1.23.1 - 2026-08-24
 

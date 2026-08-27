@@ -7,7 +7,7 @@ import { assertPathInside } from "./paths.mjs";
 import { resolveGitRef } from "./worktree.mjs";
 import { recommendedNodeDependencySetup } from "./workflow.mjs";
 
-export function initWorkflow({ repo = process.cwd(), output = "agent-manager.yaml", request = "Implement the requested change", harnesses = ["claude", "codex"] } = {}) {
+export function initWorkflow({ repo = process.cwd(), output = "agent-manager.yaml", request = "Implement the requested change", harnesses = ["claude"] } = {}) {
   const target = resolve(repo, output);
   assertPathInside(repo, target, "workflow output");
   if (existsSync(target)) throw new Error(`refusing to overwrite existing workflow: ${target}`);

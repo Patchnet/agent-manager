@@ -105,6 +105,9 @@ export function writeReport(runId, status) {
     if (lane.readOnlyViolations?.length) {
       lines.push(`- **read-only violations:** ${lane.readOnlyViolations.join(", ")}`);
     }
+    if (lane.portableScriptViolations?.length) {
+      lines.push(`- **portable-script line-ending violations:** ${lane.portableScriptViolations.join(", ")}`);
+    }
     if (lane.policyViolations?.length) {
       lines.push(`- **policy violations:** ${lane.policyViolations.join("; ")}`);
     }
@@ -244,6 +247,11 @@ export function writeReport(runId, status) {
         `- approved sequential overlaps: ${status.integrate.approvedChangedFileOverlaps
           .map((item) => `${item.file} (${item.lanes.join(" -> ")})`)
           .join("; ")}`,
+      );
+    }
+    if (status.integrate.portableScriptViolations?.length) {
+      lines.push(
+        `- **portable-script line-ending violations:** ${status.integrate.portableScriptViolations.join(", ")}`,
       );
     }
     if (status.integrate.verification) {

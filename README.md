@@ -60,6 +60,11 @@ flowchart LR
 | Approved work should ship without blocking the host chat | All three |
 | A human will handle GitHub after review | 🎛️ Agent Manager only; stop after Delivery Review |
 
+One coherent task should normally stay with one agent. Use multiple lanes only
+when the scopes are genuinely independent or dependency ordering adds clear
+value. For ordinary single-agent work, a direct coding agent followed by Ship
+Gate is the smaller path.
+
 ### Director proposal cycle
 
 Director is a policy-bound **proposal** layer above Agent Manager — not full
@@ -724,12 +729,20 @@ workflow shape but is intentionally not runnable as-is.
 
 ```bash
 agent-manager init --repo /path/to/repo \
-  --request "Implement the feature and update its documentation" \
-  --harnesses claude,codex
+  --request "Implement the feature and update its documentation"
 # Review the source, repository instructions, relevant code, and generated scopes.
 # Complete workflow.planning and agent-manager.context.md before validation.
 agent-manager validate /path/to/repo/agent-manager.yaml
 agent-manager run /path/to/repo/agent-manager.yaml --detach --json
+```
+
+The default creates one Claude implementation lane. Request multiple harnesses
+only when the work has real lane boundaries:
+
+```bash
+agent-manager init --repo /path/to/repo \
+  --request "Implement independent API and documentation scopes" \
+  --harnesses claude,codex
 ```
 
 Review the generated scopes and complete the draft `planning` block before
@@ -740,10 +753,10 @@ instructions and relevant code, then set the four attestations true. Validation
 fails if planning is incomplete or if the reviewed SHA no longer matches
 `base_ref`. Agent Manager does not query the source system itself.
 
-The initializer produces up to five independent lanes, defaults active
-concurrency to three, and enables a local integrate branch so lane changes are
-not stranded. It never enables worker commits, pull requests, or dangerous
-permission bypass.
+The initializer produces one lane by default. An explicit harness list can
+produce up to five lanes; active concurrency remains capped at three. Generated
+workflows enable a local integrate branch so lane changes are not stranded.
+They never enable worker commits, pull requests, or dangerous permission bypass.
 
 Lane count and active concurrency are separate:
 
@@ -825,6 +838,12 @@ output not covered by the lane scope, including extension mismatches such as a
 when the dependency graph is fully serialized and a single queued agent would
 be more efficient.
 
+Changed portable Unix scripts must use LF line endings. A changed `.sh`,
+`.bash`, `.zsh`, or `.ksh` file, or any changed file beginning with `#!`, fails
+its lane when it contains CRLF. Integration repeats the check before Delivery
+Review and reports every repository-relative offending path; files are never
+rewritten automatically.
+
 ## Install host skills
 
 Install the bundled Agent Manager and PR Manager skills for the host that will
@@ -883,7 +902,7 @@ in `master-return.json`, `master-handoff.json`, and
 ```text
 agent-manager doctor [--repo <path>]
 agent-manager validate <workflow.yaml> [--repo <path>]
-agent-manager init --repo <path> [--request <text>] [--harnesses claude,codex]
+agent-manager init --repo <path> [--request <text>] [--harnesses <names>]
 agent-manager run <workflow.yaml> --detach [--repo <path>] [--json]
   [--title <subject>] [--repo-shorthand <name>]
   [--manager-harness <name>] [--manager-model <model>]

@@ -48,7 +48,12 @@ test("version, init, validate, and project Cursor install work from a fresh dire
   const validated = JSON.parse(run(["validate", initialized.path, "--json"]));
   assert.equal(validated.ok, true);
   assert.equal(validated.planning.state, "verified");
-  assert.equal(validated.lanes.length, 2);
+  assert.equal(validated.lanes.length, 1);
+  assert.equal(validated.laneCount, 1);
+  assert.equal(validated.configuredConcurrency, 1);
+  assert.equal(validated.effectiveParallelism, 1);
+  assert.equal(validated.fullySerialized, false);
+  assert.equal(validated.warnings.some((warning) => warning.code === "fully-serialized-multi-lane"), false);
   const installed = JSON.parse(run(["install", "cursor", "--project", repo, "--json"]));
   assert.equal(installed.host, "cursor");
   assert.ok(existsSync(join(repo, ".cursor", "skills", "agent-manager", "SKILL.md")));

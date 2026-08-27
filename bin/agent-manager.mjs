@@ -108,7 +108,8 @@ function usage() {
     "                   --return-session <id>; disable with --no-master-return",
     "  agent-manager validate <workflow.yaml> [--repo <path>] [--json]",
     "  agent-manager doctor [--repo <path>] [--json]",
-    "  agent-manager init [--repo <path>] [--request <text>] [--harnesses claude,codex]",
+    "  agent-manager init [--repo <path>] [--request <text>] [--harnesses <names>]",
+    "    default: one claude implementation lane; multiple lanes require an explicit list",
     "  agent-manager demo [--dir <path>] [--no-run] [--json]",
     "  agent-manager status [runId] [--watch] [--json]",
     "  agent-manager events <runId> [--jsonl]",
@@ -699,6 +700,12 @@ async function detachRun(flags) {
   assertDangerousPermissionApproval(workflow, flags.dangerous);
   preflightWorkflow(workflow);
   if (workflow.goal_refs.length) await assertGoalsExist(workflow.goal_refs);
+  const topologyWarnings = workflow.lint_warnings.filter(
+    (warning) => warning.code === "fully-serialized-multi-lane",
+  );
+  if (!flags.quiet && !flags.json) {
+    for (const warning of topologyWarnings) console.error(`warning: ${warning.message}`);
+  }
   const runId = assertSafeSlug(flags.runId || newRunId(), "run id");
   const dir = runDir(runId);
   if (existsSync(dir)) throw new Error(`run id already exists: ${runId}`);
@@ -767,6 +774,8 @@ async function detachRun(flags) {
     identity: runIdentity,
     suggestedThreadTitle: runIdentity.suggestedThreadTitle,
     runtime: workflow.runtime,
+    topology: workflow.topology,
+    warnings: topologyWarnings,
     telemetry: join(dir, "status.json"), supervisorLog: logPath,
     statusCommand: `agent-manager status ${runId}`,
     masterReturn: returnWatcher,
@@ -775,6 +784,10 @@ async function detachRun(flags) {
     console.log(flags.json ? JSON.stringify(payload) : [
       `runId: ${runId}`, `title: ${runIdentity.displayTitle}`, `agent-manager: v${AGENT_MANAGER_VERSION}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
       `runtime: ${formatRuntime(payload.runtime)}`,
+      `lanes: ${workflow.lanes.length}`,
+      `configured concurrency: ${workflow.max_concurrency}`,
+      `effective parallelism: ${workflow.topology.effectiveParallelism}`,
+      `fully serialized: ${workflow.topology.fullySerialized ? "yes" : "no"}`,
       `supervisorLog: ${logPath}`, `status: ${payload.statusCommand}`,
       `masterReturn: ${returnWatcher ? `${returnWatcher.state} (${returnWatcher.channel.host}/${returnWatcher.channel.mode})` : "not configured"}`,
       `monitor: agent-manager monitor ${runId}`, `watch-signal: agent-manager watch-signal ${runId}`,
@@ -998,7 +1011,12 @@ async function main() {
       schema: "agent-manager.validation.v1",
       ok: true,
       repo: workflow.repoRoot,
+      laneCount: workflow.lanes.length,
+      configuredConcurrency: workflow.max_concurrency,
       maxConcurrency: workflow.max_concurrency,
+      effectiveParallelism: workflow.topology.effectiveParallelism,
+      fullySerialized: workflow.topology.fullySerialized,
+      topology: workflow.topology,
       lanes: workflow.lanes.map(({
         id,
         harness,
@@ -1018,8 +1036,16 @@ async function main() {
       `valid: ${file}`,
       `repo: ${payload.repo}`,
       `runtime: ${formatRuntime(payload.runtime)}`,
-      `lanes: ${payload.lanes.length}`,
-      ...payload.warnings.map((warning) => `warning: ${warning.message}`),
+      `lanes: ${payload.laneCount}`,
+      `configured concurrency: ${payload.configuredConcurrency}`,
+      `effective parallelism: ${payload.effectiveParallelism}`,
+      `fully serialized: ${payload.fullySerialized ? "yes" : "no"}`,
+      ...(payload.topology.recommendation
+        ? [`recommendation: ${payload.topology.recommendation}`]
+        : []),
+      ...payload.warnings
+        .filter((warning) => warning.code !== "fully-serialized-multi-lane")
+        .map((warning) => `warning: ${warning.message}`),
     ].join("\n"));
     return;
   }
@@ -1033,7 +1059,10 @@ async function main() {
 
   if (cmd === "init") {
     const repo = resolve(flagValue("--repo") || process.cwd());
-    const harnesses = (flagValue("--harnesses") || "claude,codex").split(",").map((value) => value.trim()).filter(Boolean);
+    const harnessFlag = flagValue("--harnesses");
+    const harnesses = harnessFlag
+      ? harnessFlag.split(",").map((value) => value.trim()).filter(Boolean)
+      : undefined;
     const result = initWorkflow({ repo, output: flagValue("--output") || "agent-manager.yaml", request: flagValue("--request") || "Implement the requested change", harnesses });
     console.log(args.includes("--json") ? JSON.stringify(result) : [
       `created: ${result.path}`,
@@ -1475,4 +1504,8 @@ async function main() {
   throw new Error("unknown command: " + cmd);
 }
 
-main().catch((error) => { console.error(error?.stack || error); process.exitCode = 1; });
+main().catch((error) => {
+  const structured = args.includes("--json") && typeof error?.toJSON === "function";
+  console.error(structured ? JSON.stringify(error.toJSON()) : error?.stack || error);
+  process.exitCode = 1;
+});

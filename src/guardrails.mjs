@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { lstatSync, readFileSync } from "node:fs";
+import { extname, join } from "node:path";
 import { matchesScope } from "./scope.mjs";
 
 export { matchesScope } from "./scope.mjs";
@@ -52,6 +54,46 @@ export function inspectLaneChanges(worktree, baseCommit = "HEAD") {
   ].map(normalizePath))].sort();
 }
 
+const PORTABLE_SHELL_EXTENSIONS = new Set([".sh", ".bash", ".zsh", ".ksh"]);
+
+export function inspectPortableScriptLineEndings({
+  worktree,
+  baseCommit = "HEAD",
+  changedFiles = null,
+}) {
+  const files = changedFiles || inspectLaneChanges(worktree, baseCommit);
+  const violations = [];
+  for (const file of files) {
+    let contents;
+    try {
+      contents = readEffectiveChangedFile(worktree, file);
+      if (!contents) continue;
+    } catch {
+      // Deleted paths and non-files cannot carry accepted script contents.
+      continue;
+    }
+    const portable = PORTABLE_SHELL_EXTENSIONS.has(extname(file).toLowerCase()) ||
+      (contents[0] === 0x23 && contents[1] === 0x21);
+    if (portable && contents.includes(Buffer.from("\r\n"))) violations.push(file);
+  }
+  return violations;
+}
+
+function readEffectiveChangedFile(worktree, file) {
+  const path = join(worktree, file);
+  const tracked = git(worktree, ["ls-files", "--error-unmatch", "--", file]).ok;
+  const clean = tracked && git(worktree, ["diff", "--quiet", "HEAD", "--", file]).ok;
+  if (!clean) {
+    if (!lstatSync(path).isFile()) return null;
+    return readFileSync(path);
+  }
+  const result = spawnSync("git", ["-C", worktree, "show", `HEAD:${file}`], {
+    encoding: null,
+    windowsHide: true,
+  });
+  return result.status === 0 ? result.stdout : null;
+}
+
 /**
  * The patterns a lane may write to: its declared scope plus every scope
  * extension Master granted while answering the lane. A grant is recorded on the
@@ -81,6 +123,11 @@ export function validateLaneGuardrails({
   const readOnlyViolations = changedFiles.filter((file) =>
     readOnlyPatterns.some((pattern) => matchesScope(file, pattern)),
   );
+  const portableScriptViolations = inspectPortableScriptLineEndings({
+    worktree,
+    baseCommit,
+    changedFiles,
+  });
   const commits = git(worktree, ["rev-list", "--count", baseCommit + "..HEAD"]);
   if (!commits.ok) throw new Error(commits.stderr || "unable to inspect worker commits");
   const commitCount = Number.parseInt(commits.stdout || "0", 10);
@@ -91,6 +138,9 @@ export function validateLaneGuardrails({
   if (policy.allow_commit !== true && commitCount > 0) {
     policyViolations.push("worker created " + commitCount + " commit(s) while allow_commit=false");
   }
+  for (const file of portableScriptViolations) {
+    policyViolations.push(`portable Unix script uses CRLF line endings: ${file}`);
+  }
   return {
     ok:
       scopeViolations.length === 0 &&
@@ -99,6 +149,7 @@ export function validateLaneGuardrails({
     changedFiles,
     scopeViolations,
     readOnlyViolations,
+    portableScriptViolations,
     commitCount,
     policyViolations,
   };

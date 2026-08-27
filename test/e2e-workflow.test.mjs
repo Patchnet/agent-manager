@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createE2eFixture } from "../test-support/e2e-fixture.mjs";
 
 const {
+  root,
   runsRoot,
   repo,
+  env,
   claimLog,
   fixtureBase,
   feedEvents,
@@ -175,6 +178,96 @@ test("a zero-change implementation lane fails before delivery review", async () 
   assert.notEqual(failed.state, "delivery_review_pending");
 });
 
+test("selected missing harness fails before run intent, claims, or worktrees", async () => {
+  const runId = "run-missing-selected-harness";
+  const workflow = writeWorkflow("missing-selected-harness", baseWorkflow([{
+    id: "must-not-start",
+    harness: "claude",
+    scope: "never-created.txt",
+    prompt: "must not start",
+  }]));
+  const previous = env.CLAUDE_BIN;
+  const claimsBefore = existsSync(claimLog) ? readFileSync(claimLog, "utf8") : "";
+  env.CLAUDE_BIN = join(root, "missing-claude");
+  try {
+    await assert.rejects(
+      runCli(["run", workflow, "--run-id", runId, "--json"]),
+      (error) => {
+        const payload = JSON.parse(String(error.stderr || "").trim());
+        assert.equal(payload.code, "selected-harness-unavailable");
+        assert.equal(payload.failures[0].harness, "claude");
+        assert.match(payload.failures[0].remediation, /Verify from the same environment/);
+        return true;
+      },
+    );
+  } finally {
+    if (previous === undefined) delete env.CLAUDE_BIN;
+    else env.CLAUDE_BIN = previous;
+  }
+  assert.equal(existsSync(join(runsRoot, runId)), false);
+  assert.equal(existsSync(join(runsRoot, runId, "must-not-start", "wt")), false);
+  assert.equal(existsSync(claimLog) ? readFileSync(claimLog, "utf8") : "", claimsBefore);
+  const intents = JSON.parse((await runCli(["brain", "status", "--repo", repo, "--json"])).stdout);
+  assert.equal(intents.some((intent) => intent.runId === runId), false);
+});
+
+test("portable-script CRLF violations fail a lane and remain in review evidence", async () => {
+  const runId = "run-portable-script-crlf";
+  const workflow = writeWorkflow("portable-script-crlf", baseWorkflow([{
+    id: "launcher",
+    scope: "launch",
+    prompt: "write launcher",
+    fake: { write: { path: "launch", content: "#!/bin/sh\r\necho launch\r\n" } },
+  }]));
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  const failed = await waitForStatus(runId, (status) => status.state === "failed");
+  assert.deepEqual(failed.lanes[0].portableScriptViolations, ["launch"]);
+  assert.match(failed.lanes[0].policyViolations.join("; "), /launch/);
+
+  const review = JSON.parse((await runCli([
+    "review", runId, "--recovered", "--json",
+  ])).stdout.trim());
+  assert.match(review.markdown, /Portable-script line-ending violations: launch/);
+});
+
+test("integrated output is rechecked for portable-script CRLF before review", async () => {
+  const runId = "run-integrated-script-crlf";
+  const workflow = writeWorkflow("integrated-script-crlf", baseWorkflow([{
+    id: "launcher",
+    scope: "launch.sh",
+    prompt: "write launcher",
+    fake: { write: { path: "launch.sh", content: "#!/bin/sh\necho launch\n" } },
+  }]));
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  const workersDone = await waitForStatus(
+    runId,
+    (status) => status.state === "delivery_review_pending",
+  );
+  execFileSync("git", [
+    "-C", workersDone.lanes[0].worktree, "config", "core.autocrlf", "false",
+  ]);
+  writeFileSync(
+    join(workersDone.lanes[0].worktree, "launch.sh"),
+    "#!/bin/sh\r\necho integrated\r\n",
+  );
+
+  const integrated = JSON.parse((await runCli([
+    "integrate", runId, "--json",
+  ])).stdout.trim());
+  assert.equal(integrated.state, "blocked");
+  assert.deepEqual(
+    integrated.integrate.portableScriptViolations,
+    ["launch.sh"],
+    JSON.stringify(integrated.integrate, null, 2),
+  );
+
+  const review = JSON.parse((await runCli([
+    "review", runId, "--recovered", "--json",
+  ])).stdout.trim());
+  assert.match(review.markdown, /Portable-script line-ending violations: `launch\.sh`/);
+  assert.match(review.markdown, /structural preflight failed|Structural preflight: \*\*failed\*\*/i);
+});
+
 test("five lanes honor bounded concurrency and complete from one immutable base", async () => {
   const runId = "run-test-five-lanes";
   const workflow = writeWorkflow("five-lanes", {
@@ -226,7 +319,15 @@ test("dependent lanes can sequentially update prerequisite-owned files", async (
       fake: { write: { path: "contract.txt", content: "contract\nconsumer\n" } },
     },
   ]));
-  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  const launch = JSON.parse((await runCli([
+    "run", workflow, "--detach", "--json", "--run-id", runId,
+  ])).stdout.trim());
+  assert.equal(launch.topology.effectiveParallelism, 1);
+  assert.equal(launch.topology.fullySerialized, true);
+  assert.equal(
+    launch.warnings.some((warning) => warning.code === "fully-serialized-multi-lane"),
+    true,
+  );
   const done = await waitForStatus(runId, (status) => status.state === "delivery_review_pending");
   const consumer = done.lanes.find((lane) => lane.id === "consumer");
   assert.deepEqual(consumer.dependenciesIntegrated, ["contracts"]);

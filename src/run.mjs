@@ -44,6 +44,7 @@ import {
   listGoals,
 } from "./goals.mjs";
 import { assertPlanningReady } from "./planning.mjs";
+import { preflightSelectedHarnesses } from "./preflight.mjs";
 import { validateLaneCompletion } from "./completion.mjs";
 import {
   createPolicyEventInspector,
@@ -194,6 +195,7 @@ function applyGuardrails(lane, laneConfig, workflow) {
   lane.changedFiles = check.changedFiles;
   lane.scopeViolations = check.scopeViolations;
   lane.readOnlyViolations = check.readOnlyViolations;
+  lane.portableScriptViolations = check.portableScriptViolations;
   lane.policyViolations = [
     ...(lane.policyViolations || []),
     ...check.policyViolations,
@@ -295,6 +297,7 @@ export async function runWorkflow(workflowPath, {
       `workflow planning context changed after detach preflight: expected ${expectedPlanningDigest}, found ${planning.contextDigest}`,
     );
   }
+  preflightSelectedHarnesses(workflow);
   const goalContext = await buildRunGoalContext(workflow.goal_refs);
   const runId = assertSafeSlug(forcedId || newRunId(), "run id");
   const identity = buildRunIdentity({ runId, workflow, overrides: identityOverrides });
@@ -362,6 +365,7 @@ export async function runWorkflow(workflowPath, {
     changedFiles: [],
     scopeViolations: [],
     readOnlyViolations: [],
+    portableScriptViolations: [],
     policyViolations: [],
     ratification: null,
     needsInput: null,
@@ -780,6 +784,7 @@ export async function runWorkflow(workflowPath, {
             changedFiles: laneState.changedFiles,
             scopeViolations: laneState.scopeViolations,
             readOnlyViolations: laneState.readOnlyViolations,
+            portableScriptViolations: laneState.portableScriptViolations,
           });
         }
       } catch (error) {

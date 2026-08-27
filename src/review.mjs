@@ -15,6 +15,7 @@ import {
 import { GoalModelError, linkGoalArtifact, updateArtifactLink } from "./goals.mjs";
 import { ratificationGap } from "./ratify.mjs";
 import { writeReport } from "./report.mjs";
+import { inspectPortableScriptLineEndings } from "./guardrails.mjs";
 import {
   AuthorizationError,
   materializeReviewAuthorization,
@@ -162,6 +163,7 @@ export function buildDeliveryReview(runId, {
     lines.push(`- Changed files: ${lane.changedFiles?.length ? lane.changedFiles.map((file) => `\`${file}\``).join(", ") : "none"}`);
     lines.push(`- Scope violations: ${lane.scopeViolations?.length ? lane.scopeViolations.join(", ") : "none"}`);
     lines.push(`- Read-only violations: ${lane.readOnlyViolations?.length ? lane.readOnlyViolations.join(", ") : "none"}`);
+    lines.push(`- Portable-script line-ending violations: ${lane.portableScriptViolations?.length ? lane.portableScriptViolations.join(", ") : "none"}`);
     lines.push(`- Policy violations: ${lane.policyViolations?.length ? lane.policyViolations.join("; ") : "none"}`);
     // A ratified lane is never rendered as clean: the violations stay on the
     // record above, and this line says who accepted them and why.
@@ -217,6 +219,13 @@ export function buildDeliveryReview(runId, {
         ? status.integrate.approvedChangedFileOverlaps
             .map((item) => `${item.file} (${item.lanes.join(" -> ")})`)
             .join("; ")
+        : "none"
+    }`,
+  );
+  lines.push(
+    `- Portable-script line-ending violations: ${
+      structuralPreflight.portableScriptViolations.length
+        ? structuralPreflight.portableScriptViolations.map((file) => `\`${file}\``).join(", ")
         : "none"
     }`,
   );
@@ -305,6 +314,7 @@ function formatScopeExtensions(lane) {
 
 export function inspectDeliveryStructure(status) {
   const errors = [];
+  const portableScriptViolations = new Set(status.integrate?.portableScriptViolations || []);
   // Lanes the operator force-included via `integrate --force-lanes`. Their work
   // is in the fold, so a failed state is recorded evidence rather than a
   // structural error — but it is never silently read as `done`.
@@ -360,8 +370,31 @@ export function inspectDeliveryStructure(status) {
         `delivery target ${target.id} branch mismatch: expected ${target.branch}, found ${branch || "detached HEAD"}`,
       );
     }
+    if (status.baseCommit) {
+      try {
+        for (const file of inspectPortableScriptLineEndings({
+          worktree: target.worktree,
+          baseCommit: status.baseCommit,
+        })) {
+          portableScriptViolations.add(file);
+        }
+      } catch (error) {
+        errors.push(`delivery target ${target.id} portable-script inspection failed: ${error.message}`);
+      }
+    }
   }
-  return { ok: errors.length === 0, errors, forceIncluded };
+  if (portableScriptViolations.size) {
+    errors.push(
+      "portable Unix scripts use CRLF line endings: " +
+        [...portableScriptViolations].sort().join(", "),
+    );
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+    forceIncluded,
+    portableScriptViolations: [...portableScriptViolations].sort(),
+  };
 }
 
 /*

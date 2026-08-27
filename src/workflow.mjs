@@ -154,6 +154,17 @@ export function loadWorkflow(filePath, {
   });
   const runtime = detectRuntimeProfile();
   const topology = analyzeDependencyTopology(lanes, maxConcurrency);
+  if (topology.fullySerialized) {
+    lintWarnings.push({
+      code: "fully-serialized-multi-lane",
+      type: "fully-serialized-multi-lane",
+      laneCount: lanes.length,
+      configuredConcurrency: maxConcurrency,
+      effectiveParallelism: topology.effectiveParallelism,
+      fullySerialized: true,
+      message: topology.recommendation,
+    });
+  }
   return {
     ...doc,
     lanes,

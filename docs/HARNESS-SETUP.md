@@ -33,6 +33,14 @@ It reports that a CLI is not executable from the current process; it does not
 claim that the CLI is uninstalled. A stale PATH, a missing override, or the
 launching harness's sandbox can produce the same result.
 
+Every run repeats the existing version check for each distinct selected worker
+harness after planning validation and before run admission, claims, worktrees,
+or workers. An unavailable harness that the workflow does not select does not
+block the run, and GitHub CLI remains a shipping-phase dependency only. This
+check proves executable discovery and version-command usability; it does not
+prove that a session is authenticated. Authentication can still expire after
+preflight.
+
 ## Official installation commands
 
 ### Claude Code

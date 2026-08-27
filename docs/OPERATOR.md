@@ -22,7 +22,7 @@ for the smallest supported setup for each use case.
 npm ci
 npm link
 agent-manager doctor
-agent-manager init --repo /path/to/repo --request "Describe the change" --harnesses claude,codex
+agent-manager init --repo /path/to/repo --request "Describe the change"
 # Complete workflow.planning and agent-manager.context.md after reviewing the
 # work source, repository instructions, relevant code, and lane scopes.
 agent-manager validate /path/to/repo/agent-manager.yaml
@@ -37,6 +37,11 @@ environment changes. See [Worker harness setup](HARNESS-SETUP.md), including
 Windows npm-shim guidance.
 
 Always inspect generated lane scopes before launch.
+
+`init` creates one Claude implementation lane unless `--harnesses` explicitly
+names more than one harness. Keep one coherent task with one agent. Use multiple
+lanes only for real scope separation or useful dependency ordering. For ordinary
+single-agent work, a direct agent followed by Ship Gate is usually sufficient.
 
 The invoking manager owns source check-in and close-out. Agent Manager remains
 source-neutral and does not require workers to query a ticket, planning, or
@@ -65,6 +70,16 @@ Workflows may define up to five lanes. `max_concurrency` defaults to three and
 controls how many workers are active at once; other lanes remain visibly
 queued. Workflow validation rejects overlapping write scopes before launch.
 Use one writable owner per path.
+
+Validation reports lane count, configured concurrency, effective parallelism,
+and whether the dependency graph is fully serialized. A serialized multi-lane
+workflow remains valid, but the CLI recommends one queued agent.
+
+Lane guardrails reject CRLF in changed portable Unix scripts (`.sh`, related
+shell extensions, or any file beginning with `#!`). Ordinary text, Markdown,
+PowerShell, and batch files may retain CRLF. Integration repeats the portable
+script check before Delivery Review and records every offending relative path;
+Agent Manager does not rewrite the files.
 
 ## Detach is mandatory from a host chat
 

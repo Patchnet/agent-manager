@@ -5,7 +5,43 @@ import { resolveCursorBin } from "./harness/cursor.mjs";
 import { assertPlanningReady } from "./planning.mjs";
 import { spawnCommandSync } from "./command.mjs";
 import { harnessFailureRecommendation } from "./harness/setup.mjs";
-import { fakeHarnessAllowed } from "./constants.mjs";
+import { detectRuntimeProfile, formatRuntime } from "./runtime.mjs";
+
+export class HarnessPreflightError extends Error {
+  constructor(failures, runtime) {
+    const details = failures.map((failure) =>
+      `${failure.harness} (${failure.command}) in ${formatRuntime(runtime)}: ${failure.error}. ` +
+        failure.remediation,
+    );
+    super(`selected harness preflight failed: ${details.join("; ")}`);
+    this.name = "HarnessPreflightError";
+    this.code = "selected-harness-unavailable";
+    this.runtime = publicRuntime(runtime);
+    this.failures = failures;
+  }
+
+  toJSON() {
+    return {
+      schema: "agent-manager.error.v1",
+      ok: false,
+      code: this.code,
+      message: this.message,
+      runtime: this.runtime,
+      failures: this.failures,
+    };
+  }
+}
+
+function publicRuntime(runtime) {
+  return {
+    hostPlatform: runtime.hostPlatform,
+    os: runtime.os,
+    arch: runtime.arch,
+    shell: runtime.shell,
+    commandMode: runtime.commandMode,
+    pathStyle: runtime.pathStyle,
+  };
+}
 
 export function checkCommand(command, args = ["--version"], options = {}) {
   const { result, resolved } = spawnCommandSync(command, args, {
@@ -65,18 +101,20 @@ export function validateRepository(workflow) {
 
 export function preflightWorkflow(workflow) {
   assertPlanningReady(workflow);
-  const checks = [checkCommand("git"), ...validateRepository(workflow)];
+  return [
+    checkCommand("git"),
+    ...validateRepository(workflow),
+    ...preflightSelectedHarnesses(workflow),
+  ];
+}
+
+export function preflightSelectedHarnesses(workflow) {
+  const runtime = detectRuntimeProfile();
+  const checks = [];
   const harnessCommands = new Map();
   for (const name of new Set(workflow.lanes.map((lane) => lane.harness))) {
     getHarnessAdapter(name);
-    if (name === "fake") {
-      checks.push({
-        ok: fakeHarnessAllowed(),
-        command: "fake",
-        version: "local demo",
-        error: 'fake harness requires an explicit opt-in; use "agent-manager demo" or AGENT_MANAGER_TEST_MODE=1 in tests',
-      });
-    } else {
+    if (name !== "fake") {
       const installation = name === "codex" ? resolveCodexInstallation() : null;
       const command = name === "claude"
         ? resolveClaudeBin()
@@ -84,14 +122,18 @@ export function preflightWorkflow(workflow) {
           ? resolveCursorBin()
           : installation.command;
       harnessCommands.set(command, name);
-      checks.push(checkCommand(command));
-      if (name === "claude") {
-        checks.push(checkClaudePermissionModes(
-          command,
-          workflow.lanes
-            .filter((lane) => lane.harness === "claude")
-            .map((lane) => lane.permission_mode),
-        ));
+      const versionCheck = { ...checkCommand(command), harness: name };
+      checks.push(versionCheck);
+      if (name === "claude" && versionCheck.ok) {
+        checks.push({
+          ...checkClaudePermissionModes(
+            command,
+            workflow.lanes
+              .filter((lane) => lane.harness === "claude")
+              .map((lane) => lane.permission_mode),
+          ),
+          harness: name,
+        });
       }
       if (installation?.sandboxReady === false) {
         checks.push({
@@ -101,17 +143,23 @@ export function preflightWorkflow(workflow) {
           error:
             "Windows Codex installation is missing codex-windows-sandbox-setup.exe; " +
             "install a complete Codex package or set CODEX_BIN to an explicit supported installation",
+          harness: name,
         });
       }
     }
   }
   const failed = checks.filter((check) => !check.ok);
   if (failed.length) {
-    throw new Error("preflight failed: " + failed.map((check) => {
-      const harness = harnessCommands.get(check.command);
-      const fix = harness ? ` ${harnessFailureRecommendation(harness)}` : "";
-      return `${check.command}: ${check.error}.${fix}`;
-    }).join("; "));
+    throw new HarnessPreflightError(failed.map((check) => {
+      const harness = check.harness || harnessCommands.get(check.command);
+      return {
+        harness,
+        command: check.command,
+        invocation: check.invocation || [],
+        error: check.error,
+        remediation: harnessFailureRecommendation(harness, { platform: runtime.hostPlatform }),
+      };
+    }), runtime);
   }
   return checks;
 }

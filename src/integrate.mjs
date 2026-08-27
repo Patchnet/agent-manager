@@ -9,6 +9,7 @@ import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 import { findChangedFileOverlaps } from "./scope.mjs";
 import { runVerification } from "./verification.mjs";
 import { lanesAreSequential } from "./workflow.mjs";
+import { inspectPortableScriptLineEndings } from "./guardrails.mjs";
 
 function git(cwd, args) {
   const r = spawnSync("git", ["-C", cwd, ...args], {
@@ -217,6 +218,34 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     merged.push(lane.id);
   }
 
+  const portableScriptViolations = inspectPortableScriptLineEndings({
+    worktree: wt,
+    baseCommit: baseSha,
+  });
+  if (portableScriptViolations.length) {
+    const needs = {
+      type: "blocked",
+      prompt:
+        "Integration stopped because changed portable Unix scripts use CRLF line endings: " +
+        portableScriptViolations.join(", "),
+      blocking: true,
+      portableScriptViolations,
+    };
+    writePrivateFile(join(integrateDir, "needs-input.json"), JSON.stringify(needs, null, 2));
+    return finish({
+      state: "blocked",
+      branch,
+      worktree: wt,
+      merged,
+      baseSha,
+      changedFileOverlaps,
+      approvedChangedFileOverlaps,
+      portableScriptViolations,
+      needsInput: needs,
+      error: needs.prompt,
+    });
+  }
+
   const log = git(wt, ["log", "--oneline", baseSha + "..HEAD"]);
   const diffStat = git(wt, ["diff", "--stat", baseSha + "...HEAD"]);
   const verificationPath = join(integrateDir, "verification.json");
@@ -264,6 +293,7 @@ export function integrateLanes({ workflow, runId, laneStates }) {
     diffStat: diffStat.ok ? diffStat.stdout : "",
     changedFileOverlaps,
     approvedChangedFileOverlaps,
+    portableScriptViolations: [],
     verification,
     shipGateHint:
       "Present Ship Gate for this integrate branch. On approval, detach PR Manager to push, open the PR, and merge explicitly.",
