@@ -4,7 +4,7 @@ import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cancelRun } from "../src/cancel.mjs";
-import { cleanupRun, cleanupStaleRuns } from "../src/cleanup.mjs";
+import { cleanupRun, cleanupStaleRuns, previewStaleRuns } from "../src/cleanup.mjs";
 import { formatDoctor, runDoctor } from "../src/doctor.mjs";
 import { ensurePrivateDir } from "../src/fs-safe.mjs";
 import { listHarnessAdapters } from "../src/harness/index.mjs";
@@ -47,6 +47,7 @@ import { fleetUsage, parseFleetArgs, runFleet } from "../src/fleet.mjs";
 import { parseTokensArgs, runTokens, tokensUsage } from "../src/tokens.mjs";
 import { parseUiArgs, runUi, uiUsage } from "../src/ui-server.mjs";
 import { buildRunIdentity } from "../src/identity.mjs";
+import { resolveRunContract } from "../src/run-classification.mjs";
 import { AGENT_MANAGER_VERSION, currentVersionInfo } from "../src/version.mjs";
 import {
   ensureBrain,
@@ -100,6 +101,8 @@ function usage() {
     "",
     "Usage:",
     "  agent-manager run <workflow.yaml> --detach [--repo <path>] [--json]",
+    "    purpose: --classification operational|benchmark|demo|retry|recovery",
+    "             --parent-run <runId> (required for retry and recovery)",
     "    identity: --title <subject> --repo-shorthand <name>",
     "              --manager-harness <name> --manager-model <model>",
     "              --manager-thread-title <title>",
@@ -160,7 +163,7 @@ function usage() {
     "             --remote <name> --pr <url|number> --target <delivery-target-id>",
     "             --poll-sec <n> --timeout-sec <n> --check-grace-sec <n>",
     "  agent-manager cancel <runId> [--remove-worktrees]",
-    "  agent-manager cleanup <runId> [--keep-logs] | --stale [--older-than-days 30]",
+    "  agent-manager cleanup <runId> [--keep-logs] | --stale [--older-than-days 30] [--dry-run] [--json]",
     "  agent-manager integrate <runId> [--force-lanes done,failed-with-snapshot] [--json]",
     "    --force-lanes: also fold failed lanes whose end-of-lane snapshot committed",
     "                   guardrail-failed lanes need `ratify` first",
@@ -324,6 +327,8 @@ function parseRunFlags(rest) {
     managerHarness: null,
     managerModel: null,
     managerThreadTitle: null,
+    classification: null,
+    parentRunId: null,
     file: null,
   };
   const valued = new Set([
@@ -337,6 +342,8 @@ function parseRunFlags(rest) {
     "--manager-harness",
     "--manager-model",
     "--manager-thread-title",
+    "--classification",
+    "--parent-run",
   ]);
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -356,6 +363,8 @@ function parseRunFlags(rest) {
       else if (arg === "--repo-shorthand") flags.repoShorthand = value;
       else if (arg === "--manager-harness") flags.managerHarness = value;
       else if (arg === "--manager-model") flags.managerModel = value;
+      else if (arg === "--classification") flags.classification = value;
+      else if (arg === "--parent-run") flags.parentRunId = value;
       else flags.managerThreadTitle = value;
     } else if (arg.startsWith("-")) throw new Error("unknown run flag: " + arg);
     else if (flags.file) throw new Error("unexpected argument: " + arg);
@@ -697,6 +706,7 @@ function spawnDetached(childArgs, logPath, envOverrides = {}) {
 async function detachRun(flags) {
   const workflowPath = resolve(flags.file);
   const workflow = loadWorkflow(workflowPath, { repoOverride: flags.repo });
+  const runContract = resolveRunContract(workflow, flags);
   assertDangerousPermissionApproval(workflow, flags.dangerous);
   preflightWorkflow(workflow);
   if (workflow.goal_refs.length) await assertGoalsExist(workflow.goal_refs);
@@ -725,6 +735,8 @@ async function detachRun(flags) {
   const childArgs = ["run", workflowPath, "--run-id", runId];
   if (flags.repo) childArgs.push("--repo", resolve(flags.repo));
   if (flags.dangerous) childArgs.push("--allow-dangerous-permissions");
+  childArgs.push("--classification", runContract.classification);
+  if (runContract.lineage) childArgs.push("--parent-run", runContract.lineage.parentRunId);
   const identityFlags = [
     ["--title", flags.title],
     ["--repo-shorthand", flags.repoShorthand],
@@ -775,6 +787,8 @@ async function detachRun(flags) {
     suggestedThreadTitle: runIdentity.suggestedThreadTitle,
     runtime: workflow.runtime,
     topology: workflow.topology,
+    classification: runContract.classification,
+    lineage: runContract.lineage,
     warnings: topologyWarnings,
     telemetry: join(dir, "status.json"), supervisorLog: logPath,
     statusCommand: `agent-manager status ${runId}`,
@@ -782,7 +796,7 @@ async function detachRun(flags) {
   };
   if (!flags.quiet) {
     console.log(flags.json ? JSON.stringify(payload) : [
-      `runId: ${runId}`, `title: ${runIdentity.displayTitle}`, `agent-manager: v${AGENT_MANAGER_VERSION}`, "state: detached", `pid: ${child.pid}`, `telemetry: ${payload.telemetry}`,
+      `runId: ${runId}`, `title: ${runIdentity.displayTitle}`, `agent-manager: v${AGENT_MANAGER_VERSION}`, "state: detached", `pid: ${child.pid}`, `classification: ${payload.classification}`, `lineage: ${payload.lineage ? `${payload.lineage.relationship} of ${payload.lineage.parentRunId}` : "none"}`, `telemetry: ${payload.telemetry}`,
       `runtime: ${formatRuntime(payload.runtime)}`,
       `lanes: ${workflow.lanes.length}`,
       `configured concurrency: ${workflow.max_concurrency}`,
@@ -994,6 +1008,8 @@ async function main() {
         sessionId: flags.returnSession,
         disabled: flags.noMasterReturn,
       })),
+      classification: flags.classification,
+      parentRunId: flags.parentRunId,
     });
     if (flags.json) console.log(JSON.stringify({ runId: result.runId, status: result.status }));
     return;
@@ -1028,6 +1044,11 @@ async function main() {
       warnings: workflow.lint_warnings,
       verificationCommands: workflow.verification.commands.length,
       goalRefs: workflow.goal_refs,
+      classification: workflow.classification,
+      lineage: workflow.parent_run_id ? {
+        parentRunId: workflow.parent_run_id,
+        relationship: workflow.classification,
+      } : null,
       planning,
       delivery: workflow.delivery,
       runtime: workflow.runtime,
@@ -1383,10 +1404,29 @@ async function main() {
   if (cmd === "cancel") { if (!args[1]) throw new Error("cancel requires <runId>"); console.log(formatStatus(await cancelRun(args[1], { removeWorktrees: args.includes("--remove-worktrees") }))); return; }
   if (cmd === "cleanup") {
     if (args.includes("--stale")) {
+      if (args.includes("--dry-run")) {
+        const preview = previewStaleRuns({
+          olderThanDays: Number(flagValue("--older-than-days") || 30),
+        });
+        console.log(args.includes("--json") ? JSON.stringify(preview) : [
+          `stale preview: ${preview.runs.length} runs older than ${preview.olderThanDays} days`,
+          `cleanup candidates: ${preview.cleanupCandidates}`,
+          ...preview.runs
+            .filter((run) => run.category === "cleanup-candidate")
+            .map((run) => `${run.runId}  ${run.state}  ${run.classification}  age=${run.ageSeconds}s  action=${run.recommendedAction}`),
+          `operator attention: ${preview.operatorAttention}`,
+          ...preview.runs
+            .filter((run) => run.category === "operator-attention")
+            .map((run) => `${run.runId}  ${run.state}  ${run.classification}  age=${run.ageSeconds}s  action=${run.recommendedAction}`),
+          "dry run: no runs, claims, worktrees, or status records were changed",
+        ].join("\n"));
+        return;
+      }
       const cleaned = cleanupStaleRuns({ olderThanDays: Number(flagValue("--older-than-days") || 30), keepLogs: args.includes("--keep-logs") });
       console.log(args.includes("--json") ? JSON.stringify(cleaned) : `cleaned stale runs: ${cleaned.length}${cleaned.length ? "\n" + cleaned.join("\n") : ""}`);
       return;
     }
+    if (args.includes("--dry-run")) throw new Error("cleanup --dry-run requires --stale");
     if (!args[1]) throw new Error("cleanup requires <runId> or --stale");
     console.log(formatStatus(cleanupRun(args[1], { keepLogs: args.includes("--keep-logs") })));
     return;
@@ -1472,6 +1512,7 @@ async function main() {
     try {
       process.env.AGENT_MANAGER_DEMO = "1";
       const runFlags = parseRunFlags([scaffold.workflowPath, "--detach"]);
+      runFlags.classification = "demo";
       runFlags.quiet = true;
       launched = await detachRun(runFlags);
     } finally {

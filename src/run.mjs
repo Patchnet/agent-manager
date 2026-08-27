@@ -31,6 +31,7 @@ import { getHarnessAdapter } from "./harness/index.mjs";
 import { buildRunIdentity } from "./identity.mjs";
 import { AGENT_MANAGER_VERSION } from "./version.mjs";
 import { writeReport } from "./report.mjs";
+import { resolveRunContract } from "./run-classification.mjs";
 import { integrateLanes } from "./integrate.mjs";
 import { runSetup } from "./verification.mjs";
 import { mergeDependencyBranches, snapshotLaneAtEnd } from "./lane-snapshot.mjs";
@@ -287,8 +288,11 @@ export async function runWorkflow(workflowPath, {
   allowDangerousPermissions = false,
   expectedPlanningDigest = null,
   identityOverrides = {},
+  classification = null,
+  parentRunId = null,
 } = {}) {
   const workflow = loadWorkflow(workflowPath, { repoOverride });
+  const runContract = resolveRunContract(workflow, { classification, parentRunId });
   assertDangerousPermissionApproval(workflow, allowDangerousPermissions);
   const immutableBaseCommit = resolveGitRef(workflow.repoRoot, workflow.base_ref);
   const planning = assertPlanningReady(workflow, immutableBaseCommit);
@@ -378,6 +382,8 @@ export async function runWorkflow(workflowPath, {
     agentManager: { version: AGENT_MANAGER_VERSION },
     identity,
     state: "running",
+    classification: runContract.classification,
+    lineage: runContract.lineage,
     repo: workflow.repo,
     repoRoot: workflow.repoRoot,
     dangerousPermissionsApproved: workflow.policy.dangerously_skip_permissions === true,
@@ -439,6 +445,8 @@ export async function runWorkflow(workflowPath, {
       runtime,
       agentManager: { version: AGENT_MANAGER_VERSION },
       identity,
+      classification: runContract.classification,
+      lineage: runContract.lineage,
     }, null, 2) + "\n",
   );
 
@@ -491,6 +499,8 @@ export async function runWorkflow(workflowPath, {
       managerHarness: identity.manager?.harness,
       baseCommit: immutableBaseCommit,
       goalRefs: workflow.goal_refs,
+      classification: runContract.classification,
+      lineage: runContract.lineage,
     });
     const { context: awarenessContext, ...awarenessStatus } = admitted;
     const awarenessContextSnapshot = join(dir, "awareness-context.md");
@@ -517,6 +527,8 @@ export async function runWorkflow(workflowPath, {
         contextDigest: status.awareness.contextDigest,
       },
       goalRefs: status.goalRefs,
+      classification: status.classification,
+      lineage: status.lineage,
       runtime,
     });
 

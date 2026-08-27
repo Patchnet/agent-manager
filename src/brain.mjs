@@ -137,6 +137,13 @@ const RUN_INTENT_SCHEMA = {
     manager_harness: { type: "string", index: true },
     manager_session: { type: "string", index: true },
     base_commit: { type: "string", index: true },
+    classification: {
+      type: "enum",
+      values: ["operational", "benchmark", "demo", "retry", "recovery"],
+      index: true,
+    },
+    parent_run_id: { type: "string", index: true },
+    parent_relationship: { type: "enum", values: ["retry", "recovery"], index: true },
     started_at: { type: "date", format: "YYYY-MM-DD", store_precision: "second", index: true },
     heartbeat_at: { type: "date", format: "YYYY-MM-DD", store_precision: "second", index: true },
     lease_expires_at: { type: "date", format: "YYYY-MM-DD", store_precision: "second", index: true },
@@ -264,10 +271,12 @@ function assertCompatibleRegistration(registry, type, expected) {
 }
 
 /**
- * Widening an enum is forward compatible: every value already stored on disk
- * stays legal. Any other field difference is a genuine incompatibility.
+ * Adding an optional field or widening an enum is forward compatible: every
+ * document already stored on disk stays legal. Other differences are genuine
+ * incompatibilities.
  */
 function fieldCompatibility(actual, expected) {
+  if (actual === undefined) return "added";
   if (sameValue(actual, expected)) return "same";
   const isEnum = (value) => value?.type === "enum" && Array.isArray(value.values);
   if (isEnum(actual) && isEnum(expected)) {
@@ -295,7 +304,7 @@ function assertCompatibleSchema(schema, expected, label) {
     if (compatibility === "incompatible") {
       throw new Error(`Agent Manager brain ${label} field is incompatible: ${field}`);
     }
-    if (compatibility === "widened") upgrade = true;
+    if (["widened", "added"].includes(compatibility)) upgrade = true;
   }
   return { upgrade };
 }
@@ -514,6 +523,8 @@ function uniqueScopes(lanes) {
 function frontmatterToIntent(document) {
   const value = document.frontmatter || {};
   const list = (field) => Array.isArray(value[field]) ? value[field].map(String) : [];
+  const classification = ["operational", "benchmark", "demo", "retry", "recovery"]
+    .includes(value.classification) ? value.classification : "unknown";
   return {
     docId: document.docId,
     runId: String(value.run_id || ""),
@@ -522,6 +533,11 @@ function frontmatterToIntent(document) {
     repoLabel: String(value.repo_label || ""),
     state: String(value.state || ""),
     phase: String(value.phase || ""),
+    classification,
+    lineage: value.parent_run_id ? {
+      parentRunId: String(value.parent_run_id),
+      relationship: String(value.parent_relationship || ""),
+    } : null,
     scopes: list("scopes"),
     planRef: value.plan_ref ? String(value.plan_ref) : null,
     goalRefs: list("goal_refs"),
@@ -560,6 +576,8 @@ function awarenessContext({ current, activeRelated, deliveryDependencies }) {
     "## Agent Manager cross-run awareness",
     "This is the frozen MAADB admission snapshot for this run.",
     `- Current intent: ${current.runId} (${current.scopes.join(", ")})`,
+    `- Classification: ${current.classification}`,
+    ...(current.lineage ? [`- Parent: ${current.lineage.parentRunId} (${current.lineage.relationship})`] : []),
     `- Active related runs: ${activeRelated.length || "none"}`,
     `- Pending delivery dependencies: ${deliveryDependencies.length || "none"}`,
   ];
@@ -586,6 +604,8 @@ export async function admitRun({
   managerHarness = null,
   managerSession = null,
   baseCommit = null,
+  classification = "operational",
+  lineage = null,
   now = new Date(),
   root = BRAIN_ROOT,
 } = {}) {
@@ -616,7 +636,7 @@ export async function admitRun({
       );
       const startedAt = now.toISOString();
       const leaseExpiresAt = new Date(nowMs + EDIT_LEASE_MS).toISOString();
-      const current = { runId, scopes };
+      const current = { runId, scopes, classification, lineage };
       const context = awarenessContext({ current, activeRelated, deliveryDependencies });
       const fields = {
         title: title || runId,
@@ -632,6 +652,11 @@ export async function admitRun({
         started_at: startedAt,
         heartbeat_at: startedAt,
         lease_expires_at: leaseExpiresAt,
+        classification,
+        ...(lineage ? {
+          parent_run_id: lineage.parentRunId,
+          parent_relationship: lineage.relationship,
+        } : {}),
         ...(planRef ? { plan_ref: planRef } : {}),
         ...(goalRefs.length ? { goal_refs: goalRefs } : {}),
         ...(managerHarness ? { manager_harness: managerHarness } : {}),
@@ -656,6 +681,8 @@ export async function admitRun({
         repoLabel: repo.label,
         repoIdentitySource: repo.source,
         scopes,
+        classification,
+        lineage,
         activeRelated,
         deliveryDependencies,
         admittedAt: startedAt,

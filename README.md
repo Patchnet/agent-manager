@@ -536,6 +536,8 @@ agent-manager fleet --active
 agent-manager fleet --stream
 agent-manager fleet --once --no-color
 agent-manager fleet --json
+agent-manager fleet --classification operational
+agent-manager fleet --classification unknown --json
 agent-manager fleet --runs-root /path/to/another/runs-root
 ```
 
@@ -556,7 +558,8 @@ once after copying it. Both launchers call the globally installed
 `agent-manager-fleet` executable and therefore use the same user configuration.
 
 The live view shows plans or tickets, repositories, run states, lane progress,
-worker summaries, elapsed time, blockers, and recent transitions. Use arrow
+classification and parent lineage, worker summaries, elapsed time, blockers,
+and recent transitions. Use arrow
 keys or `j`/`k` to focus a run, `a` to toggle active-only filtering, `r` to
 refresh, and `q` to quit. Colors, progress animation, transition flashes, and
 the alternate screen are enabled for interactive terminals; pipes receive a
@@ -736,6 +739,10 @@ agent-manager validate /path/to/repo/agent-manager.yaml
 agent-manager run /path/to/repo/agent-manager.yaml --detach --json
 ```
 
+Every new run is classified as `operational` (default), `benchmark`, `demo`,
+`retry`, or `recovery`. Retry and recovery require a local same-repository
+parent. See [run classification, lineage, and stale records](docs/RUN-CLASSIFICATION.md).
+
 The default creates one Claude implementation lane. Request multiple harnesses
 only when the work has real lane boundaries:
 
@@ -904,6 +911,8 @@ agent-manager doctor [--repo <path>]
 agent-manager validate <workflow.yaml> [--repo <path>]
 agent-manager init --repo <path> [--request <text>] [--harnesses <names>]
 agent-manager run <workflow.yaml> --detach [--repo <path>] [--json]
+  [--classification operational|benchmark|demo|retry|recovery]
+  [--parent-run <runId>]
   [--title <subject>] [--repo-shorthand <name>]
   [--manager-harness <name>] [--manager-model <model>]
   [--manager-thread-title <title>]
@@ -911,6 +920,7 @@ agent-manager run <workflow.yaml> --detach [--repo <path>] [--json]
 agent-manager status [runId] [--json]
 agent-manager monitor [runId]
 agent-manager fleet [runId] [--active] [--since 24h] [--repo <name>]
+  [--classification operational|benchmark|demo|retry|recovery|unknown]
   [--stream | --once | --json] [--no-color] [--no-effects]
 agent-manager tokens [--since 7d] [--by day|model|repo|source] [--limit <n>]
   [--watch [--interval <sec>]] [--json] [--no-color]
@@ -928,6 +938,7 @@ agent-manager integrate <runId>
 agent-manager cancel <runId>
 agent-manager cleanup <runId>
 agent-manager cleanup --stale --older-than-days 30
+agent-manager cleanup --stale --dry-run [--older-than-days 30] [--json]
 ```
 
 Every run has a harness-neutral identity:

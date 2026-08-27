@@ -9,6 +9,8 @@
     "repo": { "type": "string", "minLength": 1 },
     "title": { "type": "string", "minLength": 1, "maxLength": 160 },
     "repo_shorthand": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "classification": { "enum": ["operational", "benchmark", "demo", "retry", "recovery"] },
+    "parent_run_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
     "harness_default": { "enum": ["claude", "codex", "cursor", "fake"] },
     "model_default": { "type": "string", "minLength": 1 },
     "integrate": { "type": "boolean" },
@@ -28,6 +30,22 @@
     },
     "lanes": { "type": "array", "minItems": 1, "maxItems": 5, "items": { "$ref": "#/$defs/lane" } }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["classification"],
+        "properties": { "classification": { "enum": ["retry", "recovery"] } }
+      },
+      "then": { "required": ["parent_run_id"] }
+    },
+    {
+      "if": { "required": ["parent_run_id"] },
+      "then": {
+        "required": ["classification"],
+        "properties": { "classification": { "enum": ["retry", "recovery"] } }
+      }
+    }
+  ],
   "$defs": {
     "delivery": {
       "type": "object",

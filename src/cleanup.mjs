@@ -4,6 +4,7 @@ import { releaseLane } from "./claim.mjs";
 import { assertPathInside, assertSafeSlug, repoPath, RUNS_ROOT, runDir } from "./paths.mjs";
 import { isTerminalState, readStatus, writeStatus } from "./status.mjs";
 import { removeWorktree } from "./worktree.mjs";
+import { classificationForRecord } from "./run-classification.mjs";
 
 export function cleanupRun(runId, { keepLogs = false } = {}) {
   const status = readStatus(runId);
@@ -84,4 +85,44 @@ export function cleanupStaleRuns({ olderThanDays = 30, keepLogs = false, now = D
     cleaned.push(entry.name);
   }
   return cleaned;
+}
+
+export function previewStaleRuns({ olderThanDays = 30, now = Date.now() } = {}) {
+  if (!Number.isFinite(olderThanDays) || olderThanDays < 1) {
+    throw new Error("olderThanDays must be at least 1");
+  }
+  const thresholdSeconds = olderThanDays * 86_400;
+  const cutoff = now - thresholdSeconds * 1_000;
+  const runs = [];
+  if (existsSync(RUNS_ROOT)) {
+    for (const entry of readdirSync(RUNS_ROOT, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(entry.name)) continue;
+      const status = readStatus(entry.name);
+      if (!status) continue;
+      const timestamp = Date.parse(status.updatedAt || status.endedAt || status.startedAt || "");
+      if (!Number.isFinite(timestamp) || timestamp > cutoff) continue;
+      const terminal = isTerminalState(status.state);
+      runs.push({
+        runId: status.runId || entry.name,
+        state: status.state || "unknown",
+        classification: classificationForRecord(status),
+        ageSeconds: Math.max(0, Math.floor((now - timestamp) / 1_000)),
+        reason: terminal
+          ? "terminal run exceeds the stale threshold"
+          : "nonterminal run exceeds the stale threshold",
+        recommendedAction: terminal ? "cleanup" : "inspect-or-cancel",
+        category: terminal ? "cleanup-candidate" : "operator-attention",
+      });
+    }
+  }
+  runs.sort((left, right) => left.runId.localeCompare(right.runId));
+  return {
+    schema: "agent-manager.stale-preview.v1",
+    dryRun: true,
+    olderThanDays,
+    thresholdSeconds,
+    runs,
+    cleanupCandidates: runs.filter((run) => run.category === "cleanup-candidate").length,
+    operatorAttention: runs.filter((run) => run.category === "operator-attention").length,
+  };
 }

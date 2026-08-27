@@ -87,6 +87,11 @@ Agent Manager does not rewrite the files.
 agent-manager run <workflow.yaml> --detach --json
 ```
 
+Classify new work as `operational` (default), `benchmark`, `demo`, `retry`, or
+`recovery`. Retry and recovery require `--parent-run <runId>` for a local run in
+the same canonical repository. They do not mutate the parent. Full guidance:
+[run classification, lineage, and stale records](RUN-CLASSIFICATION.md).
+
 Give the run a concise `title` and optional `repo_shorthand` in the workflow.
 The detach payload returns a canonical `suggestedThreadTitle` in this form:
 
@@ -690,6 +695,8 @@ one.
 agent-manager cancel <runId>
 agent-manager cleanup <runId>
 agent-manager cleanup --stale --older-than-days 30
+agent-manager cleanup --stale --dry-run
+agent-manager cleanup --stale --dry-run --json
 ```
 
 Cancellation writes an authoritative marker. The live supervisor then
@@ -697,6 +704,11 @@ terminates lane process trees it owns. The detached ship supervisor stops
 between bounded Git or GitHub commands and polling cycles. The cancel command
 does not kill an unverified stale PID. Cleanup refuses every incomplete
 delivery state. Stale cleanup removes only overall-terminal runs.
+
+Use stale dry-run first. It is a read-only preview that separates terminal
+cleanup candidates from old nonterminal runs requiring inspection or explicit
+cancellation. It does not release claims, remove worktrees, cancel runs,
+rewrite status, or update timestamps.
 
 Cancel means abandoned. To close accepted work that will not ship, use
 `agent-manager closeout` instead; `filed` is a delivered outcome. File the run's

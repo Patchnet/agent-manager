@@ -95,6 +95,7 @@ function buildWorkflowDocument({
   const primary = items[0];
   const document = {
     title: `Director proposal ${draftId}`,
+    classification: "operational",
     repo_shorthand: repoName,
     repo: policy.repoRoot,
     harness_default: harnessDefault,

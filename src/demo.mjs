@@ -64,6 +64,7 @@ export function createDemo({ dir = DEFAULT_DEMO_DIR, now = new Date() } = {}) {
     repo,
     title: "Agent Manager demo",
     repo_shorthand: "demo",
+    classification: "demo",
     harness_default: "fake",
     claim_mode: "off",
     integrate: true,

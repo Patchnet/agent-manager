@@ -4,6 +4,7 @@ import { runDir } from "./paths.mjs";
 import { formatRuntime } from "./runtime.mjs";
 import { deriveOperatorCadence } from "./cadence.mjs";
 import { isOverallTerminalState, staleGoalHints } from "./delivery.mjs";
+import { classificationForRecord } from "./run-classification.mjs";
 
 export function writeReport(runId, status) {
   const cadence = deriveOperatorCadence(status);
@@ -14,6 +15,9 @@ export function writeReport(runId, status) {
     `- **runId:** ${runId}`,
     `- **title:** ${status.identity?.displayTitle || "-"}`,
     `- **repo:** ${status.repo}`,
+    `- **classification:** ${classificationForRecord(status)}`,
+    `- **parent run:** ${status.lineage?.parentRunId || "-"}`,
+    `- **parent relationship:** ${status.lineage?.relationship || "-"}`,
     `- **manager harness:** ${status.identity?.manager?.harness || "-"}`,
     `- **manager model:** ${status.identity?.manager?.model || "-"}`,
     `- **state:** ${status.state}`,

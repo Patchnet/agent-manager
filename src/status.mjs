@@ -16,6 +16,7 @@ import { deriveOperatorCadence } from "./cadence.mjs";
 import { isOverallTerminalState } from "./delivery.mjs";
 import { AGENT_MANAGER_VERSION } from "./version.mjs";
 import { summarizeAuthorization } from "./authorization.mjs";
+import { classificationForRecord } from "./run-classification.mjs";
 
 export function writeStatus(runId, status) {
   assertSafeSlug(runId, "run id");
@@ -47,6 +48,8 @@ export function writeStatus(runId, status) {
         at: payload.updatedAt,
         runId,
         state: payload.state,
+        classification: classificationForRecord(payload),
+        lineage: payload.lineage || null,
         goalRefs: payload.goalRefs || [],
         runtime: payload.runtime || null,
         lanes: (payload.lanes || []).map((lane) => ({
@@ -161,6 +164,7 @@ export function formatStatus(status) {
   const lines = [
     `${status.identity?.displayTitle || `run ${status.runId}`}  state=${status.state}  updated=${status.updatedAt || "-"}`,
     `repo=${status.repo}  runId=${status.runId}`,
+    `classification=${classificationForRecord(status)}  lineage=${status.lineage ? `${status.lineage.relationship} of ${status.lineage.parentRunId}` : "none"}`,
     `viewerVersion=${AGENT_MANAGER_VERSION}  runEngineVersion=${status.agentManager?.version || "legacy/unrecorded"}`,
     `managerHarness=${status.identity?.manager?.harness || "-"}  managerModel=${status.identity?.manager?.model || "-"}`,
     `target_dev_flow=${status.target_dev_flow || "-"}  workflow=${status.workflow || "-"}`,

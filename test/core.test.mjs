@@ -43,6 +43,7 @@ test("workflow parses feed configuration and defaults to fail-soft disabled", ()
   const defaults = loadWorkflow(defaultPath);
   assert.equal(defaults.feed.enabled, false);
   assert.equal(defaults.feed.topic, "agent-manager/fixture-repo");
+  assert.equal(defaults.classification, "operational");
 });
 
 test("feed publisher emits the Agent Feed HTTP contract and fails soft", async () => {

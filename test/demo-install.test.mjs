@@ -58,6 +58,7 @@ test("demo creates a real repository with current planning", (t) => {
   assert.equal(scaffold.baseSha, head);
   assert.equal(workflow.planning.reviewed_base_sha, head);
   assert.equal(workflow.harness_default, "fake");
+  assert.equal(workflow.classification, "demo");
   assert.equal(workflow.lanes.every((lane) => lane.expected_outputs.length === 1), true);
   assert.doesNotThrow(() => assertPlanningReady(workflow));
   assert.equal(isDemoScratch(dir), true);
@@ -139,6 +140,31 @@ test("demo --no-run stays in a caller-selected scratch directory", (t) => {
   assert.equal(result.repo, resolve(dir));
   assert.equal(result.runId, undefined);
   assert.equal(isDemoScratch(dir), true);
+});
+
+test("demo launch always records the demo classification", async (t) => {
+  const parent = scratch("am-demo-classification-");
+  const dir = join(parent, "repo");
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  const env = { ...process.env, AGENT_MANAGER_TEST_MODE: "1" };
+  const result = JSON.parse(execFileSync(process.execPath, [
+    CLI, "demo", "--dir", dir, "--json",
+  ], { cwd: ROOT, encoding: "utf8", env }));
+  const deadline = Date.now() + 10_000;
+  let status = null;
+  while (Date.now() < deadline) {
+    const inspected = spawnSync(process.execPath, [
+      CLI, "status", result.runId, "--json",
+    ], { cwd: ROOT, encoding: "utf8", env });
+    if (inspected.status === 0) {
+      status = JSON.parse(inspected.stdout);
+      if (status.classification === "demo") break;
+    }
+    // Detached launch may not have written status yet.
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+  assert.equal(status?.classification, "demo");
+  assert.equal(status?.lineage, null);
 });
 
 test("install is idempotent for Claude, Codex, and Cursor", (t) => {

@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.24.0
+current: 1.25.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.25.0 - 2026-08-27
+
+Add explicit run classifications and retry/recovery lineage across telemetry and Fleet, plus read-only stale-run cleanup previews.
 
 ## 1.24.0 - 2026-08-27
 

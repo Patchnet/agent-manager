@@ -8,6 +8,13 @@
     "schema": { "const": "agent-manager.event.v1" }, "type": { "const": "status" },
     "at": { "type": "string", "format": "date-time" }, "runId": { "type": "string" },
     "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "reviewed", "merged", "released", "rejected", "failed", "cancelled"] },
+    "classification": { "enum": ["operational", "benchmark", "demo", "retry", "recovery", "unknown"] },
+    "lineage": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "status.schema.json#/$defs/runLineage" }
+      ]
+    },
     "goalRefs": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
     "runtime": { "anyOf": [{ "$ref": "status.schema.json#/$defs/runtime" }, { "type": "null" }] },
     "lanes": { "type": "array", "items": { "$ref": "status.schema.json#/$defs/laneStatus" } },

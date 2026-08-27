@@ -21,6 +21,10 @@ import {
 } from "./goals-board.mjs";
 import { buildCoreSnapshot, CORE_FEED_PAGE_SIZE, formatCoreBoard } from "./core-board.mjs";
 import { buildTokensSnapshot, formatTokensBoard } from "./tokens.mjs";
+import {
+  classificationForRecord,
+  normalizeClassification,
+} from "./run-classification.mjs";
 
 const DEFAULT_INTERVAL_MS = 1_000;
 const DEFAULT_SINCE_MS = 24 * 60 * 60 * 1_000;
@@ -51,6 +55,7 @@ export function fleetUsage() {
     "  --active             show active and attention-needed runs only",
     "  --since <duration>   include recent terminal runs (default: 24h)",
     "  --repo <name>        filter by repository",
+    "  --classification <kind>  filter by operational, benchmark, demo, retry, recovery, or unknown",
     "  --runs-root <path>   override the configured telemetry root",
     "  --limit <n>          maximum runs on screen (default: 12)",
     "  --interval <sec>     telemetry refresh interval (default: 1)",
@@ -121,6 +126,7 @@ export function parseFleetArgs(argv = []) {
     activeOnly: false,
     sinceMs: DEFAULT_SINCE_MS,
     repo: null,
+    classification: null,
     runsRoot: null,
     limit: DEFAULT_LIMIT,
     eventLimit: DEFAULT_EVENT_LIMIT,
@@ -145,6 +151,12 @@ export function parseFleetArgs(argv = []) {
     if (arg === "--active") options.activeOnly = true;
     else if (arg === "--since") options.sinceMs = parseDuration(nextValue());
     else if (arg === "--repo") options.repo = nextValue();
+    else if (arg === "--classification") {
+      options.classification = normalizeClassification(nextValue(), {
+        allowUnknown: true,
+        label: "--classification",
+      });
+    }
     else if (arg === "--runs-root") options.runsRoot = resolve(nextValue());
     else if (arg === "--limit") options.limit = positiveInteger(nextValue(), "--limit");
     else if (arg === "--interval") {
@@ -413,6 +425,14 @@ function normalizeRun(status) {
   const repoShorthand = status.identity?.repoShorthand || basename(status.repoRoot || status.repo || "repo");
   const subject = status.identity?.subject || ticketFor(status);
   const displayTitle = status.identity?.displayTitle || `[AM ${shortId}] ${repoShorthand} · ${subject}`;
+  const classification = classificationForRecord(status);
+  const lineage = status.lineage?.parentRunId ? {
+    parentRunId: status.lineage.parentRunId,
+    relationship: status.lineage.relationship || classification,
+  } : null;
+  const classificationLabel = lineage
+    ? `${classification}←${shortRunId(lineage.parentRunId).slice(-6)}`
+    : classification;
   return {
     runId: status.runId,
     shortId,
@@ -422,6 +442,9 @@ function normalizeRun(status) {
     displayTitle,
     repoShorthand,
     subject,
+    rowSubject: `[${classificationLabel}] ${subject}`,
+    classification,
+    lineage,
     manager: status.identity?.manager || { harness: null, model: null, modelSource: "unavailable", threadTitle: null },
     agentManagerVersion: status.agentManager?.version || null,
     state: status.state,
@@ -480,6 +503,7 @@ export function buildFleetSnapshot(options = {}, dependencies = {}) {
     activeOnly: false,
     sinceMs: DEFAULT_SINCE_MS,
     repo: null,
+    classification: null,
     limit: DEFAULT_LIMIT,
     eventLimit: DEFAULT_EVENT_LIMIT,
     ...options,
@@ -494,6 +518,7 @@ export function buildFleetSnapshot(options = {}, dependencies = {}) {
       const active = !isFleetTerminalState(status.state);
       if (config.runId && status.runId !== config.runId) continue;
       if (config.repo && status.repo !== config.repo) continue;
+      if (config.classification && classificationForRecord(status) !== config.classification) continue;
       if (config.activeOnly && !active) continue;
       if (!active && Number.isFinite(config.sinceMs) && currentTime - statusTimestamp(status) > config.sinceMs) continue;
       statuses.push(status);
@@ -542,6 +567,9 @@ export function buildFleetSnapshot(options = {}, dependencies = {}) {
       source: runsRootSource,
     },
     at: new Date(currentTime).toISOString(),
+    filters: {
+      classification: config.classification || null,
+    },
     counts: {
       visible: runs.length,
       total: allRuns.length,
@@ -837,7 +865,7 @@ export function formatFleetBoard(snapshot, {
     const lanes = `${progressBar(run.laneCounts, 8, frame, color)} ${run.laneCounts.done}/${run.laneCounts.total}`;
     const fields = [
       isSelected ? style(color, "brightCyan", "›") : " ",
-      pad(run.subject, ticketWidth),
+      pad(run.rowSubject || run.subject, ticketWidth),
       wide ? pad(run.repoShorthand, repoWidth) : null,
       pad(run.shortId, runWidth),
       pad(`${changedMark} ${rowStateLabel}`, stateWidth),
@@ -855,6 +883,7 @@ export function formatFleetBoard(snapshot, {
     lines.push("");
     lines.push(`${style(color, "bold", "RUN DETAILS")} ${style(color, "brightCyan", truncate(selected.displayTitle, Math.max(20, contentWidth - 14)))}`);
     lines.push(style(color, "gray", `  Repository ${selected.repoShorthand} · Plan ${selected.ticket} · Run ${selected.runId}`));
+    lines.push(style(color, "gray", `  Classification ${selected.classification}${selected.lineage ? ` · Parent ${selected.lineage.parentRunId} (${selected.lineage.relationship})` : ""}`));
     const runEngineVersion = selected.agentManagerVersion
       ? `v${selected.agentManagerVersion}`
       : "legacy/unrecorded";
@@ -945,11 +974,14 @@ export function formatFleetBoard(snapshot, {
   }
 
   lines.push("");
-  const filter = activeOnly ? style(color, "brightCyan", "ACTIVE ONLY") : "active + recent";
+  const scopeFilter = activeOnly ? style(color, "brightCyan", "ACTIVE ONLY") : "active + recent";
+  const classificationFilter = snapshot.filters?.classification
+    ? ` · classification ${snapshot.filters.classification}`
+    : "";
   const controls = interactive
     ? "↑/↓ or j/k select · a filter · r refresh · q quit"
     : "Ctrl+C to stop";
-  lines.push(`${style(color, "gray", controls)}  ${style(color, "gray", "·")}  ${filter}  ${style(color, "gray", `· refresh ${clockTime(snapshot.at)}`)}`);
+  lines.push(`${style(color, "gray", controls)}  ${style(color, "gray", "·")}  ${scopeFilter}${classificationFilter}  ${style(color, "gray", `· refresh ${clockTime(snapshot.at)}`)}`);
   return lines.join("\n");
 }
 

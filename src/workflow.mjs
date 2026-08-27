@@ -5,6 +5,7 @@ import { DEFAULT_MAX_CONCURRENCY, MAX_LANES } from "./constants.mjs";
 import { normalizePlanning, planningPrompt } from "./planning.mjs";
 import { assertPathInside, assertSafeSlug, repoPath } from "./paths.mjs";
 import { detectRuntimeProfile, runtimePrompt } from "./runtime.mjs";
+import { normalizeRunContract } from "./run-classification.mjs";
 import {
   listScopedFiles,
   matchesScope,
@@ -19,6 +20,7 @@ const TOP_LEVEL_KEYS = new Set([
   "integrate", "policy", "claim_mode", "remote", "base_ref", "env_allowlist",
   "max_concurrency", "scope_overrides", "verification",
   "planning", "delivery", "title", "repo_shorthand", "goal_refs",
+  "classification", "parent_run_id",
 ]);
 const LANE_KEYS = new Set([
   "id", "harness", "model", "scope", "prompt", "prompt_file", "fake", "depends_on",
@@ -143,6 +145,10 @@ export function loadWorkflow(filePath, {
   }
   validateIdentityText(doc.title, "workflow.title", 160);
   validateIdentityText(doc.repo_shorthand, "workflow.repo_shorthand", 64);
+  const runContract = normalizeRunContract({
+    classification: doc.classification,
+    parentRunId: doc.parent_run_id,
+  });
 
   const targetDevFlow = doc.target_dev_flow || readTargetDevFlow(repoRoot) || "simple";
   const delivery = normalizeDelivery(doc.delivery, {
@@ -183,6 +189,8 @@ export function loadWorkflow(filePath, {
     lint_warnings: lintWarnings,
     verification,
     goal_refs: goalRefs,
+    classification: runContract.classification,
+    parent_run_id: runContract.lineage?.parentRunId || null,
     planning,
     delivery,
     remote,

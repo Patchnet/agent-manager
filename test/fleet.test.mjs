@@ -85,6 +85,7 @@ test("fleet options parse durations, filters, and output modes", () => {
 
   const options = parseFleetArgs([
     "run-one", "--active", "--since", "2h", "--repo", "fixture-repo",
+    "--classification", "benchmark",
     "--limit", "7", "--interval", "0.5", "--runs-root", runsRoot,
     "--no-color", "--no-effects",
   ]);
@@ -92,6 +93,7 @@ test("fleet options parse durations, filters, and output modes", () => {
   assert.equal(options.activeOnly, true);
   assert.equal(options.sinceMs, 7_200_000);
   assert.equal(options.repo, "fixture-repo");
+  assert.equal(options.classification, "benchmark");
   assert.equal(options.limit, 7);
   assert.equal(options.intervalMs, 500);
   assert.equal(options.runsRoot, runsRoot);
@@ -103,6 +105,7 @@ test("fleet options parse durations, filters, and output modes", () => {
   assert.equal(parseFleetArgs(["--view", "tokens"]).view, "tokens");
   assert.throws(() => parseFleetArgs(["--view", "dashboard"]), /--view/);
   assert.throws(() => parseFleetArgs(["--stream", "--json"]), /cannot be combined/);
+  assert.throws(() => parseFleetArgs(["--classification", "production"]), /must be one of/);
 });
 
 test("fleet tab bar highlights the active view", () => {
@@ -272,6 +275,30 @@ test("fleet snapshot honors active and recent filters", () => {
   assert.equal(active.runs.some((run) => run.runId === "run-legacy-done"), false);
   const recent = buildFleetSnapshot({ sinceMs: 60_000 }, { runsRoot, now: () => now });
   assert.equal(recent.runs.some((run) => run.runId === "run-old-terminal"), false);
+});
+
+test("fleet classification filters apply to human and JSON snapshots", async () => {
+  const runId = "run-purpose-filter-demo";
+  writeRun(runId, runningStatus({ classification: "demo" }));
+  const now = () => Date.parse("2026-08-04T12:06:00.000Z");
+  const snapshot = buildFleetSnapshot({ classification: "demo" }, { runsRoot, now });
+  assert.equal(snapshot.filters.classification, "demo");
+  assert.deepEqual(snapshot.runs.map((run) => run.runId), [runId]);
+  assert.match(formatFleetBoard(snapshot, { color: false }), /\[demo\] Session authority/);
+
+  let output = "";
+  await runFleet({ once: true, json: true, classification: "demo" }, {
+    runsRoot,
+    output: { isTTY: false, write(value) { output += value; } },
+    now,
+  });
+  const parsed = JSON.parse(output);
+  assert.equal(parsed.filters.classification, "demo");
+  assert.deepEqual(parsed.runs.map((run) => run.runId), [runId]);
+
+  const unknown = buildFleetSnapshot({ classification: "unknown" }, { runsRoot, now });
+  assert.equal(unknown.runs.some((run) => run.runId === runId), false);
+  assert.equal(unknown.runs.some((run) => run.classification === "unknown"), true);
 });
 
 test("fleet surfaces integration blockers after worker lanes settle", () => {

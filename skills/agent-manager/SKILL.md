@@ -111,12 +111,13 @@ Prefer absolute paths to your clone:
 agent-manager run <workflow.yaml> --detach
 agent-manager status [runId]
 agent-manager monitor [runId]
-agent-manager fleet [runId] [--active | --stream | --once]
+agent-manager fleet [runId] [--active | --stream | --once] [--classification <kind>]
 agent-manager watch-signal [runId] --heartbeat-sec 180
 agent-manager reply <runId> <laneId> --message "..."
 agent-manager cancel <runId>
 agent-manager integrate <runId>
 agent-manager cleanup <runId>
+agent-manager cleanup --stale --dry-run [--json]
 agent-manager review <runId>
 agent-manager review <runId> --pass 1 --verdict accept --reviewer master-dev
 agent-manager authorization inspect <runId>

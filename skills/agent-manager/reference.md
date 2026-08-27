@@ -61,7 +61,8 @@ Workers also receive automatically generated, non-secret runtime variables:
 node bin/agent-manager.mjs run <workflow.yaml> --detach
 ```
 
-Prints `runId`, `pid`, `telemetry`, `supervisorLog` and exits. The supervisor
+Prints `runId`, `classification`, optional parent `lineage`, `pid`, `telemetry`,
+`supervisorLog` and exits. The supervisor
 continues writing `status.json` under the runs root. Never await a
 non-detach `run` from a Master Dev chat turn.
 
@@ -153,6 +154,8 @@ goal tree and artifact evidence.
 
 ```yaml
 repo: <folder-under-DEV_ROOT>
+classification: operational # operational | benchmark | demo | retry | recovery
+# parent_run_id: <local-same-repository-run-id> # retry/recovery only
 harness_default: claude
 claim_mode: required
 max_concurrency: 3        # 1..5; extra lanes remain queued
@@ -428,6 +431,8 @@ pending.
   overall delivery is terminal or the run is explicitly cancelled/rejected.
 - Claim leases renew while the supervisor runs. Expired local claims are
   recoverable only after the recorded supervisor process is confirmed inactive.
+- `cleanup --stale --dry-run [--json]` previews terminal cleanup candidates and
+  old nonterminal runs without changing either category.
 - `cleanup` preserves top-level telemetry and refuses incomplete delivery runs.
 - `integrate <runId>` invokes the same integration path used by `integrate: true`.
 

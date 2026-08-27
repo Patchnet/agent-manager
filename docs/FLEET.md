@@ -8,8 +8,20 @@ to either, so it is safe to leave open next to a working session.
 agent-manager fleet                 # interactive board
 agent-manager fleet --once          # one snapshot, then exit
 agent-manager fleet --json          # machine-readable snapshot
+agent-manager fleet --classification benchmark
+agent-manager fleet --classification unknown --json
 agent-manager fleet --view goals    # start on a specific tab
 ```
+
+Run rows include the persisted classification and compact retry/recovery parent
+lineage. `--classification` applies to interactive, one-shot, stream, and JSON
+modes. Without it, every classification remains visible. Legacy records can be
+selected with `unknown`. Filtering is read-only and does not rewrite status.
+
+Use a classification filter when collecting measurements so operational work,
+controlled benchmarks, demonstrations, follow-up attempts, and legacy records
+do not become one misleading population. See
+[run classification, lineage, and stale records](RUN-CLASSIFICATION.md).
 
 ## Design rules
 

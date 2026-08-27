@@ -235,6 +235,7 @@ test("dry cycle writes validated workflow drafts and kickoff commands", async ()
     const workflow = readFileSync(result.drafts[0].path, "utf8");
     assert.match(workflow, /goal-am-feature/);
     assert.match(workflow, /harness_default:\s*claude/);
+    assert.match(workflow, /classification:\s*operational/);
     assert.match(result.transitions.find((entry) => entry.to === "PLAN").decision, /wrote 1 validated workflow draft/);
   } finally {
     rmSync(fx.root, { recursive: true, force: true });

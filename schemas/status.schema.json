@@ -13,6 +13,13 @@
       "properties": { "version": { "type": "string" } }
     },
     "identity": { "$ref": "#/$defs/runIdentity" },
+    "classification": { "enum": ["operational", "benchmark", "demo", "retry", "recovery"] },
+    "lineage": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/runLineage" }
+      ]
+    },
     "repo": { "type": "string" }, "startedAt": { "type": "string", "format": "date-time" },
     "endedAt": { "type": ["string", "null"] },
     "lanes": { "type": "array", "items": { "$ref": "#/$defs/laneStatus" } },
@@ -160,6 +167,13 @@
         "repoKey": { "type": "string" },
         "repoLabel": { "type": "string" },
         "repoIdentitySource": { "enum": ["remote", "path"] },
+        "classification": { "enum": ["operational", "benchmark", "demo", "retry", "recovery"] },
+        "lineage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/runLineage" }
+          ]
+        },
         "scopes": { "type": "array", "items": { "type": "string" } },
         "activeRelated": { "type": "array" },
         "deliveryDependencies": { "type": "array" },
@@ -172,6 +186,15 @@
         "code": { "type": "string" },
         "conflicts": { "type": "array" },
         "lastError": { "type": "string" }
+      }
+    },
+    "runLineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parentRunId", "relationship"],
+      "properties": {
+        "parentRunId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
+        "relationship": { "enum": ["retry", "recovery"] }
       }
     },
     "runIdentity": {
