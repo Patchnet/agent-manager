@@ -180,6 +180,7 @@ target_dev_flow: formal
 delivery:
   mode: train
   release_required: true
+  release_mode: tag-only # published-release additionally requires a GitHub Release object
   targets:
     - id: api-pr
       lane: api

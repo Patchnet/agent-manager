@@ -59,6 +59,7 @@ test("multi-lane writable workflows require an explicit delivery train when inte
     delivery: {
       mode: "train",
       release_required: true,
+      release_mode: "published-release",
       targets: [
         { id: "api-pr", lane: "api", branch: "feature/api", base: "main", pr: 10 },
         { id: "ui-pr", lane: "ui", branch: "feature/ui", base: "main", pr: 11 },
@@ -69,6 +70,15 @@ test("multi-lane writable workflows require an explicit delivery train when inte
   assert.equal(loaded.delivery.mode, "train");
   assert.deepEqual(loaded.delivery.targets.map((target) => target.lane), ["api", "ui"]);
   assert.equal(loaded.delivery.release_required, true);
+  assert.equal(loaded.delivery.release_mode, "published-release");
+  assert.throws(
+    () => loadWorkflow(workflowFile("invalid-release-mode", {
+      repo: "repo",
+      delivery: { release_mode: "tag-and-hope" },
+      lanes: [{ id: "code", scope: "src/**", prompt: "work" }],
+    })),
+    /release_mode must be tag-only or published-release/,
+  );
 });
 
 test("review and approved no-change lanes are excluded from the delivery manifest", () => {

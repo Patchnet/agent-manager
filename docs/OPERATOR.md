@@ -653,14 +653,18 @@ uses one PR. The stamp commit is bound to the approved version, exact file/blob
 manifest, and pre-stamp head. The pushed head is rechecked before auto-merge.
 Prior delivery merges must be present in the base.
 
-If the final delivery PR is already merged, Formal Flow creates or reuses one
-run-owned release branch and PR from a private worktree. It verifies every
-recorded target merge in the base, waits for required checks, squash-merges the
-release PR, and tags that merge without another approval round. Retries reuse
-the same stamp commit and PR. Local changes in the operator's shared checkout
-do not block or participate in this fallback. Formal Flow never pushes a
-release stamp directly to the base. Simple Flow is unchanged: it pushes the
-reviewed single/integrated worktree commit directly to its base and then tags.
+If the final delivery PR is already merged and that exact reviewed merge already
+contains the complete requested stamp, Formal Flow verifies the stamp at the
+merge SHA, binds its immutable file/blob manifest, and proceeds directly to tag
+CI and tagging. It does not create a second stamp commit or release PR. If the
+merge is not already stamped, Formal Flow creates or reuses one run-owned
+release branch and PR from a private worktree. It verifies every recorded target
+merge in the base, waits for required checks, squash-merges the release PR, and
+tags that merge without another approval round. Retries reuse the same stamp
+commit and PR. Local changes in the operator's shared checkout do not block or
+participate in either path. Formal Flow never pushes a release stamp directly
+to the base. Simple Flow is unchanged: it pushes the reviewed
+single/integrated worktree commit directly to its base and then tags.
 
 The detached supervisor commits only approved work, pushes a non-base branch,
 finds or creates the pull request, enables `gh pr merge --auto --squash`, and
@@ -924,9 +928,23 @@ interrupted, verify the provider evidence and repair the delivery ledger with:
 agent-manager reconcile <runId> --provider github
 ```
 
-Reconciliation fails closed unless the recorded pull request is merged, at
-least one CI check is present and successful, and any release tag contains the
-verified merge. An empty GitHub check rollup is never accepted as successful CI.
+Reconciliation compares the provider PR base with the recorded branch name and
+checks the immutable base commit separately through ancestry. Legacy targets
+whose `base` is a SHA use the recorded ship base as their branch identity.
+
+The default and backward-compatible release completion mode is `tag-only`. It
+requires the expected remote tag at the approved release SHA, every delivery
+merge in its ancestry, complete version stamps at that SHA, and at least one
+successful tag-triggered CI run for that exact SHA with no pending or failed
+checks. A GitHub Release object is optional. Set workflow
+`delivery.release_mode: published-release` when the provider Release object is
+also required.
+
+All evidence is verified before the repaired ledger is written. A failed check
+leaves the original blocked ledger unchanged. On success, the command records
+the release SHA, tag, verified merge SHAs, tag CI, reconciliation evidence, and
+the terminal `released` state together. Use this command to recover an approved
+delivery that completed externally; do not hand-edit `status.json`.
 
 ## Public repository hygiene
 

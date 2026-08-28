@@ -53,6 +53,7 @@
       "properties": {
         "mode": { "enum": ["single", "train", "review-only"] },
         "release_required": { "type": "boolean" },
+        "release_mode": { "enum": ["tag-only", "published-release"] },
         "targets": {
           "type": "array",
           "items": { "$ref": "#/$defs/deliveryTarget" }

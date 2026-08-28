@@ -1,4 +1,5 @@
 const ACCEPTED_VERDICTS = new Set(["accept", "accept-with-notes"]);
+const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const REVIEW_VERDICTS = new Set([
   ...ACCEPTED_VERDICTS,
   "revise",
@@ -13,13 +14,16 @@ export function createDeliveryStatus(workflow, laneStates) {
   const targets = (workflow.delivery?.targets || []).map((target, index) => {
     const lane = laneStates.find((candidate) => candidate.id === target.lane);
     if (!lane) throw new Error(`delivery target ${target.id} references unknown lane ${target.lane}`);
+    const base = target.base || normalizeBase(workflow.base_ref, workflow.remote) || "main";
     return {
       id: target.id,
       laneId: target.lane,
       order: index + 1,
       state: "pending",
       branch: target.branch || lane.branch,
-      base: target.base || normalizeBase(workflow.base_ref, workflow.remote) || "main",
+      base,
+      baseBranch: isSha(base) ? null : base,
+      baseCommit: isSha(base) ? base : workflow.planning?.reviewedBaseSha || null,
       pr: target.pr || null,
       worktree: null,
       changedFiles: [],
@@ -47,6 +51,7 @@ export function createDeliveryStatus(workflow, laneStates) {
     },
     targets,
     release: {
+      mode: workflow.delivery?.release_mode || "tag-only",
       state: "pending",
       sha: null,
       tag: null,
@@ -71,13 +76,16 @@ export function markWorkersComplete(status, at = new Date().toISOString()) {
     && status.delivery.mode !== "review-only"
     && integratedChangedFiles.length) {
     status.delivery.mode = "single";
+    const base = normalizeBase(status.baseRef, status.integrate.remote || "origin") || "main";
     status.delivery.targets = [{
       id: "integrate",
       laneId: "integrate",
       order: 1,
       state: "changes_ready",
       branch: status.integrate.branch,
-      base: normalizeBase(status.baseRef, status.integrate.remote || "origin") || "main",
+      base,
+      baseBranch: isSha(base) ? null : base,
+      baseCommit: isSha(base) ? base : status.baseCommit || null,
       pr: null,
       worktree: status.integrate.worktree,
       changedFiles: integratedChangedFiles,
@@ -327,14 +335,21 @@ export function recordRelease(status, {
   sha,
   tag,
   verifiedMergeShas,
+  mode = null,
+  tagCi = null,
+  providerRelease = null,
   at = new Date().toISOString(),
 }) {
   status.delivery ||= legacyDelivery(status);
+  const prior = status.delivery.release || {};
   status.delivery.release = {
+    mode: mode || prior.mode || "tag-only",
     state: "released",
     sha,
     tag,
     verifiedMergeShas: [...new Set(verifiedMergeShas || [])],
+    tagCi,
+    providerRelease,
     releasedAt: at,
   };
   status.delivery.state = "released";
@@ -392,6 +407,10 @@ function legacyDelivery(status) {
     state: lane.changedFiles?.length ? "changes_ready" : "no_changes",
     branch: lane.branch || null,
     base: normalizeBase(status.baseRef, "origin") || "main",
+    baseBranch: isSha(normalizeBase(status.baseRef, "origin"))
+      ? null
+      : normalizeBase(status.baseRef, "origin") || "main",
+    baseCommit: status.baseCommit || null,
     pr: null,
     worktree: lane.worktree || null,
     changedFiles: [...(lane.changedFiles || [])],
@@ -416,11 +435,15 @@ function legacyDelivery(status) {
       history: [],
     },
     targets,
-    release: { state: "pending", sha: null, tag: null, verifiedMergeShas: [] },
+    release: { mode: "tag-only", state: "pending", sha: null, tag: null, verifiedMergeShas: [] },
   };
 }
 
 function normalizeBase(value, remote) {
   const text = String(value || "");
   return text.startsWith(`${remote}/`) ? text.slice(remote.length + 1) : text;
+}
+
+function isSha(value) {
+  return SHA.test(String(value || "").trim());
 }

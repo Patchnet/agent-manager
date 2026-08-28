@@ -358,7 +358,13 @@ export function queueShip(runId, handoff) {
   if (status.delivery) {
     status.delivery.state = "shipping";
     const target = (status.delivery.targets || []).find((candidate) => candidate.id === handoff.targetId);
-    if (target) target.state = "shipping";
+    if (target) {
+      target.state = "shipping";
+      target.baseBranch = handoff.base;
+      target.baseCommit ||= /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(String(target.base || ""))
+        ? target.base
+        : status.baseCommit || null;
+    }
   }
   const saved = writeStatus(runId, status);
   writeReport(runId, saved);
@@ -471,6 +477,8 @@ export async function runShip(runId, handoff, dependencies = {}) {
         sha: status.ship.releaseSha,
         tag: status.ship.tag,
         verifiedMergeShas,
+        mode: status.delivery?.release?.mode || "tag-only",
+        tagCi: releaseCiEvidence(status.ship.releaseCi, status.ship.tag),
         at: completedAt,
       });
     }
@@ -582,6 +590,19 @@ async function runFormal(runId, status, handoff, dependencies) {
     status = step(runId, status, "pr", "done", status.ship.prUrl || `#${status.ship.prNumber}`);
     status = step(runId, status, "merge", "done", status.ship.mergeSha || "already merged");
     if (handoff.approve === "through-pr") return status;
+    if (!status.ship.releaseTransaction) {
+      const preStamped = await bindPreStampedDeliveryMerge(runId, status, handoff, recordedPr, {
+        exec,
+        sleep,
+      });
+      if (preStamped) {
+        return await finalizeFormalReleaseFromMergedPr(runId, preStamped, handoff, recordedPr, {
+          exec,
+          sleep,
+          now,
+        });
+      }
+    }
     if (status.ship.releaseTransaction?.mode === "delivery-pr") {
       return await finalizeFormalReleaseFromMergedPr(runId, status, handoff, recordedPr, {
         exec,
@@ -640,6 +661,57 @@ async function runFormal(runId, status, handoff, dependencies) {
     sleep,
     now,
   });
+}
+
+async function bindPreStampedDeliveryMerge(runId, status, handoff, pr, { exec, sleep }) {
+  const mergeSha = pr.mergeCommit?.oid || pr.mergeCommit || status.ship.mergeSha || null;
+  if (!mergeSha) return null;
+  const target = (status.delivery?.targets || []).find((candidate) => candidate.id === handoff.targetId);
+  if (!target || status.delivery?.review?.state !== "accepted") {
+    throw new ShipBlockedError("The merged pull request is not bound to the accepted delivery review.", [
+      "Restore the reviewed delivery target before attempting the release.",
+    ]);
+  }
+  if (target.mergeSha && target.mergeSha !== mergeSha) {
+    throw new ShipBlockedError("The merged pull request commit differs from the recorded delivery merge.", [
+      "Review the unexpected merge SHA and start a new Delivery Review before releasing it.",
+    ]);
+  }
+  status = await ensureVersionPlan(runId, status, handoff, handoff.worktree, { exec, sleep });
+  must(exec, "git", ["fetch", handoff.remote, handoff.base], handoff.worktree, "fetch merged delivery release");
+  if (!exec("git", ["merge-base", "--is-ancestor", mergeSha, `${handoff.remote}/${handoff.base}`], {
+    cwd: handoff.worktree,
+  }).ok) {
+    throw new ShipBlockedError("The reviewed pull request merge is not contained in the recorded base branch.", [
+      "Do not release the unrelated SHA; verify the provider merge and base branch.",
+    ]);
+  }
+  const versionDocument = readFileAtRef(exec, handoff.worktree, mergeSha, "Version.md", {
+    required: true,
+    label: "inspect merged delivery version",
+  });
+  const observedVersion = versionDocument.match(/^current:\s*(\S+)\s*$/m)?.[1] || null;
+  if (observedVersion !== handoff.version) return null;
+
+  const files = verifyVersionStampAtRef(exec, handoff.worktree, mergeSha, handoff.version);
+  const manifest = buildStampManifestAtRef(exec, handoff.worktree, mergeSha, handoff.version, files);
+  status.ship.releaseTransaction = {
+    schema: "agent-manager.release-transaction.v1",
+    mode: "delivery-pr",
+    version: handoff.version,
+    approvedHeadSha: mergeSha,
+    stampCommitSha: null,
+    headSha: mergeSha,
+    manifest,
+    prUrl: pr.url || handoff.pr || target.prUrl || target.pr || null,
+    prNumber: pr.number || null,
+    mergeSha,
+    stampState: "already-satisfied",
+  };
+  status.ship.releaseSha = mergeSha;
+  status.ship.versionPlan.releaseSha = mergeSha;
+  status = save(runId, status);
+  return step(runId, status, "release", "done", `approved delivery merge ${mergeSha} already contains ${handoff.version}`);
 }
 
 async function completeFormalPullRequest(runId, status, handoff, options) {
@@ -1008,6 +1080,72 @@ function buildStampManifest(exec, cwd, version, files) {
     files: entries,
     digest: createHash("sha256").update(JSON.stringify({ version, files: entries })).digest("hex"),
   };
+}
+
+function buildStampManifestAtRef(exec, cwd, ref, version, files) {
+  const entries = [...files].sort().map((path) => ({
+    path: path.replace(/\\/g, "/"),
+    blob: must(exec, "git", ["rev-parse", `${ref}:${path}`], cwd, `hash ${path} at approved release`).stdout,
+  }));
+  return {
+    version,
+    files: entries,
+    digest: createHash("sha256").update(JSON.stringify({ version, files: entries })).digest("hex"),
+  };
+}
+
+function verifyVersionStampAtRef(exec, cwd, ref, version) {
+  const versionDocument = readFileAtRef(exec, cwd, ref, "Version.md", {
+    required: true,
+    label: "verify Version.md in approved release",
+  });
+  const current = versionDocument.match(/^current:\s*(\S+)\s*$/m)?.[1];
+  if (current !== version) {
+    throw new ShipBlockedError(`Version.md at the approved merge is ${current || "missing"}; expected ${version}.`, [
+      "Do not release the mismatched merge; review the complete version stamp.",
+    ]);
+  }
+  if (!new RegExp(`^## ${escapeRegex(version)}(?:\\s|$)`, "m").test(versionDocument)) {
+    throw new ShipBlockedError(`Version.md at the approved merge is missing the ${version} history entry.`, [
+      "Do not release the partial stamp; repair it through a reviewed pull request.",
+    ]);
+  }
+
+  const files = ["Version.md"];
+  for (const name of ["package.json", "package-lock.json"]) {
+    const document = readFileAtRef(exec, cwd, ref, name, { required: false, label: `inspect ${name} in approved release` });
+    if (document == null) continue;
+    files.push(name);
+    let parsed;
+    try {
+      parsed = JSON.parse(document);
+    } catch (error) {
+      throw new ShipBlockedError(`${name} at the approved merge is invalid JSON: ${error.message}`, [
+        "Do not release the partial stamp; repair it through a reviewed pull request.",
+      ]);
+    }
+    if (parsed.version !== version) {
+      throw new ShipBlockedError(`${name} at the approved merge is ${parsed.version || "missing"}; expected ${version}.`, [
+        "Do not release the partial stamp; repair it through a reviewed pull request.",
+      ]);
+    }
+    if (name === "package-lock.json" && parsed.packages?.[""]?.version !== version) {
+      throw new ShipBlockedError(
+        `${name} package root at the approved merge is ${parsed.packages?.[""]?.version || "missing"}; expected ${version}.`,
+        ["Do not release the partial stamp; repair it through a reviewed pull request."],
+      );
+    }
+  }
+  return files;
+}
+
+function readFileAtRef(exec, cwd, ref, path, { required, label }) {
+  const result = exec("git", ["show", `${ref}:${path}`], { cwd });
+  if (result.ok) return result.stdout;
+  if (!required) return null;
+  throw new ShipBlockedError(`${path} is missing from the approved release merge.`, [
+    `${label}; do not release an incomplete stamp.`,
+  ]);
 }
 
 function verifyStampManifestAtRef(exec, cwd, ref, manifest) {
@@ -1646,6 +1784,24 @@ async function tagRelease(runId, status, handoff, sha, dependencies) {
   status.ship.tag = tag;
   status = step(runId, status, "tag", "done", tag);
   return await observeTagTriggeredRuns(runId, status, handoff, sha, dependencies);
+}
+
+function releaseCiEvidence(releaseCi, tag) {
+  if (!releaseCi) return null;
+  return {
+    tag: tag || null,
+    sha: releaseCi.sha || null,
+    state: releaseCi.state || null,
+    checks: (releaseCi.runs || []).map((run) => ({
+      id: run.id || null,
+      name: run.workflow || null,
+      status: run.status || null,
+      conclusion: run.conclusion || null,
+      url: run.url || null,
+      event: run.event || null,
+      headSha: run.headSha || releaseCi.sha || null,
+    })),
+  };
 }
 
 export function applyVersionStamp(repoRoot, version, summary, timestamp = Date.now()) {

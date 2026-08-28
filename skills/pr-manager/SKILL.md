@@ -26,8 +26,10 @@ Read [reporting.md](./reporting.md) before posting any ship status.
      enable squash auto-merge, and stop after merge.
    - `all`: when the delivery PR is open, bind the approved version stamp to
      that branch before final CI and squash merge, then tag the merge. When the
-     delivery PR is already merged, create or reuse one protected release PR,
-     wait for its required checks and squash merge, then tag that merge.
+     delivery PR is already merged and that exact reviewed merge already has the
+     complete approved stamp, bind its immutable manifest and tag it directly.
+     Otherwise create or reuse one protected release PR, wait for its required
+     checks and squash merge, then tag that merge.
 3. Always run `agent-manager ship ... --detach`. Never poll CI or merge in the
    host chat after handoff.
 4. Pass the approved commit message, version, and public release summary. Do
@@ -55,7 +57,10 @@ Read [reporting.md](./reporting.md) before posting any ship status.
     triggered by the approved tag may create one. Snapshot Actions runs before
     pushing the tag, then wait for every newly registered run for the release
     SHA. Release-note publication outside that workflow remains a separate
-    reviewed action.
+    reviewed action. Tag-only reconciliation requires the exact tag SHA,
+    successful tag-triggered CI, complete stamps, and delivery ancestry; it does
+    not require a GitHub Release object. `published-release` mode retains that
+    additional requirement.
 11. A delivery train ships one declared target at a time with `--target <id>`.
     A target with no changed files must fail closed. A completed target does not
     mean the overall run is complete while other targets remain.
@@ -69,8 +74,9 @@ Read [reporting.md](./reporting.md) before posting any ship status.
     stop without naming and taking the next authorized action.
 14. Formal Flow never pushes `HEAD:<base>`. An open delivery PR receives the
     stamp in its approved run-owned worktree. Only the already-merged fallback
-    uses the private release worktree under the run directory. Never switch,
-    clean, stamp, or require a clean shared checkout.
+    that is not already fully stamped uses the private release worktree under
+    the run directory. Never switch, clean, stamp, or require a clean shared
+    checkout.
 15. Allow the bounded check-registration grace period before diagnosing a
     missing required check. Routine CI registration and execution are wait
     states, not operator blockers.

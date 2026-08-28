@@ -165,6 +165,7 @@ goal_refs: [goal-local-workflow] # optional existing local goal IDs
 delivery:                 # required for multi-lane writable runs without integration
   mode: single            # single | train | review-only
   release_required: false
+  release_mode: tag-only  # tag-only | published-release; old ledgers default to tag-only
   targets: []             # train: one explicit target for every writable lane
 feed:
   enabled: false          # optional; normal operation never requires Agent Feed
@@ -391,7 +392,12 @@ merged|released` as the machine-readable downstream gate.
         "mergeSha": "…"
       }
     ],
-    "release": { "state": "pending|released", "verifiedMergeShas": [] }
+    "release": {
+      "mode": "tag-only|published-release",
+      "state": "pending|released",
+      "tagCi": { "state": "green", "checks": [] },
+      "verifiedMergeShas": []
+    }
   },
   "ship": {
     "state": "queued|running|blocked|done|failed|cancelled",
@@ -410,6 +416,9 @@ merged|released` as the machine-readable downstream gate.
 `delivery` remains authoritative after workers stop. A completed `ship` target
 does not make the overall run terminal while another target or the release is
 pending.
+Each target records `baseBranch` separately from its immutable `baseCommit`.
+Reconciliation interprets a legacy SHA-valued `base` as the commit and uses the
+recorded ship base as the branch identity.
 
 ## Coordination lifecycle
 

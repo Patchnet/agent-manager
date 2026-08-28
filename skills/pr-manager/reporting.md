@@ -116,6 +116,7 @@ Operator direction. PR Manager does not bypass or guess.
 | **merge SHA** | `<SHA or n/a>` |
 | **release SHA** | `<SHA or n/a>` |
 | **tag** | `<tag or n/a>` |
+| **release mode / tag CI** | `<delivery.release.mode or n/a>` · `<delivery.release.tagCi.state or ship.releaseCi.state or n/a>` |
 | **ended** | `<ISO timestamp>` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 
@@ -123,8 +124,8 @@ Operator direction. PR Manager does not bypass or guess.
 
 - `<short evidence-backed result from ship steps>`
 - `<remaining targets or release requirement; n/a only when overall delivery is terminal>`
-- GitHub Release: **not directly created by PR Manager**; the tag-triggered
-  repository workflow may create one
+- GitHub Release: **not directly created by PR Manager**; `tag-only` completion
+  does not require one, while `published-release` mode does
 
 ### Transition
 

@@ -30,7 +30,7 @@ const SCOPE_OVERRIDE_KEYS = new Set(["path", "lanes", "owner", "reason", "access
 const VERIFICATION_KEYS = new Set(["commands", "timeout_sec", "setup"]);
 const COMMAND_PLAN_KEYS = new Set(["commands", "timeout_sec"]);
 const VERIFICATION_COMMAND_KEYS = new Set(["command", "args"]);
-const DELIVERY_KEYS = new Set(["mode", "targets", "release_required"]);
+const DELIVERY_KEYS = new Set(["mode", "targets", "release_required", "release_mode"]);
 const DELIVERY_TARGET_KEYS = new Set(["id", "lane", "branch", "base", "pr"]);
 const POLICY_KEYS = new Set([
   "allow_commit", "allow_pr", "dangerously_skip_permissions", "permission_mode",
@@ -223,6 +223,9 @@ function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDev
   const raw = input || {};
   assertKnownKeys(raw, DELIVERY_KEYS, "workflow.delivery");
   assertBoolean(raw.release_required, "workflow.delivery.release_required", { optional: true });
+  if (raw.release_mode !== undefined && !["tag-only", "published-release"].includes(raw.release_mode)) {
+    throw new Error("workflow.delivery.release_mode must be tag-only or published-release");
+  }
   const readOnly = ["readOnly", "read-only", "read_only"].includes(policy.permission_mode);
   if (raw.targets !== undefined && !Array.isArray(raw.targets)) {
     throw new Error("workflow.delivery.targets must be an array");
@@ -311,6 +314,7 @@ function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDev
     mode,
     targets,
     release_required: raw.release_required === true,
+    release_mode: raw.release_mode || "tag-only",
   };
 }
 

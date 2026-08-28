@@ -20,6 +20,7 @@ mkdirSync(runsRoot, { recursive: true });
 
 const {
   diagnoseBlockedMerge,
+  applyVersionStamp,
   execCommand,
   isSymbolicBaseRef,
   isWithinCheckRegistrationGrace,
@@ -624,6 +625,122 @@ test("Formal all stamps the open delivery PR, waits for its required check, and 
   assert.match(
     execFileSync("git", ["--git-dir", remote, "show", "main:Version.md"], { encoding: "utf8" }),
     /current: 1\.1\.0/,
+  );
+});
+
+test("Formal all tags a reviewed merge that already contains the complete version stamp", async () => {
+  const runId = "run-prestamped-release-fixture";
+  const repo = join(root, "prestamped-repo");
+  const remote = join(root, "prestamped-remote.git");
+  const laneWorktree = join(runsRoot, runId, "lane", "wt");
+  const branch = `am/${runId}/lane`;
+  mkdirSync(repo, { recursive: true });
+  mkdirSync(join(runsRoot, runId, "lane"), { recursive: true });
+  execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
+  execFileSync("git", ["init", "--bare", "-b", "main", remote], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "config", "user.name", "Test"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "config", "user.email", "test@example.invalid"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", remote], { stdio: "ignore" });
+  writeFileSync(
+    join(repo, "Version.md"),
+    "---\nenabled: true\ncurrent: 1.0.0\ndev_flow: formal\n---\n\n# Version History\n\n## 1.0.0 - 2026-07-01\n\nInitial release.\n",
+  );
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "prestamped-fixture", version: "1.0.0" }, null, 2) + "\n");
+  writeFileSync(join(repo, "package-lock.json"), JSON.stringify({
+    name: "prestamped-fixture",
+    version: "1.0.0",
+    lockfileVersion: 3,
+    packages: { "": { name: "prestamped-fixture", version: "1.0.0" } },
+  }, null, 2) + "\n");
+  execFileSync("git", ["-C", repo, "add", "-A"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "commit", "-m", "chore: base"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "push", "-u", "origin", "main"], { stdio: "ignore" });
+  execFileSync("git", ["-C", repo, "worktree", "add", "-b", branch, laneWorktree, "main"], { stdio: "ignore" });
+  writeFileSync(join(laneWorktree, "feature.txt"), "approved release feature\n");
+  applyVersionStamp(laneWorktree, "1.1.0", "Ship the reviewed release.", Date.UTC(2026, 7, 27));
+  execFileSync("git", ["-C", laneWorktree, "add", "-A"], { stdio: "ignore" });
+  execFileSync("git", ["-C", laneWorktree, "commit", "-m", "feat: ship reviewed release"], { stdio: "ignore" });
+  execFileSync("git", ["-C", laneWorktree, "push", "-u", "origin", branch], { stdio: "ignore" });
+  const mergeSha = execFileSync("git", ["-C", laneWorktree, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  execFileSync("git", ["--git-dir", remote, "update-ref", "refs/heads/main", mergeSha]);
+  assert.equal(execFileSync("git", ["-C", laneWorktree, "status", "--porcelain"], { encoding: "utf8" }), "");
+
+  writeRun(runId, {
+    repoRoot: repo,
+    integrate: undefined,
+    delivery: {
+      schema: "agent-manager.delivery.v1",
+      mode: "single",
+      state: "ship_gate_pending",
+      releaseRequired: true,
+      review: { state: "accepted", latestPass: 1, verdict: "accept", reviewer: "test-manager", history: [] },
+      targets: [{
+        id: "lane",
+        laneId: "lane",
+        state: "changes_ready",
+        branch,
+        base: "main",
+        worktree: laneWorktree,
+        changedFiles: ["Version.md", "feature.txt", "package-lock.json", "package.json"],
+        prUrl: "https://example.invalid/pull/72",
+        mergeSha: null,
+      }],
+      release: { mode: "tag-only", state: "pending", sha: null, tag: null, verifiedMergeShas: [] },
+    },
+  });
+  const handoff = prepareShipHandoff(runId, {
+    approve: "all",
+    target: "lane",
+    version: "1.1.0",
+    summary: "Ship the reviewed release.",
+    pollSec: 1,
+    timeoutSec: 5,
+  });
+  queueShip(runId, handoff);
+  const calls = [];
+  const exec = (command, args, options) => {
+    calls.push([command, ...args]);
+    const capability = providerCapabilityResponse(command, args);
+    if (capability) return capability;
+    const tagActions = tagActionsResponse(command, args, remote);
+    if (tagActions) return tagActions;
+    if (command === "gh" && args[0] === "--version") return ok("gh version test");
+    if (command === "gh" && args[0] === "auth") return ok("authenticated");
+    if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+      return ok(JSON.stringify({
+        state: "MERGED",
+        mergeStateStatus: "UNKNOWN",
+        mergeable: "UNKNOWN",
+        statusCheckRollup: [{ name: "quality", status: "COMPLETED", conclusion: "SUCCESS" }],
+        url: "https://example.invalid/pull/72",
+        number: 72,
+        headRefName: branch,
+        baseRefName: "main",
+        mergeCommit: { oid: mergeSha },
+      }));
+    }
+    return execCommand(command, args, options);
+  };
+
+  const result = await runShip(runId, handoff, {
+    exec,
+    sleep: async () => {},
+    tagRegistrationGraceMs: 0,
+  });
+  assert.equal(result.state, "released", result.ship.error);
+  assert.equal(result.ship.releaseSha, mergeSha);
+  assert.equal(result.ship.releaseTransaction.stampState, "already-satisfied");
+  assert.deepEqual(
+    result.ship.releaseTransaction.manifest.files.map((entry) => entry.path),
+    ["Version.md", "package-lock.json", "package.json"],
+  );
+  assert.equal(result.ship.releaseWorktree, undefined);
+  assert.equal(calls.some((call) => call[0] === "git" && call[1] === "commit"), false);
+  assert.equal(calls.some((call) => call[0] === "gh" && call[1] === "pr" && call[2] === "create"), false);
+  assert.equal(calls.some((call) => call[0] === "git" && call[1] === "push" && call.includes(`release-1.1.0`)), false);
+  assert.equal(
+    execFileSync("git", ["--git-dir", remote, "rev-parse", "refs/tags/v1.1.0"], { encoding: "utf8" }).trim(),
+    mergeSha,
   );
 });
 

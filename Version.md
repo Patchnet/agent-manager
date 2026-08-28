@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.25.0
+current: 1.25.1
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.25.1 - 2026-08-27
+
+Make Formal release stamping idempotent, reconcile immutable base commits with provider branch references, and complete verified tag-only releases without requiring a GitHub Release object.
 
 ## 1.25.0 - 2026-08-27
 
