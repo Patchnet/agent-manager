@@ -449,6 +449,17 @@ test("closeout files run outputs into the brain and links them to every declared
   assert.deepEqual(readStatus(runId), persisted);
   assert.equal((await listGoalArtifactLinks({ goalId: "goal-closeout" }))[0].version, linksAfterRefiling[0].version);
   assert.deepEqual(replayed.closeout, persisted.closeout);
+
+  await assert.rejects(
+    closeoutRun(runId, {
+      operator: "master-dev",
+      reason: "accepted research; nothing to ship",
+      goalDispositions: [{ goalId: "goal-closeout", disposition: "open" }],
+    }),
+    /already filed with a different settled closeout receipt/,
+  );
+  assert.deepEqual(readStatus(runId), persisted);
+  assert.equal((await getGoal("goal-closeout")).lifecycle, "delivered");
 });
 
 test("closeout requires retained artifacts and an explicit disposition for every goal", async () => {

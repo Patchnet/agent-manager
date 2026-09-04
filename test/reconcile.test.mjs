@@ -367,6 +367,52 @@ test("terminal goal repair records a durable closeout receipt and is idempotent"
   const replayed = await reconcileGoalDispositions(repaired, options);
   assert.equal(replayed, repaired);
   assert.equal((await getGoal("goal-history-repair", { root })).version, goal.version);
+
+  await assert.rejects(
+    reconcileGoalDispositions(repaired, {
+      ...options,
+      dispositions: [{ goalId: "goal-history-repair", disposition: "open" }],
+    }),
+    (error) => error instanceof ReconciliationError && error.code === "disposition-conflict",
+  );
+  assert.deepEqual(await getGoal("goal-history-repair", { root }), goal);
+  assert.deepEqual(repaired.goalReconciliation.dispositions, [{
+    goalId: "goal-history-repair",
+    disposition: "delivered",
+    lifecycle: "delivered",
+    changed: true,
+  }]);
+});
+
+test("a filed closeout disposition is immutable during historical reconciliation", async () => {
+  const root = join(isolatedRoot("goal-reconcile-filed-"), "brain");
+  roots.push(dirname(root));
+  await createGoal({ id: "goal-filed", title: "Filed", lifecycle: "delivered" }, { root });
+  const status = {
+    runId: "run-filed-settled",
+    state: "filed",
+    goalRefs: ["goal-filed"],
+    closeout: {
+      schema: "agent-manager.run-closeout.v1",
+      state: "filed",
+      dispositions: [{ goalId: "goal-filed", disposition: "delivered", lifecycle: "delivered" }],
+    },
+  };
+
+  assert.equal(await reconcileGoalDispositions(status, {
+    dispositions: [{ goalId: "goal-filed", disposition: "delivered" }],
+    operator: "master-dev",
+    root,
+  }), status);
+  await assert.rejects(
+    reconcileGoalDispositions(status, {
+      dispositions: [{ goalId: "goal-filed", disposition: "open" }],
+      operator: "master-dev",
+      root,
+    }),
+    (error) => error instanceof ReconciliationError && error.code === "disposition-conflict",
+  );
+  assert.equal((await getGoal("goal-filed", { root })).lifecycle, "delivered");
 });
 
 test("goal repair fails closed until every declared goal has an explicit disposition", async () => {

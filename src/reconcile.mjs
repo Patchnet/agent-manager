@@ -291,12 +291,26 @@ export async function reconcileGoalDispositions(status, {
   const normalizedOperator = String(operator).trim();
   const normalizedReason = reason ? String(reason).trim() : null;
   const prior = status.goalReconciliation;
-  if (prior?.state === "settled"
-    && prior.operator === normalizedOperator
-    && prior.reason === normalizedReason
-    && JSON.stringify(prior.dispositions.map(({ goalId, disposition }) => ({ goalId, disposition })))
-      === JSON.stringify(normalized)) {
-    return status;
+  if (prior?.state === "settled") {
+    const exactReplay = prior.operator === normalizedOperator
+      && prior.reason === normalizedReason
+      && JSON.stringify(prior.dispositions.map(({ goalId, disposition }) => ({ goalId, disposition })))
+        === JSON.stringify(normalized);
+    if (exactReplay) return status;
+    throw new ReconciliationError(
+      "disposition-conflict",
+      `run ${status.runId} already has a different settled goal reconciliation`,
+    );
+  }
+  if (status.closeout?.state === "filed" && status.closeout.dispositions?.length) {
+    const closeoutDispositions = status.closeout.dispositions
+      .map(({ goalId, disposition }) => ({ goalId, disposition }))
+      .sort(compareGoalDisposition);
+    if (JSON.stringify(closeoutDispositions) === JSON.stringify(normalized)) return status;
+    throw new ReconciliationError(
+      "disposition-conflict",
+      `run ${status.runId} already has different settled closeout dispositions`,
+    );
   }
 
   await assertGoalsExist(normalized.map((item) => item.goalId), { root });

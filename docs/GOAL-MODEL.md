@@ -133,4 +133,5 @@ agent-manager reconcile <runId> \
 Repeat `--goal-disposition` for every `goal_refs` entry. `deferred` maps to a
 planned lifecycle and `open` maps to active. Exact replays are no-ops. The goal
 document retains version history, and the run receives a structured
-`goalReconciliation` receipt.
+`goalReconciliation` receipt. Settled run receipts are immutable: a conflicting
+replay fails closed, and a later outcome must be attributed to a new run.

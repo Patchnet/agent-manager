@@ -692,6 +692,9 @@ export async function closeoutRun(runId, {
       goalHints: staleGoalHints(status),
     };
   }
+  if (status.state === "filed" && status.closeout?.state === "filed") {
+    throw new Error(`run ${runId} is already filed with a different settled closeout receipt`);
+  }
   if (status.goalRefs?.length) await assertGoalsExist(status.goalRefs, { root });
   recordFiled(status, { operator, reason, at: now.toISOString() });
   status = writeStatus(runId, status);
