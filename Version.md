@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.25.1
+current: 1.26.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.26.0 - 2026-09-04
+
+Reconcile terminal run outcomes with goal lifecycle state and add idempotent historical repair.
 
 ## 1.25.1 - 2026-08-27
 
