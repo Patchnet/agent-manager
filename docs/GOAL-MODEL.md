@@ -16,10 +16,14 @@ Brain schema version 2 adds two MAADB object types while retaining the existing
 | Goal | `goal.v1` | `goal-` | `goals/` |
 | Artifact link | `artifact_link.v1` | `glink-` | `artifact-links/` |
 
-Opening a schema-v1 brain performs an explicit, idempotent migration. It adds
-the two registrations and schema files, then changes the brain marker to
-`agent-manager.brain.v2`. It does not rewrite run-intent documents or change
+Opening a supported older brain performs an explicit, idempotent migration. It
+adds missing registrations and schema files, then changes the brain marker to
+`agent-manager.brain.v3`. It does not rewrite run-intent documents or change
 their schema. Incompatible registrations or schema definitions fail closed.
+
+The current brain marker is version 3. Goal disposition fields are optional,
+forward-compatible additions to `goal.v1`; opening an older compatible brain
+widens that schema in place without rewriting stored goal or run documents.
 
 ## Goal (`goal.v1`)
 
@@ -35,6 +39,11 @@ The MAADB `doc_id` is the stable local goal ID. Callers can supply a safe
 | `outcome` | no | Intended result |
 | `success_criteria` | yes | Explicit criteria used to judge delivery |
 | `external_source_refs` | no | Opaque source references retained for synchronization or traceability |
+| `disposition` | no | Operator outcome: `delivered`, `superseded`, `deferred`, `open`, or `cancelled` |
+| `disposition_by` | no | Operator identity that recorded the disposition |
+| `disposition_reason` | no | Optional explanation |
+| `disposition_run_id` | no | Terminal run whose history was reconciled |
+| `disposition_at` | no | Disposition timestamp |
 | `created_at` | yes | Creation timestamp with at least second precision |
 | `updated_at` | yes | Last source-API update timestamp with at least second precision |
 
@@ -89,3 +98,39 @@ the complete stored graph and returns stable issue codes for diagnostics.
 The API returns camel-case objects while the durable MAADB frontmatter uses the
 snake-case fields documented above. Read operations are deterministic and
 sorted by stable document ID.
+
+## Effective state and historical attempts
+
+Goal progress uses evidence epochs instead of applying one precedence order to
+every run forever. An explicit terminal goal lifecycle or accepted terminal run
+(`reviewed`, `merged`, or `released`) establishes a settlement point. Older
+failed, rejected, abandoned, cancelled, or filed attempts stay in the evidence
+list with `historical: true`, but they no longer downgrade the effective state.
+
+A newer run in editing or delivery is explicitly current and can reopen a
+terminal goal. A failed terminal attempt that started after the settlement also
+remains blocking. This preserves fail-closed delivery: labels, lane exits, and
+lifecycle prose do not create successful delivery evidence.
+
+Filed evidence is intentionally ambiguous. Filing preserves the artifacts but
+does not choose the goal outcome. Closeout therefore requires one disposition
+for every declared goal:
+
+```bash
+agent-manager closeout <runId> --operator <id> \
+  --goal-disposition goal-example=delivered
+```
+
+For older terminal runs, use the same durable repair model without editing run
+telemetry or run-intent history:
+
+```bash
+agent-manager reconcile <runId> \
+  --goal-disposition goal-example=deferred \
+  --operator <id> --reason "follow-up remains open"
+```
+
+Repeat `--goal-disposition` for every `goal_refs` entry. `deferred` maps to a
+planned lifecycle and `open` maps to active. Exact replays are no-ops. The goal
+document retains version history, and the run receives a structured
+`goalReconciliation` receipt.

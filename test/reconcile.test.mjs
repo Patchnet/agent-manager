@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -8,14 +9,22 @@ import {
   createGitHubProvider,
   formatReconciliation,
   parseReconcileArgs,
+  reconcileGoalDispositions,
   reconcileExternalDelivery,
   ReconciliationError,
 } from "../src/reconcile.mjs";
+import { createGoal, getGoal } from "../src/goals.mjs";
+import { isolatedRoot } from "../test-support/isolated-roots.mjs";
 
 const MERGE_SHA = "a".repeat(40);
 const RELEASE_SHA = "b".repeat(40);
 const BASE_SHA = "c".repeat(40);
 const cli = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "agent-manager.mjs");
+const roots = [];
+
+test.after(() => {
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
 
 function blockedStatus(overrides = {}) {
   return {
@@ -260,6 +269,22 @@ test("reconcile CLI arguments and output are explicit and fail closed", () => {
     runId: "run-123",
     provider: "github",
     json: true,
+    goalDispositions: [],
+    operator: null,
+    reason: null,
+  });
+  assert.deepEqual(parseReconcileArgs([
+    "run-123",
+    "--goal-disposition", "goal-one=delivered",
+    "--operator", "master-dev",
+    "--reason", "accepted recovery",
+  ]), {
+    runId: "run-123",
+    provider: "github",
+    json: false,
+    goalDispositions: [{ goalId: "goal-one", disposition: "delivered" }],
+    operator: "master-dev",
+    reason: "accepted recovery",
   });
   assert.throws(() => parseReconcileArgs([]), /reconcile requires <runId>/);
   assert.throws(() => parseReconcileArgs(["run-123", "--provider", "gitlab"]), /current adapter: github/);
@@ -275,11 +300,93 @@ test("reconcile CLI arguments and output are explicit and fail closed", () => {
 
   const help = execFileSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
   assert.match(help, /agent-manager reconcile <runId> \[--provider github\] \[--json\]/);
+  assert.match(help, /--goal-disposition <goal-id>=<outcome>/);
   const rejected = spawnSync(process.execPath, [cli, "reconcile", "run-123", "--provider", "gitlab"], {
     encoding: "utf8",
   });
   assert.notEqual(rejected.status, 0);
   assert.match(rejected.stderr, /unsupported reconcile provider: gitlab; current adapter: github/);
+});
+
+test("verified external delivery reconciliation is an idempotent replay", async () => {
+  const first = await reconcileExternalDelivery(blockedStatus(), { provider: provider() });
+  let inspected = false;
+  const replay = await reconcileExternalDelivery(first, {
+    provider: provider({
+      inspectPullRequest: async () => {
+        inspected = true;
+        throw new Error("should not inspect settled evidence again");
+      },
+    }),
+  });
+  assert.equal(replay, first);
+  assert.equal(inspected, false);
+});
+
+test("terminal goal repair records a durable closeout receipt and is idempotent", async () => {
+  const root = join(isolatedRoot("goal-reconcile-"), "brain");
+  roots.push(dirname(root));
+  await createGoal({
+    id: "goal-history-repair",
+    title: "History repair",
+    lifecycle: "active",
+  }, { root, now: new Date("2026-09-01T10:00:00.000Z") });
+  const status = {
+    runId: "run-history-repair",
+    state: "filed",
+    goalRefs: ["goal-history-repair"],
+    closeout: { schema: "agent-manager.run-closeout.v1", state: "filed", links: [] },
+  };
+  const options = {
+    dispositions: [{ goalId: "goal-history-repair", disposition: "delivered" }],
+    operator: "master-dev",
+    reason: "accepted terminal evidence",
+    root,
+    now: new Date("2026-09-04T12:00:00.000Z"),
+  };
+
+  const repaired = await reconcileGoalDispositions(status, options);
+  assert.equal(repaired.goalReconciliation.state, "settled");
+  assert.deepEqual(repaired.goalReconciliation.dispositions, [{
+    goalId: "goal-history-repair",
+    disposition: "delivered",
+    lifecycle: "delivered",
+    changed: true,
+  }]);
+  assert.deepEqual(repaired.closeout.dispositions, repaired.goalReconciliation.dispositions);
+  const goal = await getGoal("goal-history-repair", { root });
+  assert.equal(goal.lifecycle, "delivered");
+  assert.deepEqual(goal.disposition, {
+    state: "delivered",
+    by: "master-dev",
+    reason: "accepted terminal evidence",
+    runId: "run-history-repair",
+    at: "2026-09-04T12:00:00.000Z",
+  });
+
+  const replayed = await reconcileGoalDispositions(repaired, options);
+  assert.equal(replayed, repaired);
+  assert.equal((await getGoal("goal-history-repair", { root })).version, goal.version);
+});
+
+test("goal repair fails closed until every declared goal has an explicit disposition", async () => {
+  const root = join(isolatedRoot("goal-reconcile-incomplete-"), "brain");
+  roots.push(dirname(root));
+  await createGoal({ id: "goal-one", title: "One" }, { root });
+  await createGoal({ id: "goal-two", title: "Two" }, { root });
+  await assert.rejects(
+    reconcileGoalDispositions({
+      runId: "run-incomplete",
+      state: "failed",
+      goalRefs: ["goal-one", "goal-two"],
+    }, {
+      dispositions: [{ goalId: "goal-one", disposition: "open" }],
+      operator: "master-dev",
+      root,
+    }),
+    (error) => error instanceof ReconciliationError && error.code === "disposition-incomplete",
+  );
+  assert.equal((await getGoal("goal-one", { root })).disposition, null);
 });
 
 test("the GitHub adapter reads PR checks, remote tags, releases, and compare ancestry", async () => {

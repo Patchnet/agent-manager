@@ -5,12 +5,16 @@ import { assertPathInside, assertSafeSlug, repoPath, RUNS_ROOT, runDir } from ".
 import { isTerminalState, readStatus, writeStatus } from "./status.mjs";
 import { removeWorktree } from "./worktree.mjs";
 import { classificationForRecord } from "./run-classification.mjs";
+import { requiresGoalDisposition } from "./delivery.mjs";
 
 export function cleanupRun(runId, { keepLogs = false } = {}) {
   const status = readStatus(runId);
   if (!status) throw new Error("no status for " + runId);
   if (!isTerminalState(status.state)) {
     throw new Error(`refusing to clean incomplete delivery in state ${status.state}; cancel or complete it first`);
+  }
+  if (requiresGoalDisposition(status)) {
+    throw new Error(`refusing to clean ${status.state} run before declared goals have explicit dispositions`);
   }
 
   const root = resolve(RUNS_ROOT);
@@ -78,7 +82,7 @@ export function cleanupStaleRuns({ olderThanDays = 30, keepLogs = false, now = D
   for (const entry of readdirSync(RUNS_ROOT, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(entry.name)) continue;
     const status = readStatus(entry.name);
-    if (!status || !isTerminalState(status.state)) continue;
+    if (!status || !isTerminalState(status.state) || requiresGoalDisposition(status)) continue;
     const timestamp = Date.parse(status.updatedAt || status.endedAt || status.startedAt || "");
     if (!Number.isFinite(timestamp) || timestamp > cutoff) continue;
     cleanupRun(entry.name, { keepLogs });
@@ -102,16 +106,21 @@ export function previewStaleRuns({ olderThanDays = 30, now = Date.now() } = {}) 
       const timestamp = Date.parse(status.updatedAt || status.endedAt || status.startedAt || "");
       if (!Number.isFinite(timestamp) || timestamp > cutoff) continue;
       const terminal = isTerminalState(status.state);
+      const dispositionPending = terminal && requiresGoalDisposition(status);
       runs.push({
         runId: status.runId || entry.name,
         state: status.state || "unknown",
         classification: classificationForRecord(status),
         ageSeconds: Math.max(0, Math.floor((now - timestamp) / 1_000)),
-        reason: terminal
+        reason: dispositionPending
+          ? "terminal run still requires explicit goal dispositions"
+          : terminal
           ? "terminal run exceeds the stale threshold"
           : "nonterminal run exceeds the stale threshold",
-        recommendedAction: terminal ? "cleanup" : "inspect-or-cancel",
-        category: terminal ? "cleanup-candidate" : "operator-attention",
+        recommendedAction: dispositionPending
+          ? "reconcile-goals"
+          : terminal ? "cleanup" : "inspect-or-cancel",
+        category: terminal && !dispositionPending ? "cleanup-candidate" : "operator-attention",
       });
     }
   }

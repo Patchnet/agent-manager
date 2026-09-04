@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isolatedEnv, isolatedRoot } from "../test-support/isolated-roots.mjs";
 
@@ -125,4 +125,39 @@ test("goal CLI is discoverable and rejects missing local goals", () => {
   });
   assert.notEqual(missing.status, 0);
   assert.match(missing.stderr, /GOAL_NOT_FOUND|goal not found/);
+});
+
+test("reconcile CLI repairs terminal goal history and replays without mutation", () => {
+  json(["goal", "create", "--id", "goal-cli-repair", "--title", "CLI repair", "--lifecycle", "active"]);
+  const runId = "run-cli-goal-repair";
+  const runRoot = join(env.AGENT_MANAGER_RUNS_ROOT, runId);
+  mkdirSync(runRoot, { recursive: true });
+  writeFileSync(join(runRoot, "status.json"), JSON.stringify({
+    runId,
+    repo: "fixture",
+    state: "failed",
+    startedAt: "2026-09-01T10:00:00.000Z",
+    endedAt: "2026-09-01T11:00:00.000Z",
+    updatedAt: "2026-09-01T11:00:00.000Z",
+    goalRefs: ["goal-cli-repair"],
+    goals: { goals: [{ id: "goal-cli-repair", title: "CLI repair", lifecycle: "active" }] },
+    lanes: [],
+  }, null, 2) + "\n");
+
+  const command = [
+    "reconcile", runId,
+    "--goal-disposition", "goal-cli-repair=delivered",
+    "--operator", "master-dev",
+    "--reason", "accepted recovery",
+  ];
+  const repaired = json(command);
+  assert.equal(repaired.goalReconciliation.state, "settled");
+  assert.equal(repaired.goalReconciliation.dispositions[0].lifecycle, "delivered");
+  const afterFirst = readFileSync(join(runRoot, "status.json"), "utf8");
+  const goalAfterFirst = json(["goal", "show", "goal-cli-repair"]).goal;
+
+  const replayed = json(command);
+  assert.deepEqual(replayed, repaired);
+  assert.equal(readFileSync(join(runRoot, "status.json"), "utf8"), afterFirst);
+  assert.equal(json(["goal", "show", "goal-cli-repair"]).goal.version, goalAfterFirst.version);
 });

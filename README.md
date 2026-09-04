@@ -142,11 +142,13 @@ shipped needs an honest ending — not a cancellation:
 
 ```bash
 agent-manager closeout <runId> --operator master-dev \
+  --goal-disposition goal-research=delivered \
   --reason "research accepted; nothing to ship"
 ```
 
-This requires a persisted accepted Delivery Review, records who filed the run
-and why, files the run's outputs, and ends the run in the terminal state
+This requires a persisted accepted Delivery Review and one explicit disposition
+for every declared goal. It records who filed the run and why, files the run's
+outputs, and ends the run in the terminal state
 `filed`. Delivery targets keep their evidence, so the report states exactly what
 was accepted and deliberately not shipped. Filing is refused once a delivery
 target has merged: a half-shipped train gets finished, not filed.
@@ -165,10 +167,17 @@ agent-manager file-artifacts <runId>
 Re-filing refreshes the bundle and updates the existing links instead of
 duplicating them.
 
-Runs update themselves; goals do not. At any terminal state, `report.md` and
-`next-action` list the declared `goal_refs` the frozen goal snapshot still shows
-as open. Agent Manager never advances a goal — the hint is for the operator, who
-decides and runs `agent-manager goal update <id> --lifecycle <value>`.
+At a terminal state, `report.md` and `next-action` list declared `goal_refs`
+that still need an outcome. Record it without rewriting historical ledgers:
+
+```bash
+agent-manager reconcile <runId> \
+  --goal-disposition goal-example=delivered --operator <id>
+```
+
+Outcomes are `delivered`, `superseded`, `deferred`, `open`, and `cancelled`.
+Repeat the flag for every declared goal. Exact closeout and reconciliation
+replays do not duplicate links, receipts, or goal mutations.
 
 When writable lanes are not folded into one integrate branch, declare every
 delivery destination. Multi-lane workflows with `integrate: false` are rejected
@@ -931,10 +940,12 @@ agent-manager watch-signal <runId> [--heartbeat-sec 180] [--poll-ms 2000] [--not
 agent-manager reply <runId> <laneId> --message <text>
 agent-manager review <runId> [--pass 1|2]
 agent-manager review <runId> --pass 1 --verdict accept|accept-with-notes|revise|relaunch|reject --reviewer <id> [--notes <text>]
-agent-manager closeout <runId> --operator <id> [--reason <text>] [--no-artifacts]
+agent-manager closeout <runId> --operator <id> --goal-disposition <goal-id>=<outcome> [--reason <text>]
 agent-manager file-artifacts <runId> [--json]
 agent-manager next-action <runId> [--json]
 agent-manager delivery-ready <runId> [--require merged|released]
+agent-manager reconcile <runId> [--provider github]
+agent-manager reconcile <runId> --goal-disposition <goal-id>=<outcome> --operator <id>
 agent-manager integrate <runId>
 agent-manager cancel <runId>
 agent-manager cleanup <runId>

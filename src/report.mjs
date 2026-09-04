@@ -8,7 +8,7 @@ import { classificationForRecord } from "./run-classification.mjs";
 
 export function writeReport(runId, status) {
   const cadence = deriveOperatorCadence(status);
-  const goalHints = staleGoalHints(status);
+  const goalHints = cadence.goalHints?.length ? cadence.goalHints : staleGoalHints(status);
   const lines = [
     `# agent-manager run report`,
     "",
@@ -162,7 +162,7 @@ export function writeReport(runId, status) {
   } else if (status.state === "ship_gate_pending") {
     lines.push("- **Ship Gate pending:** Delivery Review is accepted; obtain explicit shipping approval.");
     lines.push("- For a train, ship each target in order with `--target <id>`.");
-    lines.push(`- Accepting without shipping: \`agent-manager closeout ${runId} --operator <id>\` files the outputs and ends the run as \`filed\`. Do not use \`cancel\` for accepted work.`);
+    lines.push(`- Accepting without shipping: \`agent-manager closeout ${runId} --operator <id> --goal-disposition <goal-id>=<outcome>\` retains the outputs, records every declared goal outcome, and ends the run as \`filed\`. Do not use \`cancel\` for accepted work.`);
   } else if (status.state === "release_pending") {
     lines.push("- **Release pending:** all delivery targets merged; verify ancestry and publish the approved release.");
   } else if (status.state === "filed") {
@@ -201,7 +201,7 @@ export function writeReport(runId, status) {
     for (const hint of goalHints) {
       lines.push(`  - \`${hint.id}\` — ${hint.lifecycle}${hint.title ? ` · ${hint.title}` : ""}`);
     }
-    lines.push("- Agent Manager never advances a goal. Master decides and runs `agent-manager goal update <id> --lifecycle <value>`.");
+    lines.push(`- Record the operator decision with \`agent-manager reconcile ${runId} --goal-disposition <goal-id>=<outcome> --operator <id>\`.`);
   }
   lines.push("");
 
@@ -221,12 +221,32 @@ export function writeReport(runId, status) {
           : "none"
       }`,
     );
+    lines.push(
+      `- goal dispositions: ${
+        status.closeout.dispositions?.length
+          ? status.closeout.dispositions
+              .map((item) => `${item.goalId} → ${item.disposition} (${item.lifecycle})`)
+              .join(", ")
+          : "none"
+      }`,
+    );
     for (const warning of status.closeout.warnings || []) {
       lines.push(`- **warning:** ${warning}`);
     }
     for (const error of status.closeout.errors || []) {
       lines.push(`- **error:** ${error.goalId ? `${error.goalId}: ` : ""}${error.message}`);
     }
+    lines.push("");
+  }
+
+  if (status.goalReconciliation) {
+    lines.push("## Goal reconciliation", "");
+    lines.push(`- state: ${status.goalReconciliation.state}`);
+    lines.push(`- operator: ${status.goalReconciliation.operator || "-"}`);
+    lines.push(`- reconciled: ${status.goalReconciliation.reconciledAt || "-"}`);
+    lines.push(`- reason: ${status.goalReconciliation.reason || "-"}`);
+    lines.push(`- dispositions: ${status.goalReconciliation.dispositions
+      ?.map((item) => `${item.goalId} → ${item.disposition} (${item.lifecycle})`).join(", ") || "none"}`);
     lines.push("");
   }
 

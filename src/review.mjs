@@ -12,7 +12,14 @@ import {
   recordReviewPresentation,
   staleGoalHints,
 } from "./delivery.mjs";
-import { GoalModelError, linkGoalArtifact, updateArtifactLink } from "./goals.mjs";
+import {
+  assertGoalsExist,
+  GOAL_DISPOSITIONS,
+  GoalModelError,
+  linkGoalArtifact,
+  recordGoalDisposition,
+  updateArtifactLink,
+} from "./goals.mjs";
 import { ratificationGap } from "./ratify.mjs";
 import { writeReport } from "./report.mjs";
 import { inspectPortableScriptLineEndings } from "./guardrails.mjs";
@@ -416,6 +423,38 @@ const ARTIFACT_STATE_BY_RUN_STATE = Object.freeze({
   failed: "blocked",
 });
 
+const ARTIFACT_STATE_BY_DISPOSITION = Object.freeze({
+  delivered: "delivered",
+  superseded: "superseded",
+  deferred: "planned",
+  open: "active",
+  cancelled: "cancelled",
+});
+
+function normalizeGoalDispositions(status, values = null, { requireAll = status.state === "filed" } = {}) {
+  const supplied = values || status.closeout?.dispositions || [];
+  const dispositions = supplied.map((item) => ({
+    goalId: String(item.goalId || ""),
+    disposition: String(item.disposition || ""),
+  })).sort((left, right) => left.goalId.localeCompare(right.goalId));
+  const refs = [...new Set(status.goalRefs || [])].sort();
+  const duplicate = dispositions.find((item, index) => (
+    dispositions.findIndex((candidate) => candidate.goalId === item.goalId) !== index
+  ));
+  if (duplicate) throw new Error(`goal disposition repeated for ${duplicate.goalId}`);
+  for (const item of dispositions) {
+    if (!refs.includes(item.goalId)) throw new Error(`run ${status.runId} did not declare goal ${item.goalId}`);
+    if (!GOAL_DISPOSITIONS.includes(item.disposition)) {
+      throw new Error(`unsupported goal disposition: ${item.disposition}`);
+    }
+  }
+  const missing = refs.filter((goalId) => !dispositions.some((item) => item.goalId === goalId));
+  if (requireAll && missing.length) {
+    throw new Error(`closeout requires --goal-disposition for every declared goal: ${missing.join(", ")}`);
+  }
+  return dispositions;
+}
+
 export function runArtifactBundleRoot(runId, { root = BRAIN_ROOT } = {}) {
   return join(root, ".artifacts", assertSafeSlug(runId, "run id"));
 }
@@ -490,9 +529,15 @@ export async function fileRunArtifacts(runId, {
   root = BRAIN_ROOT,
   now = new Date(),
   write = true,
+  goalDispositions = null,
+  operator = null,
+  reason = null,
 } = {}) {
   let status = readStatus(runId);
   if (!status) throw new Error(`no status for ${runId}`);
+  const dispositions = normalizeGoalDispositions(status, goalDispositions);
+  const dispositionByGoal = new Map(dispositions.map((item) => [item.goalId, item.disposition]));
+  if (status.goalRefs?.length) await assertGoalsExist(status.goalRefs, { root });
   const bundleRoot = runArtifactBundleRoot(runId, { root });
   const warnings = [];
   const artifacts = collectRunArtifacts(status, { warnings });
@@ -529,16 +574,19 @@ export async function fileRunArtifacts(runId, {
     title: status.identity?.displayTitle || null,
     artifactRef,
     goalRefs,
+    dispositions,
     filedAt,
     artifacts: filed,
     warnings,
   }, null, 2) + "\n", "utf8");
 
-  const linkState = ARTIFACT_STATE_BY_RUN_STATE[status.state] || "active";
+  const defaultLinkState = ARTIFACT_STATE_BY_RUN_STATE[status.state] || "active";
   const label = `${runId} run outputs (${filed.length} file${filed.length === 1 ? "" : "s"})`;
   const links = [];
   const errors = [];
   for (const goalId of goalRefs) {
+    const disposition = dispositionByGoal.get(goalId);
+    const linkState = ARTIFACT_STATE_BY_DISPOSITION[disposition] || defaultLinkState;
     try {
       const link = await linkGoalArtifact({
         goalId,
@@ -567,6 +615,26 @@ export async function fileRunArtifacts(runId, {
     }
   }
 
+  const recordedDispositions = [];
+  for (const item of dispositions) {
+    try {
+      const recorded = await recordGoalDisposition(item.goalId, {
+        disposition: item.disposition,
+        operator: operator || status.delivery?.filed?.operator,
+        reason: reason ?? status.delivery?.filed?.reason ?? null,
+        runId,
+      }, { root, now });
+      recordedDispositions.push({
+        goalId: item.goalId,
+        disposition: item.disposition,
+        lifecycle: recorded.goal.lifecycle,
+        changed: recorded.changed,
+      });
+    } catch (error) {
+      errors.push({ goalId: item.goalId, message: String(error?.message || error) });
+    }
+  }
+
   const closeout = {
     schema: "agent-manager.run-closeout.v1",
     state: errors.length ? "partial" : "filed",
@@ -577,6 +645,7 @@ export async function fileRunArtifacts(runId, {
     artifactCount: filed.length,
     goalRefs,
     links,
+    dispositions: recordedDispositions,
     warnings,
     errors,
   };
@@ -599,9 +668,31 @@ export async function closeoutRun(runId, {
   fileArtifacts = true,
   root = BRAIN_ROOT,
   now = new Date(),
+  goalDispositions = [],
 } = {}) {
   let status = readStatus(runId);
   if (!status) throw new Error(`no status for ${runId}`);
+  if (!fileArtifacts) throw new Error("closeout must retain the run artifact bundle");
+  const dispositions = normalizeGoalDispositions(status, goalDispositions, { requireAll: true });
+  const priorDispositions = (status.closeout?.dispositions || [])
+    .map((item) => ({ goalId: item.goalId, disposition: item.disposition }))
+    .sort((left, right) => left.goalId.localeCompare(right.goalId));
+  const sameCloseout = status.state === "filed"
+    && status.closeout?.state === "filed"
+    && status.delivery?.filed?.operator === String(operator || "").trim()
+    && status.delivery?.filed?.reason === (reason ? String(reason).trim() : null)
+    && JSON.stringify(priorDispositions) === JSON.stringify(dispositions);
+  if (sameCloseout) {
+    return {
+      schema: "agent-manager.run-filed.v1",
+      runId,
+      state: status.state,
+      filed: status.delivery.filed,
+      closeout: status.closeout,
+      goalHints: staleGoalHints(status),
+    };
+  }
+  if (status.goalRefs?.length) await assertGoalsExist(status.goalRefs, { root });
   recordFiled(status, { operator, reason, at: now.toISOString() });
   status = writeStatus(runId, status);
   writeReport(runId, status);
@@ -609,7 +700,13 @@ export async function closeoutRun(runId, {
   let closeout = null;
   if (fileArtifacts) {
     try {
-      closeout = await fileRunArtifacts(runId, { root, now });
+      closeout = await fileRunArtifacts(runId, {
+        root,
+        now,
+        goalDispositions: dispositions,
+        operator,
+        reason,
+      });
     } catch (error) {
       closeout = {
         schema: "agent-manager.run-closeout.v1",
@@ -621,6 +718,7 @@ export async function closeoutRun(runId, {
       writeReport(runId, status);
     }
   }
+  status = readStatus(runId) || status;
 
   return {
     schema: "agent-manager.run-filed.v1",

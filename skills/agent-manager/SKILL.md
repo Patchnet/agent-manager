@@ -123,6 +123,7 @@ agent-manager review <runId> --pass 1 --verdict accept --reviewer master-dev
 agent-manager authorization inspect <runId>
 agent-manager next-action <runId> --json
 agent-manager delivery-ready <runId> --require released
+agent-manager reconcile <runId> --goal-disposition <goal-id>=<outcome> --operator <id>
 agent-manager ship <runId> --approve through-pr|all --detach
 agent-manager ship <runId> --authorized --detach
 agent-manager director validate --policy <director-policy.yaml>

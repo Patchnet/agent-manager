@@ -238,6 +238,12 @@ export function recordFiled(status, {
 } = {}) {
   if (!operator || !String(operator).trim()) throw new Error("filing requires an operator id");
   status.delivery ||= legacyDelivery(status);
+  if (status.state === "filed" && status.delivery.filed) {
+    const sameOperator = status.delivery.filed.operator === String(operator).trim();
+    const sameReason = status.delivery.filed.reason === (reason ? String(reason).trim() : null);
+    if (sameOperator && sameReason) return status;
+    throw new Error(`run ${status.runId} is already filed with a different operator disposition`);
+  }
   const review = status.delivery.review;
   if (review?.state !== "accepted" || !ACCEPTED_VERDICTS.has(review.verdict)) {
     throw new Error("filing requires a persisted accepted Delivery Review");
@@ -270,13 +276,14 @@ export function recordFiled(status, {
 
 /**
  * Goal references this run declared that the frozen goal snapshot still shows
- * in a pre-delivery lifecycle. Advisory only — Agent Manager never advances a
- * goal on the operator's behalf.
+ * in a pre-delivery lifecycle. Advisory only — Agent Manager never infers a
+ * disposition without an explicit operator reconciliation.
  */
 export function staleGoalHints(status) {
   const refs = status?.goalRefs || [];
   if (!refs.length) return [];
   const frozen = new Map((status?.goals?.goals || []).map((goal) => [goal.id, goal]));
+  const settled = settledGoalIds(status);
   return refs
     .map((id) => {
       const goal = frozen.get(id) || null;
@@ -287,7 +294,41 @@ export function staleGoalHints(status) {
         source: goal ? "frozen-goal-snapshot" : "declared-goal-ref",
       };
     })
-    .filter((hint) => !ADVANCED_GOAL_LIFECYCLES.has(hint.lifecycle));
+    .filter((hint) => !settled.has(hint.id) && !ADVANCED_GOAL_LIFECYCLES.has(hint.lifecycle));
+}
+
+export function goalDispositionHints(status) {
+  const refs = status?.goalRefs || [];
+  const frozen = new Map((status?.goals?.goals || []).map((goal) => [goal.id, goal]));
+  const settled = settledGoalIds(status);
+  return refs.filter((id) => !settled.has(id)).map((id) => {
+    const goal = frozen.get(id) || null;
+    return {
+      id,
+      title: goal?.title || null,
+      lifecycle: goal?.lifecycle || "unknown",
+      source: goal ? "frozen-goal-snapshot" : "declared-goal-ref",
+    };
+  });
+}
+
+export function settledGoalIds(status) {
+  const dispositions = status?.goalReconciliation?.dispositions
+    || status?.closeout?.dispositions
+    || [];
+  return new Set(dispositions.map((item) => item.goalId));
+}
+
+export function hasSettledGoalCloseout(status) {
+  const refs = [...new Set(status?.goalRefs || [])];
+  if (!refs.length) return true;
+  const settled = settledGoalIds(status);
+  return refs.every((goalId) => settled.has(goalId));
+}
+
+export function requiresGoalDisposition(status) {
+  if (!["filed", "rejected", "failed", "cancelled"].includes(status?.state)) return false;
+  return goalDispositionHints(status).length > 0;
 }
 
 export function selectDeliveryTarget(status, targetId = null, { allowMerged = false } = {}) {

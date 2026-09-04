@@ -32,7 +32,7 @@ const {
   runArtifactBundleRoot,
 } = await import("../src/review.mjs?delivery-test");
 const { readStatus, writeStatus } = await import("../src/status.mjs?delivery-test");
-const { createGoal, listGoalArtifactLinks } = await import("../src/goals.mjs?delivery-test");
+const { createGoal, getGoal, listGoalArtifactLinks } = await import("../src/goals.mjs?delivery-test");
 const { deriveOperatorCadence } = await import("../src/cadence.mjs?delivery-test");
 
 test.after(() => rmSync(root, { recursive: true, force: true }));
@@ -327,7 +327,7 @@ test("filing refuses an unaccepted run, a wrong state, and merged work", () => {
   );
 });
 
-test("stale goal references are hinted at terminal delivery and never advanced", () => {
+test("filed goal references require explicit dispositions without implicit advancement", () => {
   const status = acceptedShipGateStatus("run-filed-hints");
   status.goalRefs = ["goal-open", "goal-done", "goal-unknown"];
   status.goals = {
@@ -343,10 +343,42 @@ test("stale goal references are hinted at terminal delivery and never advanced",
     ["goal-unknown", "unknown"],
   ]);
   const cadence = deriveOperatorCadence(status);
-  assert.deepEqual(cadence.goalHints.map((hint) => hint.id), ["goal-open", "goal-unknown"]);
-  assert.match(cadence.nextAction, /goal-open \(active\)/);
+  assert.deepEqual(cadence.goalHints.map((hint) => hint.id), ["goal-open", "goal-done", "goal-unknown"]);
+  assert.equal(cadence.transition, "WAIT_OPERATOR");
+  assert.equal(cadence.stage, "goal_disposition_required");
+  assert.match(cadence.nextAction, /agent-manager reconcile run-filed-hints/);
   // Lifecycles are reported, never rewritten.
   assert.equal(status.goals.goals[0].lifecycle, "active");
+});
+
+test("failed terminal work leaves Needs You after explicit goal reconciliation", () => {
+  const status = {
+    runId: "run-failed-goal-closeout",
+    state: "failed",
+    goalRefs: ["goal-recoverable"],
+    goals: { goals: [{ id: "goal-recoverable", title: "Recoverable", lifecycle: "active" }] },
+  };
+  assert.equal(deriveOperatorCadence(status).transition, "WAIT_OPERATOR");
+
+  status.goalReconciliation = {
+    state: "settled",
+    dispositions: [{ goalId: "goal-recoverable", disposition: "open", lifecycle: "active" }],
+  };
+  const settled = deriveOperatorCadence(status);
+  assert.equal(settled.transition, "TERMINAL");
+  assert.deepEqual(settled.goalHints, []);
+});
+
+test("a failed reopened run requires disposition even when its frozen goal was terminal", () => {
+  const status = {
+    runId: "run-failed-reopened-goal",
+    state: "failed",
+    goalRefs: ["goal-formerly-done"],
+    goals: { goals: [{ id: "goal-formerly-done", title: "Formerly done", lifecycle: "delivered" }] },
+  };
+  const cadence = deriveOperatorCadence(status);
+  assert.equal(cadence.transition, "WAIT_OPERATOR");
+  assert.deepEqual(cadence.goalHints.map((hint) => hint.id), ["goal-formerly-done"]);
 });
 
 test("closeout files run outputs into the brain and links them to every declared goal", async () => {
@@ -363,10 +395,17 @@ test("closeout files run outputs into the brain and links them to every declared
   const filed = await closeoutRun(runId, {
     operator: "master-dev",
     reason: "accepted research; nothing to ship",
+    goalDispositions: [{ goalId: "goal-closeout", disposition: "delivered" }],
   });
   assert.equal(filed.state, "filed");
   assert.equal(filed.closeout.state, "filed");
-  assert.deepEqual(filed.goalHints.map((hint) => hint.id), ["goal-closeout"]);
+  assert.deepEqual(filed.goalHints.map((hint) => hint.id), []);
+  assert.deepEqual(filed.closeout.dispositions.map((item) => ({
+    goalId: item.goalId,
+    disposition: item.disposition,
+    lifecycle: item.lifecycle,
+  })), [{ goalId: "goal-closeout", disposition: "delivered", lifecycle: "delivered" }]);
+  assert.equal((await getGoal("goal-closeout")).lifecycle, "delivered");
 
   const bundleRoot = runArtifactBundleRoot(runId);
   assert.equal(filed.closeout.bundleRoot, bundleRoot);
@@ -391,13 +430,45 @@ test("closeout files run outputs into the brain and links them to every declared
   // Re-filing refreshes the existing link instead of duplicating it.
   const refiled = await fileRunArtifacts(runId);
   assert.deepEqual(refiled.links.map((link) => link.action), ["updated"]);
-  assert.equal((await listGoalArtifactLinks({ goalId: "goal-closeout" })).length, 1);
+  const linksAfterRefiling = await listGoalArtifactLinks({ goalId: "goal-closeout" });
+  assert.equal(linksAfterRefiling.length, 1);
 
   const persisted = readStatus(runId);
   assert.equal(persisted.state, "filed");
   assert.equal(persisted.closeout.artifactRef, `run-artifact:${runId}`);
   assert.match(
     readFileSync(join(runsRoot, runId, "report.md"), "utf8"),
-    /goals awaiting advancement:.*goal-closeout \(active\)/,
+    /goals awaiting advancement:\*\* none/,
   );
+
+  const replayed = await closeoutRun(runId, {
+    operator: "master-dev",
+    reason: "accepted research; nothing to ship",
+    goalDispositions: [{ goalId: "goal-closeout", disposition: "delivered" }],
+  });
+  assert.deepEqual(readStatus(runId), persisted);
+  assert.equal((await listGoalArtifactLinks({ goalId: "goal-closeout" }))[0].version, linksAfterRefiling[0].version);
+  assert.deepEqual(replayed.closeout, persisted.closeout);
+});
+
+test("closeout requires retained artifacts and an explicit disposition for every goal", async () => {
+  const runId = "run-filed-disposition-guards";
+  const status = acceptedShipGateStatus(runId);
+  await createGoal({ id: "goal-closeout-guard", title: "Closeout guard" });
+  status.goalRefs = ["goal-closeout-guard"];
+  writeStatus(runId, status);
+
+  await assert.rejects(
+    closeoutRun(runId, { operator: "master-dev" }),
+    /requires --goal-disposition for every declared goal/,
+  );
+  await assert.rejects(
+    closeoutRun(runId, {
+      operator: "master-dev",
+      fileArtifacts: false,
+      goalDispositions: [{ goalId: "goal-closeout-guard", disposition: "deferred" }],
+    }),
+    /must retain the run artifact bundle/,
+  );
+  assert.equal(readStatus(runId).state, "ship_gate_pending");
 });

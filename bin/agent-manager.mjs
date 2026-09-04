@@ -26,7 +26,12 @@ import { assertPlanningReady } from "../src/planning.mjs";
 import { ratifyLane } from "../src/ratify.mjs";
 import { prepareReply, resumeLane } from "../src/reply.mjs";
 import { buildDeliveryReview, closeoutRun, fileRunArtifacts } from "../src/review.mjs";
-import { formatReconciliation, parseReconcileArgs, reconcileRun } from "../src/reconcile.mjs";
+import {
+  formatReconciliation,
+  parseGoalDisposition,
+  parseReconcileArgs,
+  reconcileRun,
+} from "../src/reconcile.mjs";
 import { newRunId, runWorkflow } from "../src/run.mjs";
 import {
   blockQueuedShip,
@@ -146,13 +151,15 @@ function usage() {
     "    `integrate --force-lanes failed-with-snapshot` may fold it",
     "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--reviewer-role manager] [--automation-policy <file>] [--notes <text>]] [--recovered] [--json]",
     "    --recovered: record a verdict on a blocked, failed, or cancelled run",
-    "  agent-manager closeout <runId> --operator <id> [--reason <text>] [--no-artifacts] [--json]",
-    "    accept-without-ship terminal: files run outputs, ends the run as `filed`",
+    "  agent-manager closeout <runId> --operator <id> --goal-disposition <goal-id>=<outcome> [options]",
+    "    accept-without-ship terminal: retains outputs, records every goal outcome, and ends as `filed`",
     "  agent-manager file-artifacts <runId> [--json]",
     "  agent-manager next-action <runId> [--json]",
     "  agent-manager delivery-ready <runId> [--require merged|released] [--json]",
     "  agent-manager reconcile <runId> [--provider github] [--json]",
-    "    verifies provider PR/check/tag ancestry evidence before repairing a stale delivery ledger",
+    "  agent-manager reconcile <runId> --goal-disposition <goal-id>=<outcome> --operator <id> [options]",
+    "    verifies external delivery, or records replay-safe goal dispositions for terminal history",
+    "    outcomes: delivered | superseded | deferred | open | cancelled; repeat for every goal ref",
     "  agent-manager authorization create <runId> --level through-pr|all --operator <id> --expires-at <iso> --risk <level> --risk-ceiling <level> --provider-mode <mode> [ship inputs] [--json]",
     "  agent-manager authorization inspect <runId> [--json]",
     "  agent-manager authorization revoke <runId> --operator <id> [--reason <text>] [--json]",
@@ -1284,14 +1291,18 @@ async function main() {
   }
 
   if (cmd === "closeout") {
-    const runId = firstPositional(args.slice(1), ["--operator", "--reason"]) || latestRunId();
+    const runId = firstPositional(args.slice(1), ["--operator", "--reason", "--goal-disposition"]) || latestRunId();
     if (!runId) throw new Error("closeout requires <runId>");
     const operator = flagValue("--operator");
     if (!operator) throw new Error("closeout requires --operator <id>");
+    const goalDispositions = [];
+    for (let index = 1; index < args.length; index += 1) {
+      if (args[index] === "--goal-disposition") goalDispositions.push(parseGoalDisposition(args[++index]));
+    }
     const result = await closeoutRun(runId, {
       operator,
       reason: flagValue("--reason"),
-      fileArtifacts: !args.includes("--no-artifacts"),
+      goalDispositions,
     });
     const filedStatus = readStatus(runId);
     await syncBrainStatus(filedStatus).catch((error) => {
@@ -1357,7 +1368,11 @@ async function main() {
 
   if (cmd === "reconcile") {
     const flags = parseReconcileArgs(args.slice(1));
-    const result = await reconcileRun(flags.runId);
+    const result = await reconcileRun(flags.runId, {
+      goalDispositions: flags.goalDispositions,
+      operator: flags.operator,
+      reason: flags.reason,
+    });
     console.log(flags.json ? JSON.stringify(result) : formatReconciliation(result));
     return;
   }

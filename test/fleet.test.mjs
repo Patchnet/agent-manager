@@ -329,6 +329,37 @@ test("fleet surfaces integration blockers after worker lanes settle", () => {
   assert.match(board, /agent-manager status/);
 });
 
+test("fleet clears stale Needs You after a failed run's goal closeout is acknowledged", () => {
+  const runId = "run-20260804-121500-settled1";
+  writeRun(runId, runningStatus({
+    state: "failed",
+    endedAt: "2026-08-04T12:15:00.000Z",
+    updatedAt: "2026-08-04T12:15:00.000Z",
+    goalRefs: ["goal-recoverable"],
+    goals: { goals: [{ id: "goal-recoverable", title: "Recoverable", lifecycle: "active" }] },
+    lanes: [{
+      id: "worker",
+      harness: "codex",
+      state: "failed",
+      elapsedSec: 600,
+      needsInput: { type: "blocked", prompt: "choose the recovery path", blocking: true },
+    }],
+    goalReconciliation: {
+      state: "settled",
+      dispositions: [{ goalId: "goal-recoverable", disposition: "open", lifecycle: "active" }],
+    },
+  }));
+  const snapshot = buildFleetSnapshot({ runId }, {
+    runsRoot,
+    now: () => Date.parse("2026-08-04T12:16:00.000Z"),
+  });
+
+  assert.equal(snapshot.runs[0].state, "failed");
+  assert.equal(snapshot.runs[0].needsInput, false);
+  assert.equal(snapshot.runs[0].blocker, null);
+  assert.doesNotMatch(formatFleetBoard(snapshot, { width: 120, color: false }), /NEEDS INPUT/);
+});
+
 test("fleet expands shipping phases, steps, and GitHub Actions progress", () => {
   const runId = "run-20260804-122000-ship001";
   writeRun(runId, runningStatus({

@@ -14,13 +14,14 @@ function brainRoot() {
   return join(root, "brain");
 }
 
-function goal(id, lifecycle = "planned", parentId = null) {
+function goal(id, lifecycle = "planned", parentId = null, updatedAt = null) {
   return {
     id,
     title: id,
     lifecycle,
     parentId,
     dependencies: [],
+    updatedAt,
   };
 }
 
@@ -129,6 +130,164 @@ test("blocked run evidence takes precedence over active work", () => {
     result.evidence.some((item) => item.id === "run-active" && item.contribution === "active"),
     true,
   );
+});
+
+test("explicit terminal lifecycle retires older failed, abandoned, and filed attempts", () => {
+  for (const [state, phase] of [
+    ["failed", "terminal"],
+    ["abandoned", "terminal"],
+    ["filed", "terminal"],
+    ["cancelled", "terminal"],
+  ]) {
+    const result = computeGoalProgress(`goal-${state}`, {
+      goals: [goal(`goal-${state}`, "delivered", null, "2026-09-04T12:00:00.000Z")],
+      runIntents: [{
+        runId: `run-${state}`,
+        state,
+        phase,
+        goalRefs: [`goal-${state}`],
+        startedAt: "2026-09-03T10:00:00.000Z",
+        endedAt: "2026-09-03T11:00:00.000Z",
+      }],
+    });
+
+    assert.equal(result.effectiveState, "delivered", state);
+    const evidence = result.evidence.find((item) => item.id === `run-${state}`);
+    assert.equal(evidence.historical, true, state);
+    assert.equal(evidence.excluded, false, state);
+  }
+});
+
+test("an untimed terminal attempt cannot override an explicit terminal lifecycle", () => {
+  const result = computeGoalProgress("goal-untimed-terminal", {
+    goals: [goal("goal-untimed-terminal", "delivered")],
+    runIntents: [{
+      runId: "run-untimed-failure",
+      state: "failed",
+      phase: "terminal",
+      goalRefs: ["goal-untimed-terminal"],
+    }],
+  });
+  assert.equal(result.effectiveState, "delivered");
+  assert.equal(result.evidence.find((item) => item.id === "run-untimed-failure").historical, true);
+});
+
+test("a later filed correction stays historical until it receives a disposition", () => {
+  const result = computeGoalProgress("goal-filed-correction", {
+    goals: [goal("goal-filed-correction", "delivered", null, "2026-09-03T10:00:00.000Z")],
+    runIntents: [{
+      runId: "run-filed-correction",
+      state: "filed",
+      phase: "terminal",
+      goalRefs: ["goal-filed-correction"],
+      startedAt: "2026-09-04T10:00:00.000Z",
+      endedAt: "2026-09-04T11:00:00.000Z",
+    }],
+  });
+  assert.equal(result.effectiveState, "delivered");
+  assert.equal(result.evidence.find((item) => item.id === "run-filed-correction").historical, true);
+});
+
+test("later accepted delivery retires earlier failure without rewriting its evidence", () => {
+  const result = computeGoalProgress("goal-recovered", {
+    goals: [goal("goal-recovered", "active", null, "2026-09-01T09:00:00.000Z")],
+    runIntents: [
+      {
+        runId: "run-failed-attempt",
+        state: "failed",
+        phase: "terminal",
+        goalRefs: ["goal-recovered"],
+        endedAt: "2026-09-02T10:00:00.000Z",
+      },
+      {
+        runId: "run-released-recovery",
+        state: "released",
+        phase: "terminal",
+        goalRefs: ["goal-recovered"],
+        endedAt: "2026-09-03T10:00:00.000Z",
+      },
+    ],
+  });
+
+  assert.equal(result.effectiveState, "delivered");
+  assert.equal(result.evidence.find((item) => item.id === "run-failed-attempt").historical, true);
+  assert.equal(result.evidence.find((item) => item.id === "run-released-recovery").historical, false);
+});
+
+test("new explicitly current blocked work reopens a terminal goal", () => {
+  const result = computeGoalProgress("goal-reopened", {
+    goals: [goal("goal-reopened", "delivered", null, "2026-09-03T10:00:00.000Z")],
+    runIntents: [{
+      runId: "run-current-blocker",
+      state: "needs_input",
+      phase: "editing",
+      goalRefs: ["goal-reopened"],
+      startedAt: "2026-09-04T10:00:00.000Z",
+      heartbeatAt: "2026-09-04T11:00:00.000Z",
+    }],
+  });
+
+  assert.equal(result.effectiveState, "blocked");
+  assert.equal(result.evidence.find((item) => item.id === "run-current-blocker").historical, false);
+});
+
+test("a failed attempt started after terminal closeout remains a current blocker", () => {
+  const result = computeGoalProgress("goal-failed-reopen", {
+    goals: [goal("goal-failed-reopen", "delivered", null, "2026-09-03T10:00:00.000Z")],
+    runIntents: [{
+      runId: "run-failed-reopen",
+      state: "failed",
+      phase: "terminal",
+      goalRefs: ["goal-failed-reopen"],
+      startedAt: "2026-09-04T10:00:00.000Z",
+      endedAt: "2026-09-04T11:00:00.000Z",
+    }],
+  });
+  assert.equal(result.effectiveState, "blocked");
+  assert.equal(result.evidence.find((item) => item.id === "run-failed-reopen").historical, false);
+});
+
+test("terminal child reconciliation rolls up without stale parent blocking", () => {
+  const result = computeGoalProgress("goal-parent", {
+    goals: [
+      goal("goal-parent", "delivered", null, "2026-09-04T12:00:00.000Z"),
+      goal("goal-child", "delivered", "goal-parent", "2026-09-04T11:00:00.000Z"),
+    ],
+    runIntents: [{
+      runId: "run-child-failed",
+      state: "failed",
+      phase: "terminal",
+      goalRefs: ["goal-child", "goal-parent"],
+      endedAt: "2026-09-03T10:00:00.000Z",
+    }],
+  });
+
+  assert.equal(result.effectiveState, "delivered");
+  assert.deepEqual(result.completedLeafRatio, {
+    label: "completed-leaf ratio",
+    numerator: 1,
+    denominator: 1,
+    value: 1,
+  });
+  assert.equal(result.goals.find((item) => item.goalId === "goal-child").effectiveState, "delivered");
+});
+
+test("a terminal parent retires an older unresolved child epoch", () => {
+  const result = computeGoalProgress("goal-settled-parent", {
+    goals: [
+      goal("goal-settled-parent", "delivered", null, "2026-09-04T12:00:00.000Z"),
+      goal("goal-old-child", "active", "goal-settled-parent", "2026-09-02T09:00:00.000Z"),
+    ],
+    runIntents: [{
+      runId: "run-old-child-failure",
+      state: "failed",
+      phase: "terminal",
+      goalRefs: ["goal-old-child"],
+      endedAt: "2026-09-03T10:00:00.000Z",
+    }],
+  });
+  assert.equal(result.goals.find((item) => item.goalId === "goal-old-child").effectiveState, "blocked");
+  assert.equal(result.effectiveState, "delivered");
 });
 
 test("pending-delivery evidence remains distinct and explainable", () => {

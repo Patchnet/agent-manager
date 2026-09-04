@@ -2,6 +2,7 @@ import {
   ARTIFACT_RELATIONSHIPS,
   ARTIFACT_STATES,
   ARTIFACT_TYPES,
+  GOAL_DISPOSITIONS,
   GOAL_LIFECYCLES,
   unwrapBrainResult,
   useBrain,
@@ -12,6 +13,7 @@ export {
   ARTIFACT_RELATIONSHIPS,
   ARTIFACT_STATES,
   ARTIFACT_TYPES,
+  GOAL_DISPOSITIONS,
   GOAL_LIFECYCLES,
 };
 
@@ -144,6 +146,13 @@ function toGoal(document) {
     externalSourceRefs: Array.isArray(value.external_source_refs)
       ? value.external_source_refs.map(String)
       : [],
+    disposition: value.disposition ? {
+      state: String(value.disposition),
+      by: value.disposition_by ? String(value.disposition_by) : null,
+      reason: value.disposition_reason ? String(value.disposition_reason) : null,
+      runId: value.disposition_run_id ? String(value.disposition_run_id) : null,
+      at: timestamp(value.disposition_at),
+    } : null,
     createdAt: timestamp(value.created_at),
     updatedAt: timestamp(value.updated_at),
     version: document.version ?? null,
@@ -421,6 +430,64 @@ export async function updateGoal(goalId, patch, { root = BRAIN_ROOT, now = new D
     assertValidGraph({ ...graph, goals: prospectiveGoals });
     unwrapBrainResult(await engine.updateDocument(id, fields), `update goal ${id}`);
     return toGoal(unwrapBrainResult(await engine.getDocument(id, "hot"), `read goal ${id}`));
+  }, { root, lock: "goal-graph" });
+}
+
+const LIFECYCLE_BY_DISPOSITION = Object.freeze({
+  delivered: "delivered",
+  superseded: "superseded",
+  deferred: "planned",
+  open: "active",
+  cancelled: "cancelled",
+});
+
+/**
+ * Record the operator's explicit outcome for one goal without altering any run
+ * ledger. The brain keeps the prior goal versions as feed history. Replaying
+ * the same disposition is a no-op, so repair commands are safe to retry.
+ */
+export async function recordGoalDisposition(goalId, {
+  disposition,
+  operator,
+  reason = null,
+  runId = null,
+} = {}, { root = BRAIN_ROOT, now = new Date() } = {}) {
+  const id = normalizeGoalId(goalId);
+  const state = String(disposition || "");
+  assertEnum(state, GOAL_DISPOSITIONS, "disposition");
+  const by = requiredString(operator, "operator");
+  const normalizedReason = optionalString(reason);
+  const normalizedRunId = optionalString(runId);
+  const lifecycle = LIFECYCLE_BY_DISPOSITION[state];
+
+  return useBrain(async (engine) => {
+    const graph = await readGraph(engine);
+    assertValidGraph(graph);
+    const current = graph.goals.find((goal) => goal.id === id);
+    if (!current) throw new GoalModelError("GOAL_NOT_FOUND", `goal not found: ${id}`, { goalId: id });
+    if (current.lifecycle === lifecycle
+      && current.disposition?.state === state
+      && current.disposition?.by === by
+      && current.disposition?.reason === normalizedReason
+      && current.disposition?.runId === normalizedRunId) {
+      return { goal: current, changed: false };
+    }
+
+    const at = now.toISOString();
+    unwrapBrainResult(await engine.updateDocument(id, {
+      lifecycle,
+      disposition: state,
+      disposition_by: by,
+      disposition_reason: normalizedReason || undefined,
+      disposition_run_id: normalizedRunId || undefined,
+      disposition_at: at,
+      updated_at: at,
+    }), `record goal disposition ${id}`);
+    const goal = toGoal(unwrapBrainResult(
+      await engine.getDocument(id, "hot"),
+      `read goal ${id}`,
+    ));
+    return { goal, changed: true };
   }, { root, lock: "goal-graph" });
 }
 

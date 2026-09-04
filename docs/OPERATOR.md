@@ -442,11 +442,14 @@ reports that are the deliverable. Those runs end in `filed`:
 
 ```bash
 agent-manager closeout <runId> --operator master-dev \
+  --goal-disposition goal-research=delivered \
   --reason "research accepted; nothing to ship"
 ```
 
-`closeout` requires a persisted accepted Delivery Review and a run sitting at
-Ship Gate. It files the run's outputs (below), records who filed the run and
+`closeout` requires a persisted accepted Delivery Review, a run sitting at
+Ship Gate, and one `--goal-disposition <goal-id>=<outcome>` for every declared
+goal. Outcomes are `delivered`, `superseded`, `deferred`, `open`, or
+`cancelled`. It files the run's outputs (below), records who filed the run and
 why, then ends the run in the terminal state `filed`. Delivery targets keep
 their `changes_ready` evidence so the report shows exactly what was accepted
 and deliberately not shipped.
@@ -480,13 +483,15 @@ directory.
 
 It then records one `artifact_link` per declared `goal_refs` entry, pointing at
 `run-artifact:<runId>` with relationship `delivers`. Re-filing updates the
-existing link instead of creating a duplicate, so the command is safe to repeat.
+existing link instead of creating a duplicate. Replaying the complete
+`closeout` transaction with the same operator, reason, and goal dispositions is
+a no-op.
 
 A run with no `goal_refs` still gets a bundle and a manifest; there is simply
 nothing to link it to. Goal-link failures are reported and do not undo the
 filing or the terminal state — the evidence is on disk either way.
 
-### Goal advancement is a hint, never automatic
+### Goal disposition and historical repair
 
 Runs update themselves; goals do not. When a run reaches any terminal state,
 `report.md` and `next-action` list the declared `goal_refs` that the frozen
@@ -497,14 +502,22 @@ agent-manager next-action <runId>
 # goals awaiting advancement: goal-am-research-closeout (active)
 ```
 
-Agent Manager never advances a goal. Master reads the hint and decides:
+Agent Manager never infers a goal outcome. Master reads the hint and records a
+durable disposition:
 
 ```bash
-agent-manager goal update goal-am-research-closeout --lifecycle delivered
+agent-manager reconcile <runId> \
+  --goal-disposition goal-am-research-closeout=delivered \
+  --operator master-dev
 ```
 
-Lifecycles come from the snapshot frozen at launch, so treat them as a prompt to
-check the goal, not as proof of its current state.
+Repeat the flag for every declared goal. A filed, failed, rejected, or cancelled
+run with unresolved goal references remains in Needs You until this receipt is
+recorded. `deferred` keeps the goal planned; `open` keeps it active. Historical
+run and artifact evidence remains unchanged and visible.
+
+Lifecycles in the initial hint come from the snapshot frozen at launch, so
+treat them as a prompt to check the goal, not as proof of its current state.
 
 ## Integration
 
@@ -945,6 +958,17 @@ leaves the original blocked ledger unchanged. On success, the command records
 the release SHA, tag, verified merge SHAs, tag CI, reconciliation evidence, and
 the terminal `released` state together. Use this command to recover an approved
 delivery that completed externally; do not hand-edit `status.json`.
+
+The same command repairs terminal goal history without contacting GitHub:
+
+```bash
+agent-manager reconcile <runId> \
+  --goal-disposition goal-example=delivered \
+  --operator master-dev --reason "accepted recovery supersedes the old attempt"
+```
+
+This writes versioned goal dispositions and a closeout receipt. It does not
+rewrite old run statuses or run-intent states, and exact replay is idempotent.
 
 ## Public repository hygiene
 

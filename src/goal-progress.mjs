@@ -34,6 +34,10 @@ const RUN_STATE_CONTRIBUTIONS = Object.freeze({
   abandoned: "cancelled",
 });
 
+const TERMINAL_GOAL_STATES = new Set(["delivered", "superseded", "cancelled"]);
+const ACCEPTED_RUN_STATES = new Set(["reviewed", "merged", "released"]);
+const LIVE_RUN_PHASES = new Set(["editing", "delivery"]);
+
 function compareStrings(left, right) {
   const a = String(left);
   const b = String(right);
@@ -72,6 +76,67 @@ function pickEffectiveState(states) {
     if (states.includes(state)) return state;
   }
   return "planned";
+}
+
+function timestampMs(...values) {
+  for (const value of values) {
+    const parsed = Date.parse(value || "");
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function latestSettlement(goal, directEvidence) {
+  const candidates = [];
+  if (TERMINAL_GOAL_STATES.has(goal.lifecycle)) {
+    const at = timestampMs(goal.disposition?.at, goal.updatedAt);
+    if (at !== null) candidates.push({ kind: "goal", id: goal.id, at });
+  }
+  for (const item of directEvidence) {
+    if (item.kind !== "run" || !ACCEPTED_RUN_STATES.has(item.state) || item.at === null) continue;
+    candidates.push({ kind: "run", id: item.id, at: item.at });
+  }
+  candidates.sort((left, right) => right.at - left.at || compareStrings(left.id, right.id));
+  return candidates[0] || null;
+}
+
+function markHistoricalEvidence(goal, evidence) {
+  const settlement = latestSettlement(goal, evidence);
+  const hasUntimedTerminalGoal = TERMINAL_GOAL_STATES.has(goal.lifecycle)
+    && timestampMs(goal.disposition?.at, goal.updatedAt) === null;
+  return evidence.map((item) => {
+    let historical = false;
+    let historicalReason = null;
+    if (settlement && item.at !== null && item.at <= settlement.at
+      && !(item.kind === settlement.kind && item.id === settlement.id)) {
+      historical = true;
+      historicalReason = `superseded by ${settlement.kind}:${settlement.id}`;
+    }
+    // Filing retains evidence but is not, by itself, a goal outcome. A filed
+    // attempt cannot silently reopen an already terminal goal.
+    if (item.kind === "run" && item.state === "filed"
+      && (settlement || hasUntimedTerminalGoal)) {
+      historical = true;
+      historicalReason ||= "filed attempt requires an explicit goal disposition";
+    }
+    if (item.kind === "run" && item.at === null && hasUntimedTerminalGoal
+      && !LIVE_RUN_PHASES.has(item.phase)) {
+      historical = true;
+      historicalReason ||= "terminal goal lifecycle is authoritative";
+    }
+    // Untimed live evidence remains current (fail closed). It is the one kind
+    // of untimed run evidence that explicitly represents reopened work.
+    if (item.kind === "run" && item.at === null && LIVE_RUN_PHASES.has(item.phase)) {
+      historical = false;
+      historicalReason = null;
+    }
+    return {
+      ...item,
+      historical,
+      current: !item.excluded && !historical,
+      historicalReason,
+    };
+  });
 }
 
 function runIdentity(run, index) {
@@ -168,7 +233,7 @@ export function computeGoalProgress(goalId, {
       .map((child) => computeNode(child, excluded));
     const directArtifacts = artifactsByGoal.get(goal.id) || [];
     const directRuns = runsByGoal.get(goal.id) || [];
-    const directEvidence = [
+    const rawDirectEvidence = [
       {
         kind: "goal",
         id: goal.id,
@@ -176,6 +241,8 @@ export function computeGoalProgress(goalId, {
         state: goal.lifecycle,
         contribution: normalizedGoalState(goal.lifecycle),
         excluded,
+        at: timestampMs(goal.disposition?.at, goal.updatedAt),
+        disposition: goal.disposition || null,
       },
       ...directArtifacts.map((link) => ({
         kind: "artifact",
@@ -184,6 +251,7 @@ export function computeGoalProgress(goalId, {
         state: link.state,
         contribution: normalizedArtifactState(link.state),
         excluded: excluded || link.state === "superseded",
+        at: timestampMs(link.updatedAt, link.createdAt),
         artifactType: link.artifactType,
         artifactRef: link.artifactRef,
         relationship: link.relationship,
@@ -196,10 +264,12 @@ export function computeGoalProgress(goalId, {
         state: String(run.state || "unknown"),
         contribution: normalizedRunState(run.state),
         excluded,
+        at: timestampMs(run.endedAt, run.heartbeatAt, run.startedAt),
         phase: run.phase || null,
         title: run.title || null,
       })),
     ];
+    const directEvidence = markHistoricalEvidence(goal, rawDirectEvidence);
 
     let effectiveState;
     let decisiveEvidence;
@@ -207,8 +277,8 @@ export function computeGoalProgress(goalId, {
       effectiveState = "superseded";
       decisiveEvidence = directEvidence.filter((item) => item.kind === "goal");
     } else {
-      const candidates = [
-        ...directEvidence.filter((item) => !item.excluded),
+      const candidates = markHistoricalEvidence(goal, [
+        ...directEvidence,
         ...childNodes
           .filter((child) => !child.excluded)
           .map((child) => ({
@@ -218,8 +288,11 @@ export function computeGoalProgress(goalId, {
             state: child.effectiveState,
             contribution: child.effectiveState,
             excluded: false,
+            historical: false,
+            current: true,
+            at: child.effectiveAt,
           })),
-      ];
+      ]).filter((item) => !item.excluded && !item.historical);
       effectiveState = pickEffectiveState(candidates.map((item) => item.contribution));
       decisiveEvidence = candidates.filter((item) => item.contribution === effectiveState);
     }
@@ -236,6 +309,9 @@ export function computeGoalProgress(goalId, {
       children: childNodes.map((child) => child.goalId),
       decisiveEvidence: decisiveEvidence.sort(sortEvidence),
       directEvidence: directEvidence.sort(sortEvidence),
+      effectiveAt: decisiveEvidence.reduce((latest, item) => (
+        item.at !== null && (latest === null || item.at > latest) ? item.at : latest
+      ), null),
     };
     nodeById.set(goal.id, node);
     return node;
@@ -327,6 +403,7 @@ export function computeGoalProgress(goalId, {
         total: allSubtreeRuns.size,
         included: uniqueRuns.size,
         excludedSuperseded: allSubtreeRuns.size - uniqueRuns.size,
+        historical: [...uniqueRuns.values()].filter((item) => item.historical).length,
         byState: runStateCounts,
         byContribution: runContributionCounts,
       },
@@ -335,6 +412,7 @@ export function computeGoalProgress(goalId, {
       precedence: [...EFFECTIVE_STATE_PRECEDENCE],
       decisiveState: rootNode.effectiveState,
       decisiveEvidence,
+      historicalEvidence: evidence.filter((item) => item.historical),
     },
     evidence,
     goals: subtreeNodes.map((node) => ({
@@ -346,6 +424,7 @@ export function computeGoalProgress(goalId, {
       excluded: node.excluded,
       leaf: node.leaf,
       children: node.children,
+      effectiveAt: node.effectiveAt === null ? null : new Date(node.effectiveAt).toISOString(),
     })),
   };
 }

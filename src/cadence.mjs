@@ -1,4 +1,4 @@
-import { staleGoalHints } from "./delivery.mjs";
+import { goalDispositionHints, requiresGoalDisposition, staleGoalHints } from "./delivery.mjs";
 import { inspectAuthorization } from "./authorization.mjs";
 
 const TERMINAL_STATES = new Set([
@@ -24,6 +24,17 @@ export function deriveOperatorCadence(status, { wakeReason = "state_change" } = 
   }
 
   if (TERMINAL_STATES.has(status.state)) {
+    if (requiresGoalDisposition(status)) {
+      const goalHints = goalDispositionHints(status);
+      return cadence(
+        "goal_disposition_required",
+        OPERATOR_TRANSITIONS.WAIT_OPERATOR,
+        `Record one explicit disposition for every declared open goal with \`agent-manager reconcile ${status.runId} --goal-disposition <goal-id>=<outcome> --operator <id>\`.`,
+        ["delivered", "superseded", "deferred", "open", "cancelled"],
+        "Agent Manager · Goal closeout",
+        goalHints,
+      );
+    }
     const goalHints = staleGoalHints(status);
     const goalNote = goalHints.length
       ? ` Goals still needing Master advancement (hint only, never automatic): ${

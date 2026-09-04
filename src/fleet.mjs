@@ -19,6 +19,7 @@ import {
   formatGoalsBoard,
   visibleGoalRows,
 } from "./goals-board.mjs";
+import { hasSettledGoalCloseout, requiresGoalDisposition } from "./delivery.mjs";
 import { buildCoreSnapshot, CORE_FEED_PAGE_SIZE, formatCoreBoard } from "./core-board.mjs";
 import { buildTokensSnapshot, formatTokensBoard } from "./tokens.mjs";
 import {
@@ -358,6 +359,14 @@ function isFleetTerminalState(state) {
 }
 
 function runBlocker(status, lanes) {
+  if (requiresGoalDisposition(status)) {
+    return {
+      scope: "goal",
+      id: "goal closeout",
+      prompt: "Choose delivered, superseded, deferred, open, or cancelled for every declared open goal.",
+    };
+  }
+  if (isFleetTerminalState(status.state) && hasSettledGoalCloseout(status)) return null;
   const lane = lanes.find((entry) => entry.needsInput?.prompt);
   if (lane) {
     return { scope: "lane", id: lane.id, prompt: cleanText(lane.needsInput.prompt, 500) };
@@ -370,6 +379,10 @@ function runBlocker(status, lanes) {
 }
 
 function attentionRank(status) {
+  if (requiresGoalDisposition(status)) return 0;
+  if (isFleetTerminalState(status.state) && hasSettledGoalCloseout(status)) {
+    return ["failed", "cancelled", "rejected"].includes(status.state) ? 4 : 5;
+  }
   if (status.state === "blocked" || status.lanes?.some((lane) => lane.needsInput) || status.integrate?.needsInput || status.ship?.needsInput) return 0;
   if (["delivery_review_pending", "correction_pending", "ship_gate_pending", "release_pending"].includes(status.state)) return 1;
   if (status.state === "shipping") return 2;

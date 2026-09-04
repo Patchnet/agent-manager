@@ -32,6 +32,14 @@ export const GOAL_LIFECYCLES = Object.freeze([
   "cancelled",
 ]);
 
+export const GOAL_DISPOSITIONS = Object.freeze([
+  "delivered",
+  "superseded",
+  "deferred",
+  "open",
+  "cancelled",
+]);
+
 export const ARTIFACT_TYPES = Object.freeze([
   "fup",
   "decision",
@@ -171,6 +179,11 @@ const GOAL_SCHEMA = {
     outcome: { type: "string", multiline: true },
     success_criteria: { type: "list", item_type: "string" },
     external_source_refs: { type: "list", item_type: "string", index: true },
+    disposition: { type: "enum", values: GOAL_DISPOSITIONS, index: true },
+    disposition_by: { type: "string", index: true, max_length: 240, multiline: false },
+    disposition_reason: { type: "string", multiline: true },
+    disposition_run_id: { type: "string", index: true, max_length: 128, multiline: false },
+    disposition_at: { type: "date", format: "YYYY-MM-DD", store_precision: "second", index: true },
     created_at: { type: "date", format: "YYYY-MM-DD", store_precision: "second", index: true },
     updated_at: { type: "date", format: "YYYY-MM-DD", store_precision: "second", index: true },
   },

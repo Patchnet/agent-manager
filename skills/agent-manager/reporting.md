@@ -370,9 +370,42 @@ Pass 2: operator `accept` | `accept-with-notes` | `reject` (or operator-ordered 
 
 ---
 
+## Template — Goal closeout required
+
+Use for `filed`, `rejected`, `failed`, or `cancelled` runs whose declared goals
+still need an explicit disposition.
+
+```markdown
+## Agent Manager · Goal closeout
+
+| | |
+|---|---|
+| **runId** | `<runId>` |
+| **run state** | `filed \| rejected \| failed \| cancelled` |
+| **historical evidence** | `retained` |
+| **goals needing disposition** | `<goal ids with lifecycle>` |
+
+### Command
+
+`agent-manager reconcile <runId> --goal-disposition <goal-id>=<outcome> --operator <id>`
+
+Repeat `--goal-disposition` for every goal. Outcomes: `delivered`,
+`superseded`, `deferred`, `open`, or `cancelled`.
+
+### Transition
+
+| | |
+|---|---|
+| **Mode** | `WAIT_OPERATOR` |
+| **Next action** | Record the explicit dispositions, then post Final outcome. |
+| **Operator input required** | `delivered \| superseded \| deferred \| open \| cancelled` per goal |
+```
+
+---
+
 ## Template — Final outcome
 
-Post for overall `reviewed`, `filed`, `merged`, `released`, `rejected`, `failed`, or `cancelled`.
+Post for overall `reviewed`, `filed`, `merged`, `released`, `rejected`, `failed`, or `cancelled` after any required goal dispositions are settled. A `filed`, `rejected`, `failed`, or `cancelled` run with open goal hints stays `WAIT_OPERATOR` until the goal closeout receipt exists.
 
 `goals awaiting advancement` comes from `next-action --json` (`goalHints`) or the
 report's **Goal advancement** block. It is a hint for the operator — never
@@ -421,12 +454,14 @@ delivered outcome, `cancelled` means abandoned.
 | **artifact bundle** | `<closeout.bundleRoot>` |
 | **artifact reference** | `<closeout.artifactRef>` · `<closeout.artifactCount>` files |
 | **goal links** | `<goalId → linkId, or none>` |
+| **goal dispositions** | `<goalId → delivered \| superseded \| deferred \| open \| cancelled>` |
 | **goals awaiting advancement** | `<goal ids with lifecycle, or none>` |
 
 ### Command used
 
 ```bash
-agent-manager closeout <runId> --operator <id> --reason "<why>"
+agent-manager closeout <runId> --operator <id> \
+  --goal-disposition <goal-id>=<outcome> --reason "<why>"
 ```
 
 ### Transition

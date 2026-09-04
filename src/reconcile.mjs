@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { spawnCommandSync } from "./command.mjs";
-import { recordMergedTarget, recordRelease } from "./delivery.mjs";
+import { isOverallTerminalState, recordMergedTarget, recordRelease } from "./delivery.mjs";
+import { syncBrainStatus } from "./brain.mjs";
+import { assertGoalsExist, GOAL_DISPOSITIONS, recordGoalDisposition } from "./goals.mjs";
+import { BRAIN_ROOT } from "./paths.mjs";
+import { writeReport } from "./report.mjs";
 import { readStatus, writeStatus } from "./status.mjs";
 
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
@@ -26,6 +30,10 @@ export async function reconcileExternalDelivery(status, {
   if (!provider) throw new ReconciliationError("provider-required", "external delivery reconciliation requires a provider adapter");
   if (!status?.runId || !status.delivery) {
     throw new ReconciliationError("status-invalid", "external delivery reconciliation requires a recorded run delivery ledger");
+  }
+  if (status.reconciliation?.state === "verified"
+    && ["merged", "released"].includes(status.state)) {
+    return status;
   }
   if (!["blocked", "release_pending", "ship_gate_pending"].includes(status.state)) {
     throw new ReconciliationError("state-ineligible", `run ${status.runId} cannot reconcile from state ${status.state}`);
@@ -212,16 +220,150 @@ export async function reconcileExternalDelivery(status, {
   return candidate;
 }
 
+export function parseGoalDisposition(value) {
+  const [goalId, disposition, ...extra] = String(value || "").split("=");
+  if (!goalId || !disposition || extra.length) {
+    throw new Error("--goal-disposition requires <goal-id>=<delivered|superseded|deferred|open|cancelled>");
+  }
+  if (!GOAL_DISPOSITIONS.includes(disposition)) {
+    throw new Error(`unsupported goal disposition: ${disposition}; expected ${GOAL_DISPOSITIONS.join(", ")}`);
+  }
+  return { goalId, disposition };
+}
+
+/**
+ * Settle the goals declared by a terminal run. This adds an operator-stamped
+ * goal disposition and a run receipt; it never edits historical run intent
+ * state. The same request returns the original status unchanged.
+ */
+export async function reconcileGoalDispositions(status, {
+  dispositions = [],
+  operator,
+  reason = null,
+  root = BRAIN_ROOT,
+  now = new Date(),
+} = {}) {
+  if (!status?.runId || !isOverallTerminalState(status.state)) {
+    throw new ReconciliationError(
+      "goal-state-ineligible",
+      `goal reconciliation requires a terminal run; found ${status?.state || "unknown"}`,
+    );
+  }
+  if (!operator || !String(operator).trim()) {
+    throw new ReconciliationError("operator-required", "goal reconciliation requires --operator <id>");
+  }
+  if (!dispositions.length) {
+    throw new ReconciliationError("disposition-required", "goal reconciliation requires at least one goal disposition");
+  }
+  const declared = [...new Set(status.goalRefs || [])].sort();
+  const normalized = dispositions.map((item) => (
+    typeof item === "string" ? parseGoalDisposition(item) : item
+  )).map((item) => ({ goalId: String(item.goalId), disposition: String(item.disposition) }));
+  const duplicate = normalized.find((item, index) => (
+    normalized.findIndex((candidate) => candidate.goalId === item.goalId) !== index
+  ));
+  if (duplicate) {
+    throw new ReconciliationError("disposition-duplicate", `goal disposition repeated for ${duplicate.goalId}`);
+  }
+  const unknown = normalized.filter((item) => !declared.includes(item.goalId));
+  if (unknown.length) {
+    throw new ReconciliationError(
+      "goal-not-declared",
+      `run ${status.runId} did not declare goal ${unknown[0].goalId}`,
+    );
+  }
+  const missing = declared.filter((goalId) => !normalized.some((item) => item.goalId === goalId));
+  if (missing.length) {
+    throw new ReconciliationError(
+      "disposition-incomplete",
+      `goal reconciliation requires a disposition for every declared goal: ${missing.join(", ")}`,
+    );
+  }
+  for (const item of normalized) {
+    if (!GOAL_DISPOSITIONS.includes(item.disposition)) {
+      throw new ReconciliationError(
+        "disposition-invalid",
+        `unsupported goal disposition: ${item.disposition}; expected ${GOAL_DISPOSITIONS.join(", ")}`,
+      );
+    }
+  }
+  normalized.sort((left, right) => compareGoalDisposition(left, right));
+  const normalizedOperator = String(operator).trim();
+  const normalizedReason = reason ? String(reason).trim() : null;
+  const prior = status.goalReconciliation;
+  if (prior?.state === "settled"
+    && prior.operator === normalizedOperator
+    && prior.reason === normalizedReason
+    && JSON.stringify(prior.dispositions.map(({ goalId, disposition }) => ({ goalId, disposition })))
+      === JSON.stringify(normalized)) {
+    return status;
+  }
+
+  await assertGoalsExist(normalized.map((item) => item.goalId), { root });
+  const recorded = [];
+  for (const item of normalized) {
+    const result = await recordGoalDisposition(item.goalId, {
+      disposition: item.disposition,
+      operator: normalizedOperator,
+      reason: normalizedReason,
+      runId: status.runId,
+    }, { root, now });
+    recorded.push({
+      goalId: item.goalId,
+      disposition: item.disposition,
+      lifecycle: result.goal.lifecycle,
+      changed: result.changed,
+    });
+  }
+  const candidate = structuredClone(status);
+  candidate.goalReconciliation = {
+    schema: "agent-manager.goal-reconciliation.v1",
+    state: "settled",
+    runState: status.state,
+    operator: normalizedOperator,
+    reason: normalizedReason,
+    reconciledAt: now.toISOString(),
+    dispositions: recorded,
+  };
+  if (candidate.closeout) candidate.closeout.dispositions = structuredClone(recorded);
+  return candidate;
+}
+
+function compareGoalDisposition(left, right) {
+  return left.goalId.localeCompare(right.goalId) || left.disposition.localeCompare(right.disposition);
+}
+
 export async function reconcileRun(runId, options = {}) {
   const status = readStatus(runId);
   if (!status) throw new ReconciliationError("run-missing", `no status for ${runId}`);
+  if (options.goalDispositions?.length) {
+    const reconciled = await reconcileGoalDispositions(status, {
+      dispositions: options.goalDispositions,
+      operator: options.operator,
+      reason: options.reason,
+      root: options.root,
+      now: options.now instanceof Date ? options.now : options.now?.() || new Date(),
+    });
+    if (reconciled === status) return status;
+    const saved = writeStatus(runId, reconciled);
+    writeReport(runId, saved);
+    return saved;
+  }
   const provider = options.provider || createGitHubProvider({
     cwd: status.repoRoot,
     remote: status.ship?.remote || "origin",
     exec: options.exec,
   });
   const reconciled = await reconcileExternalDelivery(status, { ...options, provider });
-  return writeStatus(runId, reconciled);
+  if (reconciled === status) return status;
+  const saved = writeStatus(runId, reconciled);
+  await syncBrainStatus(saved, { root: options.root || BRAIN_ROOT }).catch((error) => {
+    saved.awareness ||= {};
+    saved.awareness.lastError = String(error?.message || error);
+  });
+  const finalStatus = writeStatus(runId, saved);
+  writeReport(runId, finalStatus);
+  return finalStatus;
 }
 
 export function createGitHubProvider({ cwd, remote = "origin", exec = execute } = {}) {
@@ -357,7 +499,14 @@ export function createGitHubProvider({ cwd, remote = "origin", exec = execute } 
 }
 
 export function parseReconcileArgs(args = []) {
-  const flags = { runId: null, provider: "github", json: false };
+  const flags = {
+    runId: null,
+    provider: "github",
+    json: false,
+    goalDispositions: [],
+    operator: null,
+    reason: null,
+  };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--json") flags.json = true;
@@ -365,11 +514,26 @@ export function parseReconcileArgs(args = []) {
       const value = args[++index];
       if (!value) throw new Error("--provider requires a value");
       flags.provider = value;
+    } else if (arg === "--goal-disposition") {
+      const value = args[++index];
+      if (!value) throw new Error("--goal-disposition requires a value");
+      flags.goalDispositions.push(parseGoalDisposition(value));
+    } else if (arg === "--operator") {
+      const value = args[++index];
+      if (!value) throw new Error("--operator requires a value");
+      flags.operator = value;
+    } else if (arg === "--reason") {
+      const value = args[++index];
+      if (!value) throw new Error("--reason requires a value");
+      flags.reason = value;
     } else if (arg.startsWith("-")) throw new Error(`unknown reconcile flag: ${arg}`);
     else if (flags.runId) throw new Error(`unexpected reconcile argument: ${arg}`);
     else flags.runId = arg;
   }
   if (!flags.runId) throw new Error("reconcile requires <runId>");
+  if (flags.goalDispositions.length && !flags.operator) {
+    throw new Error("goal reconciliation requires --operator <id>");
+  }
   if (flags.provider !== "github") {
     throw new Error(`unsupported reconcile provider: ${flags.provider}; current adapter: github`);
   }
@@ -377,6 +541,16 @@ export function parseReconcileArgs(args = []) {
 }
 
 export function formatReconciliation(status) {
+  if (status.goalReconciliation) {
+    return [
+      `reconciled goals: ${status.runId}`,
+      `state: ${status.goalReconciliation.state}`,
+      `operator: ${status.goalReconciliation.operator}`,
+      ...status.goalReconciliation.dispositions.map((item) => (
+        `goal ${item.goalId}: ${item.disposition} -> ${item.lifecycle}`
+      )),
+    ].join("\n");
+  }
   const targets = status.reconciliation?.targets || [];
   return [
     `reconciled: ${status.runId}`,
