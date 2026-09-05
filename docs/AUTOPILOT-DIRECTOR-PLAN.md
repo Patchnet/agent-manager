@@ -8,9 +8,13 @@ harness/model/reasoning identity; a deterministic fixture-backed dry cycle;
 single-repository leasing; replay-safe persisted evidence; and the
 `agent-manager director` CLI. See [DIRECTOR.md](./DIRECTOR.md).
 
-Worker launch, automated Delivery Review, and policy-authorized pull-request
-shipping remain later Phase 1 increments. The current cycle requires
-`--dry-run` and performs no outward action.
+Since the original foundation, explicit `director go --detach` launches one
+goal-linked run and conditional shipping uses the shared engine. Merge authority
+now requires explicit `auto-merge` mode; `pr-only` cannot carry a `through-pr`
+grant. Automated planner/reviewer sessions, live connectors and a continuous
+controller remain future work. The roadmap below describes that target rather
+than claiming it is implemented. See [goal alignment](GOAL-ALIGNMENT.md) for the
+implemented goal-change and acceptance contract.
 
 ## Decision
 

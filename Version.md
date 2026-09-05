@@ -1,11 +1,17 @@
 ---
 enabled: true
-current: 1.27.0
+current: 2.0.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 2.0.0 - 2026-09-05
+
+Tie scope decisions and delivery acceptance to portable goal contracts. Record request assessments and goal-definition changes, require evidence against frozen success criteria, and keep run releases distinct from whole-goal completion.
+
+Breaking changes: goal-definition edits require decision metadata and the current version; new goal-referenced runs require success criteria and criterion-level acceptance evidence. Director policies must explicitly distinguish PR-only proposals from merge-authorized execution. Worker harness options and correction budgets now propagate into compiled workflows. See docs/GOAL-ALIGNMENT.md and docs/DIRECTOR.md for migration details.
 
 ## 1.27.0 - 2026-09-05
 

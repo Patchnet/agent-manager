@@ -10,6 +10,7 @@
     "pass": { "type": "integer", "minimum": 1, "maximum": 6 },
     "verdict": { "enum": ["accept", "accept-with-notes", "revise", "relaunch", "reject"] },
     "reviewer": { "type": "string", "minLength": 1 },
+    "goalAssessment": { "$ref": "goal-evidence.schema.json" },
     "reviewerIdentity": {
       "type": ["object", "null"],
       "required": ["kind", "source", "harness", "model", "threadTitle", "identityDigest"],

@@ -47,6 +47,9 @@ test("goal CLI creates, updates, lists, shows, inspects, and links goals", () =>
   const updated = json([
     "goal", "update", "goal-cli-child", "--lifecycle", "active",
     "--outcome", "The CLI slice is active.", "--clear-source-refs",
+    "--expected-version", String(child.goal.version), "--change-by", "operator",
+    "--change-reason", "Clarify intended result", "--change-impact", "No added implementation scope",
+    "--authority-ref", "instruction:clarify-cli",
   ]);
   assert.equal(updated.operation, "update");
   assert.equal(updated.goal.lifecycle, "active");
@@ -106,6 +109,22 @@ test("goal CLI creates, updates, lists, shows, inspects, and links goals", () =>
   assert.match(html, /CLI child/);
   assert.match(html, /Public example plan/);
   assert.doesNotMatch(html, /<script\b/i);
+});
+
+test("goal CLI assessments record scope decisions without changing the goal contract", () => {
+  json(["goal", "create", "--id", "goal-cli-assess", "--title", "Ship the core flow", "--success-criterion", "Core flow works"]);
+  const before = json(["goal", "show", "goal-cli-assess"]);
+  const path = join(root, "assessment.json");
+  writeFileSync(path, JSON.stringify({ request: "Add a dashboard", relationship: "optional", criteria: [],
+    reason: "Not required for the core flow", impact: "Adds UI work", by: "manager",
+    goalDigest: before.goalDigest, decision: "defer", authorityRef: "operator instruction: defer dashboard" }));
+  json(["goal", "assess", "goal-cli-assess", "--assessment", path]);
+  assert.equal(json(["goal", "show", "goal-cli-assess"]).goal.requests.length, 0);
+  json(["goal", "assess", "goal-cli-assess", "--assessment", path, "--record"]);
+  const after = json(["goal", "show", "goal-cli-assess"]);
+  assert.equal(after.goalDigest, before.goalDigest);
+  assert.equal(after.goal.requests.length, 1);
+  assert.match(run(["goal", "show", "goal-cli-assess"]), /request \[defer \/ optional\]: Add a dashboard/);
 });
 
 test("goal CLI is discoverable and rejects missing local goals", () => {

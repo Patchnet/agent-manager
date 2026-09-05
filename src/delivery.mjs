@@ -1,4 +1,5 @@
 import { assertReviewPass, canCorrect } from "./review-budget.mjs";
+import { evaluateGoalEvidence } from "./goal-alignment.mjs";
 
 const ACCEPTED_VERDICTS = new Set(["accept", "accept-with-notes"]);
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
@@ -115,6 +116,7 @@ export function recordReviewDecision(status, {
   verdict,
   reviewer,
   reviewerIdentity = null,
+  goalEvidence = null,
   notes = null,
   at = new Date().toISOString(),
 }) {
@@ -124,6 +126,8 @@ export function recordReviewDecision(status, {
     throw new Error("review verdict must be accept, accept-with-notes, revise, relaunch, or reject");
   }
   if (!reviewer || !String(reviewer).trim()) throw new Error("reviewer is required");
+  const goalAssessment = ACCEPTED_VERDICTS.has(verdict) && status.goals?.alignmentRequired
+    ? evaluateGoalEvidence(status, goalEvidence) : null;
   status.delivery ||= legacyDelivery(status);
   const review = status.delivery.review ||= {
     state: "not_started",
@@ -151,6 +155,7 @@ export function recordReviewDecision(status, {
     verdict,
     reviewer: String(reviewer).trim(),
     reviewerIdentity,
+    ...(goalAssessment ? { goalAssessment } : {}),
     notes: notes ? String(notes).trim() : null,
     decidedAt: at,
   };

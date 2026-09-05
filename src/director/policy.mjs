@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { matchesScope, normalizeScopePath, scopePrefix } from "../scope.mjs";
 import { normalizeAutomationPolicy } from "../authorization.mjs";
+import { normalizeHarnessOptions } from "../harness/options.mjs";
 import {
   assertKnownKeys,
   assertMapping,
@@ -16,7 +17,7 @@ import {
 const POLICY_KEYS = new Set(["schema", "repository", "director", "autopilot", "workers", "automation_policy"]);
 const REPOSITORY_KEYS = new Set(["path", "base_ref"]);
 const DIRECTOR_KEYS = new Set(["harness", "model", "reasoning"]);
-const WORKERS_KEYS = new Set(["harness_default", "model_default"]);
+const WORKERS_KEYS = new Set(["harness_default", "model_default", "harness_options"]);
 const AUTOPILOT_KEYS = new Set([
   "enabled", "mode", "source_filter", "allowed_actions", "allowed_paths",
   "forbidden_risks", "risk_exceptions", "max_items_per_cycle", "max_concurrency",
@@ -108,9 +109,12 @@ function normalizeWorkers(value) {
   const modelDefault = workers.model_default === undefined
     ? undefined
     : nonEmptyString(workers.model_default, "Director policy.workers.model_default");
-  return modelDefault === undefined
-    ? { harness_default: harnessDefault }
-    : { harness_default: harnessDefault, model_default: modelDefault };
+  return { harness_default: harnessDefault,
+    ...(modelDefault === undefined ? {} : { model_default: modelDefault }),
+    ...(workers.harness_options === undefined ? {} : {
+      harness_options: normalizeHarnessOptions(workers.harness_options, harnessDefault, modelDefault),
+    }),
+  };
 }
 
 export function normalizeDirectorPolicy(document, { policyPath, repoOverride = null } = {}) {
@@ -142,11 +146,14 @@ export function normalizeDirectorPolicy(document, { policyPath, repoOverride = n
   const autopilot = assertMapping(document.autopilot, "Director policy.autopilot");
   assertKnownKeys(autopilot, AUTOPILOT_KEYS, "Director policy.autopilot");
   if (autopilot.enabled !== true) throw new Error("Director policy.autopilot.enabled must be true");
-  if (autopilot.mode !== "pr-only") {
-    throw new Error("Director Phase 1 supports only Director policy.autopilot.mode=pr-only");
+  if (!["pr-only", "auto-merge"].includes(autopilot.mode)) {
+    throw new Error("Director policy.autopilot.mode must be pr-only or auto-merge");
   }
   const allowedActions = stringArray(autopilot.allowed_actions, "Director policy.autopilot.allowed_actions");
-  const unsafe = allowedActions.filter((action) => FORBIDDEN_ACTIONS.has(action) || !PR_ONLY_ACTIONS.has(action));
+  const unsafe = allowedActions.filter((action) => {
+    if (autopilot.mode === "auto-merge" && action === "merge") return false;
+    return FORBIDDEN_ACTIONS.has(action) || !PR_ONLY_ACTIONS.has(action);
+  });
   if (unsafe.length) {
     throw new Error(`Director pr-only policy forbids action${unsafe.length === 1 ? "" : "s"}: ${unsafe.join(", ")}`);
   }
@@ -166,6 +173,9 @@ export function normalizeDirectorPolicy(document, { policyPath, repoOverride = n
     ? null
     : normalizeAutomationPolicy(document.automation_policy, { policyPath });
   if (automationPolicy) {
+    if (autopilot.mode !== "auto-merge" || !allowedActions.includes("merge")) {
+      throw new Error("through-pr includes merge: Director shipping requires explicit auto-merge mode and merge action; pr-only cannot grant merge");
+    }
     if (automationPolicy.enabled !== true || automationPolicy.revocation) {
       throw new Error("Director automation_policy must be explicitly enabled and not revoked");
     }
@@ -174,11 +184,14 @@ export function normalizeDirectorPolicy(document, { policyPath, repoOverride = n
       throw new Error("Director automation_policy must bind the same repository and base_ref");
     }
     if (automationPolicy.approval.level !== "through-pr") {
-      throw new Error("Director pr-only automation_policy approval.level must be through-pr");
+      throw new Error("Director auto-merge automation_policy approval.level must be through-pr");
     }
     if (!allowedActions.includes("ship")) {
       throw new Error("Director automation_policy requires autopilot.allowed_actions to include ship");
     }
+  }
+  if (autopilot.mode === "auto-merge" && !automationPolicy) {
+    throw new Error("Director auto-merge requires an explicit automation_policy");
   }
 
   const normalizedDocument = stableValue({
@@ -188,7 +201,7 @@ export function normalizeDirectorPolicy(document, { policyPath, repoOverride = n
     workers,
     autopilot: {
       enabled: true,
-      mode: "pr-only",
+      mode: autopilot.mode,
       source_filter: nonEmptyString(autopilot.source_filter, "Director policy.autopilot.source_filter"),
       allowed_actions: [...allowedActions].sort(),
       allowed_paths: allowedPaths,

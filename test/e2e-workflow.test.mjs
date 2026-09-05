@@ -378,6 +378,7 @@ test("goal references fail closed and freeze goal-tree context into admitted run
   await runCli([
     "goal", "create", "--id", "goal-e2e-parent", "--title", "E2E parent",
     "--outcome", "The run carries its durable goal context.", "--json",
+    "--success-criterion", "The output carries goal context",
   ]);
   await runCli([
     "goal", "create", "--id", "goal-e2e-child", "--title", "E2E child",
@@ -439,4 +440,15 @@ test("goal references fail closed and freeze goal-tree context into admitted run
   const intents = JSON.parse((await runCli(["brain", "status", "--repo", repo, "--json"])).stdout);
   const intent = intents.find((item) => item.runId === runId);
   assert.deepEqual(intent.goalRefs, ["goal-e2e-parent"]);
+  assert.equal(intent.goalAlignmentRequired, true);
+  await assert.rejects(runCli(["review", runId, "--verdict", "accept", "--reviewer", "manager", "--json"]), /goal evidence/);
+  const review = JSON.parse((await runCli(["review", runId, "--json"])).stdout);
+  const evidence = review.goalEvidenceTemplate;
+  evidence[0].criteria[0].state = "met";
+  evidence[0].criteria[0].evidence = "Verified goal-context.txt and frozen prompt in the reviewed worktree";
+  const evidencePath = join(runsRoot, runId, "goal-evidence.json");
+  writeFileSync(evidencePath, JSON.stringify(evidence));
+  await runCli(["review", runId, "--verdict", "accept", "--reviewer", "manager", "--goal-evidence", evidencePath, "--json"]);
+  const accepted = JSON.parse(readFileSync(join(runsRoot, runId, "status.json"), "utf8"));
+  assert.equal(accepted.delivery.review.history[0].goalAssessment[0].outcome, "fulfilled");
 });

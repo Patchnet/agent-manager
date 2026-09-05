@@ -60,6 +60,7 @@
       "required": ["schema", "refs", "goals", "artifactLinks", "contextDigest", "contextSnapshot"],
       "properties": {
         "schema": { "const": "agent-manager.run-goals.v1" },
+        "alignmentRequired": { "type": "boolean" },
         "refs": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
         "goals": { "type": "array", "items": { "type": "object" } },
         "artifactLinks": { "type": "array", "items": { "type": "object" } },

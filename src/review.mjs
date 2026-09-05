@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { goalEvidenceTemplate } from "./goal-alignment.mjs";
 import { assertReviewPass, canCorrect, MAX_CORRECTIONS } from "./review-budget.mjs";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -48,6 +49,7 @@ export function buildDeliveryReview(runId, {
   reviewerRole = null,
   automationPolicy = null,
   notes = null,
+  goalEvidence = null,
   recovered = false,
 } = {}) {
   let status = readStatus(runId);
@@ -72,7 +74,7 @@ export function buildDeliveryReview(runId, {
   }
   if (verdict) {
     const reviewerIdentity = resolveReviewerIdentity(status, reviewerRole);
-    recordReviewDecision(status, { pass, verdict, reviewer, reviewerIdentity, notes });
+    recordReviewDecision(status, { pass, verdict, reviewer, reviewerIdentity, notes, goalEvidence });
     if (automationPolicy && ["accept", "accept-with-notes"].includes(verdict)) {
       try {
         const materialized = materializeReviewAuthorization(status, { policyPath: automationPolicy });
@@ -140,6 +142,10 @@ export function buildDeliveryReview(runId, {
     `- Reviewer: ${decision?.reviewer || "-"}`,
     `- Decided: ${decision?.decidedAt || "-"}`,
     `- Notes: ${decision?.notes || "-"}`,
+    ...(status.goals?.alignmentRequired ? [
+      `- Goal acceptance: ${decision?.goalAssessment ? decision.goalAssessment.map((item) => `${item.goalId}: ${item.outcome}`).join("; ") : "criterion evidence required (--goal-evidence <json>)"}`,
+      "- Run acceptance does not settle the goal; record a goal disposition only after evaluating the complete goal.",
+    ] : []),
     `- Conditional authorization: ${status.authorization?.valid
       ? `**ready** (grant \`${status.authorization.grantDigest}\`)`
       : status.authorization
@@ -269,6 +275,7 @@ export function buildDeliveryReview(runId, {
     state: status.state,
     path,
     decisionPath: decision ? decisionPath : null,
+    goalEvidenceTemplate: status.goals?.alignmentRequired ? goalEvidenceTemplate(status) : null,
     authorization: status.authorization || null,
     markdown,
   };
@@ -581,7 +588,9 @@ export async function fileRunArtifacts(runId, {
     warnings,
   }, null, 2) + "\n", "utf8");
 
-  const defaultLinkState = ARTIFACT_STATE_BY_RUN_STATE[status.state] || "active";
+  const runLinkState = ARTIFACT_STATE_BY_RUN_STATE[status.state] || "active";
+  const defaultLinkState = status.goals?.alignmentRequired && runLinkState === "delivered"
+    ? "pending_delivery" : runLinkState;
   const label = `${runId} run outputs (${filed.length} file${filed.length === 1 ? "" : "s"})`;
   const links = [];
   const errors = [];

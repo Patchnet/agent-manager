@@ -39,6 +39,8 @@ The MAADB `doc_id` is the stable local goal ID. Callers can supply a safe
 | `outcome` | no | Intended result |
 | `success_criteria` | yes | Explicit criteria used to judge delivery |
 | `external_source_refs` | no | Opaque source references retained for synchronization or traceability |
+| `change_history` | no | Append-only JSON records of before/after goal definitions, authority reference, reason, impact and actor |
+| `request_history` | no | JSON records of material request assessments and their proposed or explicit decisions |
 | `disposition` | no | Operator outcome: `delivered`, `superseded`, `deferred`, `open`, or `cancelled` |
 | `disposition_by` | no | Operator identity that recorded the disposition |
 | `disposition_reason` | no | Optional explanation |
@@ -111,6 +113,13 @@ A newer run in editing or delivery is explicitly current and can reopen a
 terminal goal. A failed terminal attempt that started after the settlement also
 remains blocking. This preserves fail-closed delivery: labels, lane exits, and
 lifecycle prose do not create successful delivery evidence.
+
+New goal-linked runs require criterion evidence and mark their run intent
+`goal_alignment_required`. Their accepted/merged/released state contributes
+`pending_delivery`, not automatic goal fulfillment. Legacy runs keep their
+historical behavior. Explicit goal disposition remains separate from accepting
+a work item. Definition changes preserve before/after decisions and reopen a
+delivered goal; see [goal alignment](GOAL-ALIGNMENT.md) for the CLI and migration.
 
 Filed evidence is intentionally ambiguous. Filing preserves the artifacts but
 does not choose the goal outcome. Closeout therefore requires one disposition

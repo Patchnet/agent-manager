@@ -251,6 +251,9 @@ export async function runDirectorCycle({
           skipped: triageResult.skipped,
         };
         selectedItems = triageResult.selectedItems;
+        if (go && selectedItems.some((item) => !item.goal_refs?.length)) {
+          throw new Error("Director go requires goal_refs on every selected work item; create or select an authorized goal before launch");
+        }
         transition(state, "TRIAGE", `selected ${state.items.selected.length}; quarantined ${state.items.quarantined.length}; skipped ${state.items.skipped.length}`, now().toISOString());
         atomicWriteJson(statePath, state);
       }

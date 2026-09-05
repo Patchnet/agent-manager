@@ -33,9 +33,9 @@ workers:
   harness_default: claude
 autopilot:
   enabled: true
-  mode: pr-only
+  mode: auto-merge
   source_filter: automation-ready
-  allowed_actions: [plan, run, review, commit, push, open-pr, ship]
+  allowed_actions: [plan, run, review, commit, push, open-pr, ship, merge]
   allowed_paths: [src/**, test/**, docs/**, src/lib/security/**, test/security/**]
   forbidden_risks: [security, authentication, billing, migrations, infrastructure]
   risk_exceptions:
@@ -80,7 +80,7 @@ Validate it before scheduling a cycle:
 agent-manager director validate --policy .\director-policy.yaml
 ```
 
-Validation rejects disabled policies, modes other than `pr-only`, merge/tag/
+Validation rejects disabled policies, modes other than `pr-only` or `auto-merge`, tag/
 release or unknown actions, missing Director identity, unknown fields, invalid
 bounds, risk exceptions outside `allowed_paths`, and repositories that do not
 exist. Director mode never grants dangerous permissions.
@@ -89,7 +89,20 @@ exist. Director mode never grants dangerous permissions.
 unrevoked, bound to the same repository and base, limited to `through-pr`, and
 paired with `ship` in `allowed_actions`. Security-class source items still need
 the existing scoped Director `risk_exceptions`; the shipping policy does not
-broaden triage eligibility.
+broaden triage eligibility. Because `through-pr` includes merge, an automation
+policy requires explicit `mode: auto-merge` and the `merge` action. A `pr-only`
+proposal cannot carry that grant. Existing policies using the ambiguous
+combination must be deliberately reauthorized; do not silently convert them.
+
+Workers may specify `harness_options` with effort and a Codex profile. Director
+passes those options to generated lanes and compiles `correction_limit` into the
+workflow's review budget, including zero corrections. Director identity remains
+metadata; this does not start a planner model or reviewer session.
+
+For material requests, apply [goal alignment](GOAL-ALIGNMENT.md). An executing
+Director cycle requires goal references on each selected item. The run validates
+those goals and freezes their criteria; acceptance requires criterion evidence.
+Do not treat a new idea as committed work or a merged PR as automatic fulfillment.
 
 ## Local source fixtures
 
@@ -223,5 +236,6 @@ keys are evidence only until a later execute phase consumes them.
 | Review-to-ship policy sidecars | Auto reviewer session |
 | `goal_refs` on drafts | Continuous / scheduled autopilot |
 
-Shipping must remain limited to policy-authorized `pr-only` behavior after
-Master launches a draft. Director must not fabricate a Ship Gate `all` reply.
+Shipping requires an explicit `auto-merge` policy and an independent accepting
+review. `pr-only` remains a proposal mode without a merge grant. Director must
+not fabricate a Ship Gate reply. Continuous execution remains unimplemented.

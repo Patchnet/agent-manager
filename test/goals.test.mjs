@@ -81,7 +81,10 @@ test("creates, reads, lists, and updates hierarchical goals with stable IDs", as
     outcome: null,
     successCriteria: ["Integrity checks pass", "Migration is tested"],
     externalSourceRefs: [],
-  }, { root, now: new Date("2026-08-08T02:00:00.000Z") });
+  }, { root, now: new Date("2026-08-08T02:00:00.000Z"), change: {
+    expectedVersion: child.version, by: "operator", reason: "Expand acceptance",
+    impact: "Include migration verification", authorityRef: "instruction:expand-model",
+  } });
   assert.equal(updated.parentId, null);
   assert.equal(updated.outcome, null);
   assert.deepEqual(updated.dependencies, []);

@@ -800,8 +800,9 @@ remote or legacy claims remain blocking until explicit release. Set
 
 Director is the policy-bound **proposal** layer above Agent Manager. It validates
 a standing policy, triages local source fixtures, and writes validated workflow
-YAML drafts. Master Dev kicks those drafts off with `run --detach`. Director
-does **not** auto-launch workers, run a planner LLM, or ship anything.
+YAML drafts. Master Dev kicks those drafts off with `run --detach`. An explicit
+policy-authorized `director go --detach` can launch one run. Director does not
+run a planner LLM or supply a continuous review/ship loop.
 
 ```bash
 agent-manager director validate --policy ./director-policy.yaml
@@ -829,20 +830,23 @@ Boundaries that fail closed rather than warn:
 
 | Attempt | Result |
 |---|---|
-| `mode` other than `pr-only` | policy rejected |
-| `merge`, `tag`, `release`, or unknown action | policy rejected |
+| `mode` other than `pr-only` or `auto-merge` | policy rejected |
+| `merge` in `pr-only`, or `tag`, `release`, or unknown action | policy rejected |
+| Shipping grant without explicit `auto-merge` and `merge` action | policy rejected |
 | Scope or repository outside the policy | item quarantined |
 | Forbidden risk without matching exception | item quarantined |
 | Non-`fixture` source provider | `connector-not-implemented:…` |
-| A cycle without `--dry-run` | command fails |
+| Proposal cycle without `--dry-run`, or `go` without an automation policy | command fails |
 | A second cycle on the same repository | repository lease refuses |
 
 Cycle state defaults to `$AGENT_MANAGER_RUNS_ROOT/director` (includes
 `workflows/`). Override with `--state-dir`. Replaying the same policy and
 fixtures returns the persisted cycle (and draft paths) safely.
 
-Director does not create or approve a Ship Gate reply. Delivery Review and Ship
-Gate remain operator-driven for every run launched from a draft.
+Director does not fabricate Ship Gate approval. Conditional shipping requires
+an explicit `auto-merge` policy and independent accepting review. Worker options
+and correction limits compile into the workflow. See [goal alignment](GOAL-ALIGNMENT.md)
+for request assessments, deliberate goal changes and criterion-based acceptance.
 
 ## Dangerous permissions
 

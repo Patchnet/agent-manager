@@ -381,6 +381,20 @@ test("a failed reopened run requires disposition even when its frozen goal was t
   assert.deepEqual(cadence.goalHints.map((hint) => hint.id), ["goal-formerly-done"]);
 });
 
+test("filing a goal-aligned release does not manufacture fulfilled goal evidence", async () => {
+  const runId = "run-partial-goal-release";
+  const status = acceptedShipGateStatus(runId);
+  await createGoal({ id: "goal-partial-release", title: "Whole goal", lifecycle: "active", successCriteria: ["All behavior works"] });
+  status.state = "released";
+  status.goalRefs = ["goal-partial-release"];
+  status.goals = { alignmentRequired: true, goals: [{ id: "goal-partial-release" }] };
+  writeStatus(runId, status);
+  await fileRunArtifacts(runId);
+  const links = await listGoalArtifactLinks({ goalId: "goal-partial-release" });
+  assert.equal(links[0].state, "pending_delivery");
+  assert.equal((await getGoal("goal-partial-release")).lifecycle, "active");
+});
+
 test("closeout files run outputs into the brain and links them to every declared goal", async () => {
   const runId = "run-filed-closeout";
   const status = acceptedShipGateStatus(runId);

@@ -17,12 +17,28 @@
       }
     },
     "director": { "$ref": "#/$defs/agentIdentity" },
+    "automation_policy": {
+      "type": "object",
+      "required": ["schema", "enabled", "repository", "approval", "risk", "provider", "shipment"],
+      "properties": {
+        "schema": { "const": "agent-manager.automation-policy.v1" },
+        "enabled": { "const": true },
+        "approval": { "type": "object", "required": ["level"], "properties": { "level": { "const": "through-pr" } } }
+      }
+    },
     "workers": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "harness_default": { "enum": ["claude", "codex", "cursor", "fake"] },
-        "model_default": { "type": "string", "minLength": 1 }
+        "model_default": { "type": "string", "minLength": 1 },
+        "harness_options": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"] },
+            "profile": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$" }
+          }
+        }
       }
     },
     "autopilot": {
@@ -35,12 +51,12 @@
       ],
       "properties": {
         "enabled": { "const": true },
-        "mode": { "const": "pr-only" },
+        "mode": { "enum": ["pr-only", "auto-merge"] },
         "source_filter": { "type": "string", "minLength": 1 },
         "allowed_actions": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "enum": ["plan", "run", "review", "commit", "push", "open-pr"] }
+          "items": { "enum": ["plan", "run", "review", "commit", "push", "open-pr", "ship", "merge"] }
         },
         "allowed_paths": {
           "type": "array",
@@ -83,6 +99,19 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "autopilot": { "properties": { "mode": { "const": "pr-only" } } } } },
+      "then": {
+        "not": { "required": ["automation_policy"] },
+        "properties": { "autopilot": { "properties": { "allowed_actions": { "not": { "contains": { "const": "merge" } } } } } }
+      },
+      "else": {
+        "required": ["automation_policy"],
+        "properties": { "autopilot": { "properties": { "allowed_actions": { "allOf": [{ "contains": { "const": "merge" } }, { "contains": { "const": "ship" } }] } } } }
+      }
+    }
+  ],
   "$defs": {
     "agentIdentity": {
       "type": "object",

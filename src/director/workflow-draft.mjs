@@ -31,6 +31,8 @@ function buildPrompt(item) {
     `Plan reference: ${item.planning.plan_ref}`,
     `Source: ${item.source.ref}`,
     "Stay inside the declared lane scope. Do not commit or open a pull request.",
+    "Connect work to the frozen goal criteria. Surface optional features and changed outcomes to the manager instead of silently expanding the assignment.",
+    "Report evidence for each criterion and distinguish completed work from remaining goal requirements.",
   ].join("\n");
 }
 
@@ -79,6 +81,7 @@ function buildWorkflowDocument({
       kind: "implementation",
     };
     if (modelDefault) lane.model = modelDefault;
+    if (workers.harness_options) lane.harness_options = { ...workers.harness_options };
     return lane;
   });
   const goalRefs = [...new Set(items.flatMap((item) => item.goal_refs || []))];
@@ -104,6 +107,7 @@ function buildWorkflowDocument({
     claim_mode: "auto",
     integrate: items.length > 1,
     max_concurrency: Math.min(policy.autopilot.max_concurrency, lanes.length),
+    delivery: { review_budget: { max_corrections: policy.autopilot.correction_limit, max_elapsed_sec: 3600 } },
     policy: {
       allow_commit: false,
       allow_pr: false,

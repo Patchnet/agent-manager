@@ -262,7 +262,8 @@ export function computeGoalProgress(goalId, {
         id: run.progressId,
         goalId: goal.id,
         state: String(run.state || "unknown"),
-        contribution: normalizedRunState(run.state),
+        contribution: run.goalAlignmentRequired && ACCEPTED_RUN_STATES.has(run.state)
+          ? "pending_delivery" : normalizedRunState(run.state),
         excluded,
         at: timestampMs(run.endedAt, run.heartbeatAt, run.startedAt),
         phase: run.phase || null,

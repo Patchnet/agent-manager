@@ -75,7 +75,8 @@ function writeItems(path, items) {
 }
 
 function enableShippingPolicy(fx) {
-  fx.policy.autopilot.allowed_actions.push("ship");
+  fx.policy.autopilot.mode = "auto-merge";
+  fx.policy.autopilot.allowed_actions.push("ship", "merge");
   fx.policy.automation_policy = {
     schema: "agent-manager.automation-policy.v1",
     enabled: true,
@@ -118,6 +119,34 @@ test("Director policy fails closed outside the pr-only boundary", () => {
   } finally {
     rmSync(fx.root, { recursive: true, force: true });
   }
+});
+
+test("Director shipping cannot smuggle merge authority through pr-only mode", () => {
+  const fx = fixture();
+  try {
+    enableShippingPolicy(fx);
+    assert.equal(loadDirectorPolicy(fx.policyPath).autopilot.mode, "auto-merge");
+    fx.policy.autopilot.mode = "pr-only";
+    fx.policy.autopilot.allowed_actions = fx.policy.autopilot.allowed_actions.filter((action) => action !== "merge");
+    writeFileSync(fx.policyPath, JSON.stringify(fx.policy));
+    assert.throws(() => loadDirectorPolicy(fx.policyPath), /pr-only cannot grant merge/);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test("Director compiles worker effort/profile and zero correction budget", async () => {
+  const fx = fixture();
+  try {
+    fx.policy.workers = { harness_default: "codex", model_default: "gpt-6-astra", harness_options: { effort: "high", profile: "coding" } };
+    fx.policy.autopilot.correction_limit = 0;
+    writeFileSync(fx.policyPath, JSON.stringify(fx.policy));
+    writeItems(fx.itemsPath, [item("settings")]);
+    const result = await runDirectorCycle({ policyPath: fx.policyPath, itemsPath: fx.itemsPath, stateRoot: fx.stateRoot, dryRun: true });
+    const workflow = readFileSync(result.drafts[0].path, "utf8");
+    assert.match(workflow, /max_corrections: 0/);
+    assert.match(workflow, /effort: high/);
+    assert.match(workflow, /profile: coding/);
+    assert.equal(result.drafts[0].validateOk, true);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });
 
 test("dry cycle triages deterministically, persists transitions, and replays idempotently", async () => {

@@ -53,6 +53,7 @@ export function writeReport(runId, status) {
     "",
     `- **goal references:** ${status.goalRefs?.length ? status.goalRefs.join(", ") : "-"}`,
     `- **frozen goals:** ${status.goals?.goals?.length ?? 0}`,
+    `- **goal acceptance:** ${status.goals?.alignmentRequired ? "criterion evidence required; accepted work does not automatically fulfill the goal" : "legacy / no goal contract"}`,
     `- **artifact links:** ${status.goals?.artifactLinks?.length ?? 0}`,
     `- **context SHA-256:** ${status.goals?.contextDigest || "-"}`,
     `- **context snapshot:** ${status.goals?.contextSnapshot || "-"}`,

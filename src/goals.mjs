@@ -8,6 +8,7 @@ import {
   useBrain,
 } from "./brain.mjs";
 import { BRAIN_ROOT } from "./paths.mjs";
+import { assessGoalRequest, goalContract, goalContractDigest } from "./goal-alignment.mjs";
 
 export {
   ARTIFACT_RELATIONSHIPS,
@@ -156,6 +157,8 @@ function toGoal(document) {
     createdAt: timestamp(value.created_at),
     updatedAt: timestamp(value.updated_at),
     version: document.version ?? null,
+    changes: (value.change_history || []).map((entry) => JSON.parse(entry)),
+    requests: (value.request_history || []).map((entry) => JSON.parse(entry)),
   };
 }
 
@@ -378,7 +381,7 @@ export async function createGoal(input, { root = BRAIN_ROOT, now = new Date() } 
   }, { root, lock: "goal-graph" });
 }
 
-export async function updateGoal(goalId, patch, { root = BRAIN_ROOT, now = new Date() } = {}) {
+export async function updateGoal(goalId, patch, { root = BRAIN_ROOT, now = new Date(), change = null } = {}) {
   const id = normalizeGoalId(goalId);
   assertKnownKeys(patch, [
     "title", "lifecycle", "parentId", "dependencies", "outcome", "successCriteria",
@@ -428,6 +431,28 @@ export async function updateGoal(goalId, patch, { root = BRAIN_ROOT, now = new D
     }
     const prospectiveGoals = graph.goals.map((goal) => goal.id === id ? next : goal);
     assertValidGraph({ ...graph, goals: prospectiveGoals });
+    if (goalContractDigest(current) !== goalContractDigest(next)) {
+      if (!change || change.expectedVersion !== current.version) {
+        throw new GoalModelError("GOAL_CHANGE_REVIEW_REQUIRED", "goal definition changes require change metadata and the current expectedVersion");
+      }
+      const record = {
+        at: now.toISOString(), by: requiredString(change.by, "change.by"),
+        reason: requiredString(change.reason, "change.reason"),
+        impact: requiredString(change.impact, "change.impact"),
+        authorityRef: requiredString(change.authorityRef, "change.authorityRef"),
+        before: goalContract(current), after: goalContract(next),
+      };
+      fields.change_history = [...current.changes, record].map((entry) => JSON.stringify(entry));
+      // Changing the finish line reopens delivery; historical evidence remains.
+      if (current.lifecycle === "delivered" || next.lifecycle === "delivered") {
+        fields.lifecycle = "active";
+        fields.disposition = "open";
+        fields.disposition_by = record.by;
+        fields.disposition_reason = record.reason;
+        fields.disposition_at = record.at;
+        fields.disposition_run_id = undefined;
+      }
+    }
     unwrapBrainResult(await engine.updateDocument(id, fields), `update goal ${id}`);
     return toGoal(unwrapBrainResult(await engine.getDocument(id, "hot"), `read goal ${id}`));
   }, { root, lock: "goal-graph" });
@@ -500,6 +525,23 @@ export async function getGoal(goalId, { root = BRAIN_ROOT } = {}) {
     }
     return toGoal(unwrapBrainResult(found, `read goal ${id}`));
   }, { root });
+}
+
+export async function recordGoalRequest(goalId, input, { root = BRAIN_ROOT, now = new Date() } = {}) {
+  const id = normalizeGoalId(goalId);
+  return useBrain(async (engine) => {
+    const current = toGoal(unwrapBrainResult(await engine.getDocument(id, "hot"), `read goal ${id}`));
+    if (!input?.goalDigest) throw new GoalModelError("GOAL_CHANGE_REVIEW_REQUIRED", "recording an assessment requires the goalDigest from the assessed goal");
+    const assessment = assessGoalRequest(current, input);
+    const existing = current.requests.find((entry) => JSON.stringify(entry.assessment) === JSON.stringify(assessment));
+    if (existing) return { ...existing, replayed: true };
+    const record = { at: now.toISOString(), assessment };
+    unwrapBrainResult(await engine.updateDocument(id, {
+      request_history: [...current.requests, record].map((entry) => JSON.stringify(entry)),
+      updated_at: now.toISOString(),
+    }), `record goal request ${id}`);
+    return record;
+  }, { root, lock: "goal-graph" });
 }
 
 export async function listGoals({ root = BRAIN_ROOT, parentId = undefined } = {}) {

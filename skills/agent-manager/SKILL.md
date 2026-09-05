@@ -160,6 +160,27 @@ operator requests goal tracking or a sustained wave needs it; goal creation is
 not a prerequisite for a small authorized run. Put any selected goals in
 `goal_refs`. The Fleet view remains available through `agent-manager-fleet`.
 
+For goal-driven work, apply [goal alignment](../../docs/GOAL-ALIGNMENT.md) at
+assignment, material new instructions, review, and release closeout. Identify
+which success criterion the work advances. Carry the original goal through side
+questions and compaction; discussing an idea does not add it to the release.
+
+Continue routine implementation and necessary dependencies within established
+authority. For optional features, changed outcomes, or unrelated initiatives,
+briefly state the active goal, relationship, added work and what would be displaced;
+recommend deferral, a separate goal, or an amendment. Ask only for an unresolved
+scope decision. Honor an explicit decision already given without asking twice.
+Record material requests with `goal assess --record`; proposed/deferred requests
+do not launch work or change the goal. Apply approved amendments with `goal update`
+and change metadata. Do not invent new goals or silently park an operator priority.
+
+New goal-linked runs require `review --goal-evidence` on acceptance. Evaluate the
+frozen criteria against the actual diff and tests. Partial work may be accepted
+as a work item; it does not fulfill the overall goal. Record the goal's delivered
+disposition only after its full criteria are satisfied. A release alone is not
+that assessment. Distinguish deliberate deferral, blockers and loss of momentum;
+do not classify inactivity as abandonment without context.
+
 Keep the shared packet concise: requested outcome, acceptance criteria, source
 references, scope, permissions, and required verification. Let the worker choose
 implementation steps, native tools, and context management. See

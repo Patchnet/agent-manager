@@ -68,7 +68,9 @@ import {
   listGoalArtifactLinks,
   listGoals,
   updateGoal,
+  recordGoalRequest,
 } from "../src/goals.mjs";
+import { assessGoalRequest, goalContractDigest } from "../src/goal-alignment.mjs";
 import { formatGoalProgress, getGoalProgress } from "../src/goal-progress.mjs";
 import { exportGoalMap } from "../src/goal-map.mjs";
 import {
@@ -136,6 +138,9 @@ function usage() {
     "  agent-manager brain status [--repo <path>] [--json]",
     "  agent-manager goals [--parent <id>|--roots] [--json]",
     "  agent-manager goal create --title <text> [--id <id>] [options] [--json]",
+    "  agent-manager goal assess <id> --assessment <json-file> [--record] [--json]",
+    "  Goal definition updates: --expected-version <n> --change-by <id> --change-reason <text> --change-impact <text> --authority-ref <ref>",
+    "  Goal-linked review acceptance: --goal-evidence <json-file> (criterion evidence against frozen goals)",
     "  agent-manager goal update <id> [options] [--json]",
     "  agent-manager goal show <id> [--json]",
     "  agent-manager goal status <id> [--json]",
@@ -553,11 +558,14 @@ function goalFields(parsed, { create = false } = {}) {
 function formatGoal(goal) {
   return [
     `${goal.id}  ${goal.lifecycle}  ${goal.title}`,
+    `version: ${goal.version}`,
     `parent: ${goal.parentId || "-"}`,
     `dependencies: ${goal.dependencies.length ? goal.dependencies.join(", ") : "-"}`,
     `outcome: ${goal.outcome || "-"}`,
     `success criteria: ${goal.successCriteria.length ? goal.successCriteria.join(" | ") : "-"}`,
     `source refs: ${goal.externalSourceRefs.length ? goal.externalSourceRefs.join(", ") : "-"}`,
+    `goal changes: ${(goal.changes || []).length}`,
+    ...(goal.requests || []).map(({ assessment }) => `request [${assessment.decision} / ${assessment.relationship}]: ${assessment.request} | impact: ${assessment.impact}`),
   ].join("\n");
 }
 
@@ -569,6 +577,7 @@ async function goalDetail(goalId) {
   ]);
   return {
     schema: "agent-manager.goal-detail.v1",
+    goalDigest: goalContractDigest(goal),
     goal,
     children,
     artifactLinks,
@@ -597,7 +606,19 @@ async function runGoalsCommand(rest) {
 
 async function runGoalCommand(rest) {
   const action = rest[0];
-  if (!action) throw new Error("goal requires create, update, show, inspect, status, map, or link");
+  if (action === "assess") {
+    const parsed = parseNamedArgs(rest.slice(1), {
+      values: { "--assessment": { key: "assessment" } },
+      booleans: { "--record": "record", "--json": "json" },
+    });
+    if (parsed.positionals.length !== 1 || !parsed.assessment) throw new Error("goal assess requires <id> --assessment <json-file> [--record]");
+    const goal = await getGoal(parsed.positionals[0]);
+    const input = JSON.parse(readFileSync(parsed.assessment, "utf8"));
+    const result = parsed.record ? await recordGoalRequest(goal.id, input) : assessGoalRequest(goal, input);
+    console.log(JSON.stringify(result, null, parsed.json ? 0 : 2));
+    return;
+  }
+  if (!action) throw new Error("goal requires create, update, assess, show, inspect, status, map, or link");
   if (action === "create") {
     const parsed = parseNamedArgs(rest.slice(1), {
       values: {
@@ -615,11 +636,16 @@ async function runGoalCommand(rest) {
   }
   if (action === "update") {
     const parsed = parseNamedArgs(rest.slice(1), {
-      values: goalCommonValues,
+      values: { ...goalCommonValues, "--change-by": { key: "changeBy" },
+        "--change-reason": { key: "changeReason" }, "--change-impact": { key: "changeImpact" },
+        "--authority-ref": { key: "authorityRef" }, "--expected-version": { key: "expectedVersion" } },
       booleans: goalCommonBooleans,
     });
     if (parsed.positionals.length !== 1) throw new Error("goal update requires exactly one <id>");
-    const goal = await updateGoal(parsed.positionals[0], goalFields(parsed));
+    const goal = await updateGoal(parsed.positionals[0], goalFields(parsed), { change: {
+      by: parsed.changeBy, reason: parsed.changeReason, impact: parsed.changeImpact,
+      authorityRef: parsed.authorityRef, expectedVersion: Number(parsed.expectedVersion),
+    } });
     const payload = { schema: "agent-manager.goal-write.v1", operation: "update", goal };
     console.log(parsed.json ? JSON.stringify(payload) : formatGoal(goal));
     return;
@@ -630,6 +656,7 @@ async function runGoalCommand(rest) {
     const payload = await goalDetail(parsed.positionals[0]);
     console.log(parsed.json ? JSON.stringify(payload) : [
       formatGoal(payload.goal),
+      `goal digest: ${goalContractDigest(payload.goal)}`,
       `children: ${payload.children.length ? payload.children.map((goal) => goal.id).join(", ") : "-"}`,
       `artifact links: ${payload.artifactLinks.length ? payload.artifactLinks.map((link) => link.id).join(", ") : "-"}`,
     ].join("\n"));
@@ -1267,7 +1294,7 @@ async function main() {
   }
 
   if (cmd === "review") {
-    const runId = firstPositional(args.slice(1), ["--pass", "--verdict", "--reviewer", "--reviewer-role", "--automation-policy", "--notes"])
+    const runId = firstPositional(args.slice(1), ["--pass", "--verdict", "--reviewer", "--reviewer-role", "--automation-policy", "--notes", "--goal-evidence"])
       || latestRunId();
     if (!runId) throw new Error("review requires <runId>");
     const result = buildDeliveryReview(runId, {
@@ -1277,6 +1304,7 @@ async function main() {
       reviewerRole: flagValue("--reviewer-role"),
       automationPolicy: flagValue("--automation-policy"),
       notes: flagValue("--notes"),
+      goalEvidence: flagValue("--goal-evidence") ? JSON.parse(readFileSync(flagValue("--goal-evidence"), "utf8")) : null,
       recovered: args.includes("--recovered"),
     });
     if (flagValue("--verdict")) {

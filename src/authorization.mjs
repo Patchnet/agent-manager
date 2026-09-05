@@ -320,6 +320,7 @@ function acceptedReviewDecisionDigest(status) {
     reviewer: decision.reviewer,
     reviewerIdentity: decision.reviewerIdentity || null,
     notes: decision.notes || null,
+    ...(decision.goalAssessment ? { goalAssessment: decision.goalAssessment } : {}),
     decidedAt: decision.decidedAt,
   });
 }
