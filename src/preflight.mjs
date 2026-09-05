@@ -99,6 +99,27 @@ export function validateRepository(workflow) {
   return checks;
 }
 
+export function checkHarnessOptions(command, harness, options, spawnOptions = {}) {
+  const flags = new Set(options.flatMap((option) => [
+    ...(option?.effort ? [harness === "claude" ? "--effort" : "--config"] : []),
+    ...(option?.profile ? ["--profile"] : []),
+  ]));
+  if (!flags.size) return null;
+  const args = harness === "codex" ? ["exec", "--help"] : ["--help"];
+  const { result, resolved } = spawnCommandSync(command, args, {
+    encoding: "utf8", windowsHide: true, timeout: 10_000, ...spawnOptions,
+  });
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  const missing = [...flags].filter((flag) => !new RegExp(`${flag}(?:[\\s=,]|$)`).test(output));
+  return {
+    ok: result.status === 0 && missing.length === 0, command,
+    invocation: [resolved.command, ...resolved.args],
+    version: null,
+    error: result.status !== 0 ? "cannot inspect installed harness options"
+      : missing.length ? `installed harness does not advertise ${missing.join(", ")}` : null,
+  };
+}
+
 export function preflightWorkflow(workflow) {
   assertPlanningReady(workflow);
   return [
@@ -124,6 +145,11 @@ export function preflightSelectedHarnesses(workflow) {
       harnessCommands.set(command, name);
       const versionCheck = { ...checkCommand(command), harness: name };
       checks.push(versionCheck);
+      if (versionCheck.ok) {
+        const optionCheck = checkHarnessOptions(command, name, workflow.lanes
+          .filter((lane) => lane.harness === name).map((lane) => lane.harness_options));
+        if (optionCheck) checks.push({ ...optionCheck, harness: name });
+      }
       if (name === "claude" && versionCheck.ok) {
         checks.push({
           ...checkClaudePermissionModes(

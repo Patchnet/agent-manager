@@ -6,7 +6,7 @@
   "required": ["schema", "runId", "pass", "path", "markdown"],
   "properties": {
     "schema": { "const": "agent-manager.review.v1" }, "runId": { "type": "string" },
-    "pass": { "enum": [1, 2] },
+    "pass": { "type": "integer", "minimum": 1, "maximum": 6 },
     "verdict": { "enum": ["accept", "accept-with-notes", "revise", "relaunch", "reject", null] },
     "state": { "enum": ["delivery_review_pending", "correction_pending", "ship_gate_pending", "reviewed", "rejected"] },
     "decisionPath": { "type": ["string", "null"] },

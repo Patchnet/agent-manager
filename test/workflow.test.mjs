@@ -38,6 +38,24 @@ function withLane(lane = {}, overrides = {}) {
   });
 }
 
+test("harness defaults merge per harness and lane overrides win", () => {
+  const result = loadWorkflow(withLane({ harness: "codex", model: "gpt-6-astra",
+    harness_options: { effort: "high" } }, {
+    harness_defaults: { codex: { effort: "medium", profile: "work" }, claude: { effort: "low" } },
+    delivery: { review_budget: { max_corrections: 2, max_elapsed_sec: 600 } },
+    policy: { stall_grace_sec: 0, max_runtime_sec: 30 },
+  }));
+  assert.deepEqual(result.lanes[0].harness_options, { effort: "high", profile: "work" });
+  assert.equal(result.delivery.review_budget.max_corrections, 2);
+  assert.equal(result.policy.stall_grace_sec, 0);
+  assert.equal(result.policy.max_runtime_sec, 30);
+  assert.throws(() => loadWorkflow(withLane({ harness: "codex" }, {
+    model_default: "gpt-6-astra", harness_defaults: { codex: { effort: "none" } },
+  })), /does not support/);
+  assert.throws(() => loadWorkflow(withLane({}, { delivery: { review_budget: { max_corrections: 6 } } })), /max_corrections/);
+  assert.throws(() => loadWorkflow(withLane({}, { delivery: { review_budget: { automatic: true } } })), /unknown field/);
+});
+
 test("allow_commit with a prompting Claude permission mode is rejected at load", () => {
   for (const permission_mode of ["acceptEdits", "workspace-write"]) {
     assert.throws(

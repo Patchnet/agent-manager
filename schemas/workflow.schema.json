@@ -12,6 +12,7 @@
     "classification": { "enum": ["operational", "benchmark", "demo", "retry", "recovery"] },
     "parent_run_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
     "harness_default": { "enum": ["claude", "codex", "cursor", "fake"] },
+    "harness_defaults": {"type":"object","additionalProperties":false,"properties":{"claude":{"$ref":"#/$defs/harnessOptions"},"codex":{"$ref":"#/$defs/harnessOptions"},"cursor":{"$ref":"#/$defs/harnessOptions"},"fake":{"$ref":"#/$defs/harnessOptions"}}},
     "model_default": { "type": "string", "minLength": 1 },
     "integrate": { "type": "boolean" },
     "claim_mode": { "enum": ["auto", "off", "required"] },
@@ -47,11 +48,13 @@
     }
   ],
   "$defs": {
+    "harnessOptions": {"type":"object","additionalProperties":false,"properties":{"effort":{"enum":["none","minimal","low","medium","high","xhigh","max"]},"profile":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"}}},
     "delivery": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "mode": { "enum": ["single", "train", "review-only"] },
+        "review_budget": {"type":"object","additionalProperties":false,"properties":{"max_corrections":{"type":"integer","minimum":0,"maximum":5},"max_elapsed_sec":{"type":"integer","minimum":60,"maximum":604800}}},
         "release_required": { "type": "boolean" },
         "release_mode": { "enum": ["tag-only", "published-release"] },
         "targets": {
@@ -117,6 +120,7 @@
       "properties": {
         "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
         "harness": { "enum": ["claude", "codex", "cursor", "fake"] },
+        "harness_options": { "$ref": "#/$defs/harnessOptions" },
         "model": { "type": "string", "minLength": 1 },
         "permission_mode": { "enum": ["acceptEdits", "auto", "dontAsk", "readOnly", "read-only", "read_only", "workspace-write"] },
         "allowed_tools": {
@@ -158,6 +162,8 @@
         },
         "dangerously_skip_permissions": { "type": "boolean" },
         "permission_mode": { "enum": ["acceptEdits", "auto", "dontAsk", "readOnly", "read-only", "read_only", "workspace-write"] },
+        "stall_grace_sec": { "type": "number", "minimum": 0, "maximum": 86400 },
+        "max_runtime_sec": { "type": "number", "minimum": 5, "maximum": 604800 },
         "stall_timeout_sec": { "type": "number", "minimum": 5, "maximum": 86400 },
         "poll_interval_ms": { "type": "number", "minimum": 100, "maximum": 60000 }
       }

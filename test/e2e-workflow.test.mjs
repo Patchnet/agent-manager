@@ -25,12 +25,30 @@ test.after(async () => {
   await close();
 });
 
+test("a detached attempt deadline retains its reason and a quick resume clears it", async () => {
+  const runId = "run-deadline-recovery";
+  const definition = baseWorkflow([{ id: "writer", scope: "deadline.txt", prompt: "fixture",
+    fake: { delay_ms: 5500, resume: { write: { path: "deadline.txt", content: "recovered\n" } } } }]);
+  definition.policy.max_runtime_sec = 5;
+  definition.policy.stall_grace_sec = 60;
+  const workflow = writeWorkflow("deadline-recovery", definition);
+  await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
+  const failed = await waitForStatus(runId, (status) => status.state === "failed" && status.lanes[0].endedAt);
+  assert.equal(failed.lanes[0].supervision.reason, "runtime_deadline");
+  assert.equal(failed.lanes[0].lastActivity, "supervision: runtime_deadline");
+  await runCli(["reply", runId, "writer", "--force", "--message", "Retry the fixture.", "--json"]);
+  const resumed = await waitForStatus(runId, (status) => status.state === "delivery_review_pending");
+  assert.equal(resumed.lanes[0].state, "done");
+  assert.notEqual(resumed.lanes[0].supervision?.reason, "runtime_deadline");
+});
+
 test("detached run publishes feed events, resumes the exact session, and releases claims", async () => {
   const runId = "run-test-reply";
   const workflow = writeWorkflow("reply", baseWorkflow([
     {
       id: "writer",
       model: "worker-test-model",
+      harness_options: { effort: "high" },
       scope: "allowed.txt",
       prompt: "write allowed file",
       fake: { write: { path: "allowed.txt", content: "allowed\n" } },
@@ -68,6 +86,8 @@ test("detached run publishes feed events, resumes the exact session, and release
   assert.equal(writer.state, "done");
   assert.equal(writer.modelRequested, "worker-test-model");
   assert.equal(writer.modelObserved, null);
+  assert.deepEqual(writer.harnessOptions, { effort: "high" });
+  assert.equal(writer.effortObserved, null);
   assert.equal(blocked.identity.manager.harness, "codex");
   assert.equal(blocked.identity.manager.model, "manager-test-model");
   assert.equal(question.state, "blocked");

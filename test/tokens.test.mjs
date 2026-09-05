@@ -157,7 +157,7 @@ test("pricingFor matches model families and rejects unknowns", () => {
   assert.equal(pricingFor("claude-opus-5").family, "claude-opus");
   assert.equal(pricingFor("claude-sonnet-4-6").family, "claude-sonnet");
   assert.equal(pricingFor("claude-fable-5").family, "claude-fable/mythos");
-  assert.equal(pricingFor("gpt-5.6-sol").family, "gpt-5");
+  assert.equal(pricingFor("gpt-5.6-sol").family, "gpt-5.6-sol");
   assert.equal(pricingFor("mystery-model"), null);
   assert.equal(pricingFor(null), null);
 });

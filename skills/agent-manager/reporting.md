@@ -4,7 +4,8 @@
 status walls, emoji dashboards, or invented schemas.
 
 Fill from `status.json` / `report.md`. Use `n/a` when unknown. Refresh when
-state changes, on a **Heartbeat** wake, or when the operator asks.
+state changes or when the operator asks. Unchanged heartbeat wakes update telemetry;
+post a chat Heartbeat only when requested.
 
 ## Mandatory transition footer
 
@@ -30,7 +31,7 @@ unclear. Its result is authoritative for cadence; `status.json` remains
 authoritative for run facts.
 
 After detach, Master **must** arm `watch-signal` (see SKILL). On each wake:
-unchanged + running → Heartbeat; changed → Run board; needs-input → Escalation;
+unchanged + running → telemetry (chat Heartbeat only when requested); changed → Run board; needs-input → Escalation;
 `delivery_review_pending` → Run outcome then Delivery Review while the watcher
 stays active; overall terminal (`reviewed|merged|released|rejected|failed|cancelled`) →
 final outcome then **stop**. After an accepted
@@ -233,7 +234,7 @@ Escalation template. Failed, cancelled, or rejected runs use Final outcome.
 | | |
 |---|---|
 | **Mode** | `AUTO_CONTINUE` |
-| **Next action** | Verify the work and present Delivery Review Pass 1 now. |
+| **Next action** | Verify the work and present the next sequential Delivery Review now. |
 | **Operator input required** | `none` |
 ```
 
@@ -251,7 +252,7 @@ authorizes one correction; do not ask whether to begin it.
 |---|---|
 | **runId** | `<parent runId>` |
 | **method** | `revise \| relaunch` |
-| **correction attempt** | `1 of 1` |
+| **correction attempt** | `<used> of <budget>` |
 | **monitoring** | `armed` |
 
 | Lane | Exact gap | Required proof |
@@ -263,7 +264,7 @@ authorizes one correction; do not ask whether to begin it.
 | | |
 |---|---|
 | **Mode** | `AUTO_CONTINUE` |
-| **Next action** | Run the correction and present Delivery Review Pass 2 when it finishes. |
+| **Next action** | Run the correction and present the next sequential Delivery Review pass. |
 | **Operator input required** | `none` |
 ```
 
@@ -293,16 +294,16 @@ Per parent runId (the original multi-lane run under review):
 | Phase | Who | Allowed? |
 |-------|-----|----------|
 | **Pass 1 — Delivery Review** | Master | **Once.** Post the board below (`eval_pass: 1`). |
-| **Correction** | Workers | **Once.** Only if Pass 1 verdict is `revise` (same worktrees + patch prompts) or `relaunch` (one new workflow slice). |
-| **Pass 2 — Correction report** | Master | **Once.** After correction finishes, re-verify and post **Delivery Review · Pass 2** (`eval_pass: 2`). Present to the **operator**. |
-| **Further eval** | Master | **Forbidden.** Master must **not** open Pass 3, issue another `revise`/`relaunch`, or start another eval loop. Operator decides: Ship Gate, abandon, or a **new operator-ordered** run (new runId — not Master self-looping). |
+| **Correction** | Workers | After a recorded `revise` (same worktrees + patch prompts) or `relaunch` decision, within the frozen count/time budget. Default: once. |
+| **Next pass — Correction report** | Master | After correction finishes, verify and post the next sequential Delivery Review pass to the operator. Default final pass: 2. |
+| **Further eval** | Master | Only within an explicitly authorized `delivery.review_budget`; each correction needs a recorded decision and evidence of progress. Default remains one correction. |
 
 `accept` / `accept-with-notes` / `reject` on Pass 1 skip correction — go straight to Ship Gate or close-out.
 
 After the operator chooses a verdict, persist it before any Ship Gate:
 
 ```bash
-agent-manager review <runId> --pass <1|2> \
+agent-manager review <runId> --pass <n> \
   --verdict <accept|accept-with-notes|revise|relaunch|reject> \
   --reviewer <reviewer-id> [--notes "<evidence or constraints>"]
 ```
@@ -314,19 +315,19 @@ Lane exit codes and CI green may still leave **contract drift** (e.g. docs
 sample ≠ live Zod). Call that out explicitly under Gaps.
 
 ```markdown
-## Agent Manager · Delivery Review · Pass <1|2>
+## Agent Manager · Delivery Review · Pass <n>
 
 | | |
 |---|---|
 | **runId** | `<runId>` (parent run under review) |
-| **eval_pass** | `1 \| 2` |
-| **correction_used** | `no \| revise \| relaunch` (Pass 2 must show which; Pass 1 usually `no`) |
+| **eval_pass** | `1..max_corrections+1` |
+| **correction_used** | `no \| revise \| relaunch` (later passes must show which; Pass 1 usually `no`) |
 | **repo** | `<repo>` |
 | **runtime** | `<runtime.os>/<runtime.arch> (<runtime.hostPlatform>) · <runtime.shell> · <runtime.commandMode>` |
 | **proposal** | `<decision id / follow-up id / workflow path / checklist>` |
 | **planning context** | `sha256:<status.planning.contextDigest>` |
 | **reviewed** | `<ISO or local>` |
-| **verdict** | Pass 1: `accept \| accept-with-notes \| revise \| relaunch \| reject` · Pass 2: `accept \| accept-with-notes \| reject` only |
+| **verdict** | `accept \| accept-with-notes \| reject`; add `revise \| relaunch` only while the frozen correction budget permits |
 
 ### Proposal checklist
 
@@ -350,14 +351,14 @@ sample ≠ live Zod). Call that out explicitly under Gaps.
 
 ### Recommended next
 - [ ] Pass 1 `accept` / `accept-with-notes` → integrate if needed → **Ship Gate**
-- [ ] Pass 1 `revise` / `relaunch` → **one** correction → Pass 2 report to operator (Master must not eval again)
+- [ ] Recorded `revise` / `relaunch` → correction → next sequential review; additional corrections require an explicit budget and evidence of progress
 - [ ] Pass 1 `reject` → release claims; do not ship; file/update a follow-up record if needed
-- [ ] Pass 2 `accept` / `accept-with-notes` → **Ship Gate**
-- [ ] Pass 2 `reject` → stop; operator may order a **new** run (new runId) — Master does not self-loop
+- [ ] Later pass `accept` / `accept-with-notes` → **Ship Gate**
+- [ ] Later pass `reject` → stop; operator may order a **new** run (new runId) — Master does not self-loop
 
 ### Waiting on
-Pass 1: operator `accept` | `accept-with-notes` | `revise` | `relaunch` | `reject`  
-Pass 2: operator `accept` | `accept-with-notes` | `reject` (or operator-ordered new run)
+Pass 1: operator `accept` | `accept-with-notes` | `reject`; add `revise` | `relaunch` only with correction budget remaining.
+Final budgeted pass: operator `accept` | `accept-with-notes` | `reject` (or operator-ordered new run)
 
 ### Transition
 
@@ -483,18 +484,18 @@ agent-manager closeout <runId> --operator <id> \
 | Run kicked off (`--detach`) | Capture `runId`; post **Run board**, arm watch, and keep going |
 | ~15–30s while running (or on operator ask) | Re-read `status.json`; post updated **Run board** only if something changed |
 | Lane blocked | Post **Escalation** immediately |
-| Workers finished (`delivery_review_pending`) | Post **Run outcome**, then **Delivery Review · Pass 1**; keep the watcher active |
-| Operator says `revise` / `relaunch` | Persist it, post **Correction kickoff**, and launch the one correction without another prompt |
-| After one correction completes | Post **Delivery Review · Pass 2** to the operator — **no further Master eval** |
+| Workers finished (`delivery_review_pending`) | Post **Run outcome**, then the next sequential **Delivery Review**; keep the watcher active |
+| Operator says `revise` / `relaunch` | Persist it, post **Correction kickoff**, and launch the recorded correction without another prompt |
+| After a correction completes | Post the next sequential **Delivery Review** to the operator — **further correction only within the frozen budget and a recorded decision** |
 | Delivery Review accepted | Persist it and present **Ship Gate** in the same turn |
 | Accepted work will not ship | Run `agent-manager closeout` and post **Filed** — never `cancel` accepted work |
 | Overall terminal | Post **Final outcome**, list any goals awaiting advancement, close the source record, and stop watching |
 | Operator says “status?” | Re-read JSON; post **Run board** (current) |
-| Operator says “review” / after outcome | Post Pass 1 if not yet posted; if Pass 2 already posted, do **not** open Pass 3 |
+| Operator says “review” / after outcome | Post Pass 1 if not yet posted; advance only within the frozen review budget |
 
 Do **not** await a foreground `run` to “know when it’s done.” Do **not** spam
 identical boards. Do **not** skip Delivery Review because lanes exited 0.
-Do **not** run a second correction or a third review pass.
+Do not exceed the frozen correction count/time budget. Without an explicit budget, do not run a second correction or a third review pass.
 Do **not** call a change-producing run delivered until its overall state is
 `merged` or `released`. Review-only or approved no-change work is terminal at
 `reviewed`.

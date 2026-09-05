@@ -47,6 +47,8 @@ import {
 import { assertPlanningReady } from "./planning.mjs";
 import { preflightSelectedHarnesses } from "./preflight.mjs";
 import { validateLaneCompletion } from "./completion.mjs";
+import { inspectSupervision } from "./supervision.mjs";
+import { parseEffort } from "./harness/options.mjs";
 import {
   createPolicyEventInspector,
   currentHead,
@@ -301,7 +303,7 @@ export async function runWorkflow(workflowPath, {
       `workflow planning context changed after detach preflight: expected ${expectedPlanningDigest}, found ${planning.contextDigest}`,
     );
   }
-  preflightSelectedHarnesses(workflow);
+  const harnessChecks = preflightSelectedHarnesses(workflow);
   const goalContext = await buildRunGoalContext(workflow.goal_refs);
   const runId = assertSafeSlug(forcedId || newRunId(), "run id");
   const identity = buildRunIdentity({ runId, workflow, overrides: identityOverrides });
@@ -338,6 +340,8 @@ export async function runWorkflow(workflowPath, {
     harness: lane.harness || workflow.harness_default,
     modelRequested: lane.model || workflow.model_default || null,
     modelObserved: null,
+    harnessOptions: { ...lane.harness_options },
+    effortObserved: null,
     permissionMode: lane.permission_mode,
     allowedTools: [...lane.allowed_tools],
     allowedToolsSource: lane.allowed_tools_source || "none",
@@ -380,6 +384,7 @@ export async function runWorkflow(workflowPath, {
   const status = {
     runId,
     agentManager: { version: AGENT_MANAGER_VERSION },
+    harnessChecks,
     identity,
     state: "running",
     classification: runContract.classification,
@@ -668,6 +673,7 @@ export async function runWorkflow(workflowPath, {
           laneDir,
           lane,
           model: lane.model || workflow.model_default || null,
+          harnessOptions: lane.harness_options,
           permissionMode: lane.permission_mode,
           allowedTools: lane.allowed_tools,
           dangerouslySkipPermissions: !!workflow.policy.dangerously_skip_permissions,
@@ -677,6 +683,7 @@ export async function runWorkflow(workflowPath, {
           },
           onEvent: (event) => {
             laneState.modelObserved ||= adapter.parseModel?.(event) || null;
+            laneState.effortObserved = parseEffort(event) || laneState.effortObserved;
             runtimeViolation ||= inspectPolicyEvent(event);
             if (runtimeViolation) handle?.kill?.();
           },
@@ -694,13 +701,17 @@ export async function runWorkflow(workflowPath, {
           dependsOn: laneState.dependsOn,
         });
 
-        const stallMs = (workflow.policy.stall_timeout_sec || 600) * 1000;
         const pollMs = Number(workflow.policy.poll_interval_ms || 2_000);
         const attemptStarted = Date.now();
         let needsPublished = false;
         const tick = setInterval(() => {
           laneState.elapsedSec = Math.round((Date.now() - attemptStarted) / 1000);
           laneState.sessionId = handle.getSessionId?.() || laneState.sessionId;
+          if (laneState.state === "running") {
+            laneState.supervision = inspectSupervision({
+              startedAt: attemptStarted, lastByteAt: handle.getLastByteAt(), policy: workflow.policy,
+            });
+          }
           if (cancellationRequested(runId)) {
             adapter.cancel(handle);
             laneState.state = "cancelled";
@@ -722,11 +733,11 @@ export async function runWorkflow(workflowPath, {
               });
             }
           } else if (
-            Date.now() - handle.getLastByteAt() > stallMs &&
+            laneState.supervision?.action === "cancel" &&
             laneState.state === "running"
           ) {
             laneState.state = "failed";
-            laneState.lastActivity = "stalled (silence exceeded timeout)";
+            laneState.lastActivity = `supervision: ${laneState.supervision.reason}`;
             adapter.cancel(handle);
           }
           if (runtimeViolation && laneState.state !== "cancelled") {
@@ -746,6 +757,9 @@ export async function runWorkflow(workflowPath, {
         laneState.elapsedSec = Math.round((Date.now() - attemptStarted) / 1000);
         laneState.exitCode = result.exitCode;
         laneState.lastActivity = result.lastActivity || laneState.lastActivity;
+        if (laneState.supervision?.action === "cancel") {
+          laneState.lastActivity = `supervision: ${laneState.supervision.reason}`;
+        }
         laneState.logPath = result.logPath || laneState.logPath;
         laneState.sessionId =
           result.sessionId || handle.getSessionId?.() || laneState.sessionId;

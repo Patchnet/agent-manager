@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { assertReviewPass, canCorrect, MAX_CORRECTIONS } from "./review-budget.mjs";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readStatus, writeStatus } from "./status.mjs";
@@ -49,9 +50,9 @@ export function buildDeliveryReview(runId, {
   notes = null,
   recovered = false,
 } = {}) {
-  if (![1, 2].includes(pass)) throw new Error("review pass must be 1 or 2");
   let status = readStatus(runId);
   if (!status) throw new Error(`no status for ${runId}`);
+  assertReviewPass(status, pass);
   let recoveredFrom = null;
   if (!AWAITING_REVIEW_STATES.includes(status.state)) {
     const recoverable = RECOVERABLE_REVIEW_STATES.includes(status.state);
@@ -483,7 +484,7 @@ export function collectRunArtifacts(status, { warnings = [] } = {}) {
 
   add(join(root, "report.md"), "report.md", "run report", "run");
   add(join(root, "status.json"), "status.json", "run telemetry", "run");
-  for (const pass of [1, 2]) {
+  for (let pass = 1; pass <= MAX_CORRECTIONS + 1; pass += 1) {
     add(
       join(root, `delivery-review-pass-${pass}.md`),
       `delivery-review-pass-${pass}.md`,
@@ -738,7 +739,7 @@ function reviewTransition(decision, pass, status) {
     return {
       mode: "WAIT_OPERATOR",
       nextAction: "Persist the selected verdict, then advance without another confirmation.",
-      input: pass === 2
+      input: !canCorrect(status, pass)
         ? "`accept | accept-with-notes | reject`"
         : "`accept | accept-with-notes | revise | relaunch | reject`",
     };
@@ -767,7 +768,7 @@ function reviewTransition(decision, pass, status) {
   if (["revise", "relaunch"].includes(decision.verdict)) {
     return {
       mode: "AUTO_CONTINUE",
-      nextAction: "Post Correction kickoff and launch the one authorized correction.",
+      nextAction: "Post Correction kickoff and launch the authorized correction.",
       input: "`none`",
     };
   }

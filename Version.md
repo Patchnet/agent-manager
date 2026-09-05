@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 1.26.0
+current: 1.27.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 1.27.0 - 2026-09-05
+
+Align orchestration with modern coding harnesses: explicit effort and profiles, quiet-work grace, bounded review budgets, outcome-oriented guidance, and updated model telemetry.
 
 ## 1.26.0 - 2026-09-04
 

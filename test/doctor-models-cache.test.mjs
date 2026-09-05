@@ -88,9 +88,6 @@ test("a corrupt cache is reported with a rename-aside fix, never a delete", () =
   const cases = [
     { name: "truncated json", contents: '{"models": [{"slug": "gpt-5"', state: "invalid-json" },
     { name: "not an object", contents: "[]", state: "invalid-json" },
-    // The exact production symptom: `failed to load models cache: missing
-    // field base_instructions` on every codex lane.
-    { name: "missing base_instructions", contents: JSON.stringify({ models: [{ slug: "gpt-5" }] }), state: "missing-fields" },
   ];
 
   for (const { name, contents, state } of cases) {
@@ -114,6 +111,9 @@ test("a corrupt cache is reported with a rename-aside fix, never a delete", () =
   try {
     const missing = inspectCodexModelsCache({ env: { CODEX_HOME: home }, platform: process.platform });
     assert.deepEqual(missing.missingFields, ["base_instructions"]);
+    assert.equal(missing.ok, true);
+    assert.equal(missing.state, "schema-unverified");
+    assert.doesNotMatch(missing.recommendation, /Rename-Item|mv /);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -133,7 +133,7 @@ test("an unreadable cache is reported instead of crashing the doctor", () => {
   assert.match(result.detail, /EACCES/);
 });
 
-test("doctor warns on a corrupt cache without failing the overall check", () => {
+test("doctor does not prescribe cache repairs for an unfamiliar schema", () => {
   const home = withCache(JSON.stringify({ models: [{ slug: "gpt-5" }] }));
   const previous = process.env.CODEX_HOME;
   process.env.CODEX_HOME = home;
@@ -141,9 +141,9 @@ test("doctor warns on a corrupt cache without failing the overall check", () => 
     const result = runDoctor({ repo: process.cwd() });
     const check = result.checks.find((entry) => entry.name === "codex models cache");
     assert.ok(check, "doctor reports the codex models cache");
-    assert.equal(check.ok, false);
+    assert.equal(check.ok, true);
     assert.equal(check.optional, true, "a degraded cache must not gate readiness");
-    assert.equal(check.state, "missing-fields");
+    assert.equal(check.state, "schema-unverified");
 
     // Optional checks never enter coreReady, so `ok` tracks the rest of the run.
     const core = result.checks.filter((entry) => !entry.optional).every((entry) => entry.ok);
@@ -151,8 +151,8 @@ test("doctor warns on a corrupt cache without failing the overall check", () => 
     assert.equal(result.ok, core && harness);
 
     const rendered = formatDoctor(result);
-    assert.match(rendered, /WARN {2}codex models cache: .*missing field base_instructions/);
-    assert.match(rendered, /fix: .*so codex regenerates it/);
+    assert.match(rendered, /codex models cache: .*cache schema differs/);
+    assert.doesNotMatch(rendered, /fix: .*so codex regenerates it/);
   } finally {
     if (previous === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previous;

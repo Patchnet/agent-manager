@@ -2,6 +2,9 @@
 
 Companion to [SKILL.md](./SKILL.md). Keep skill short; put detail here.
 
+For optional harness effort/profiles, quiet-work supervision, correction budgets,
+and native adapter evaluation, see [Harness alignment](../../docs/HARNESS-ALIGNMENT.md).
+
 ## Architecture
 
 ```text

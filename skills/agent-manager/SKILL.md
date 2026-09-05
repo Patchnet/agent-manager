@@ -39,8 +39,8 @@ themselves in one chat — that stays a normal focused session.
 1. **Master Dev stays the human channel and owns source check-in.** Before launch,
    the invoking manager reviews the source references, repository instructions,
    relevant code, and lane scope. Record that evidence in `workflow.planning`.
-   Agent Manager is source-neutral: workers do not query the planning system and
-   receive one frozen context packet from the manager.
+   Agent Manager is source-neutral: workers receive a frozen assignment packet
+   and may verify it through permitted read-only sources; the manager owns updates.
 2. **Never await a full `run`.** Always use `run <workflow> --detach`. Capture
    `runId` from stdout, post the **Run board**, then arm **watch-signal**. A
    foreground / long-blocking await on `run` freezes the Master Dev chat turn
@@ -65,14 +65,17 @@ themselves in one chat — that stays a normal focused session.
    deliverables (including cross-lane contracts), and posts **Delivery Review
    · Pass 1**. Worker completion is `delivery_review_pending`, not a terminal
    delivery state. Persist the operator decision with `agent-manager review`.
-9. **One eval loop only (anti-perpetual).** Per parent `runId`: Pass 1 → at
-   most **one** worker correction (`revise` or `relaunch`) → **Pass 2**
-   correction report to the operator. Master **must not** open Pass 3, issue
-   another revise/relaunch, or start another eval loop. Further work requires
-   an **operator-ordered** new run (new `runId`).
+9. **Bound corrections.** The default remains one correction and a final Pass 2.
+   An explicitly authorized workflow may set `delivery.review_budget` with
+   up to five corrections and an elapsed-time limit. Each correction still
+   requires a recorded `revise` or `relaunch` decision; extra corrections
+   require notes showing progress and remaining gaps. Stop on repeated lack of
+   progress. At the count/time limit, accept, accept-with-notes, or reject.
+   A larger budget supplies no shipping authority and does not authorize an
+   autonomous review loop. Do not silently raise it or start replacement runs.
 10. **Workers do not commit/merge/tag** unless the workflow explicitly allows it
    (default: forbidden). Shipping goes through **Ship Gate** *after* an
-   accepting Delivery Review (Pass 1 or Pass 2).
+   accepting Delivery Review within the run budget.
 11. **Integrate** (`integrate: true` in workflow) folds successful lanes into
     `am/<runId>/integrate` after coding finishes. It prepares the branch only.
     Master owns Delivery Review and Ship Gate. After approval, hand shipping to
@@ -146,39 +149,28 @@ planner LLM, or invoke Ship Gate. Keep `security` forbidden by default; use
 
 ## Operator flow (Master Dev)
 
-### Step 0 — Conversational goal setup (default for new waves)
+### Step 0 — Outcome and authority
 
-When the operator says they want to use Agent Manager / fire up lanes / dump a
-work list for a repo, **do not jump straight to `run`**. Walk the conversation:
+Use the repo and outcome already supplied by the operator. Ask only for missing
+information that materially changes the work. Start with one cohesive lane;
+add lanes for independent work or distinct ownership, not arbitrary phases.
 
-1. Confirm **repo** and the **wave outcome** in one sentence.
-2. Ask for (or accept) a dump of outcomes — prefer a few child goals, not a
-   dozen micro-tasks. Default: one parent goal per repo wave.
-3. Create or update the local goal graph before planning lanes:
+Use existing goal references when available. Create a local goal graph when the
+operator requests goal tracking or a sustained wave needs it; goal creation is
+not a prerequisite for a small authorized run. Put any selected goals in
+`goal_refs`. The Fleet view remains available through `agent-manager-fleet`.
 
-```bash
-agent-manager goal create --title "<wave title>" --lifecycle active
-agent-manager goal create --title "<child outcome>" --parent <parent-id> --lifecycle planned
-agent-manager goals --roots
-```
-
-4. Tell the operator they can watch progress in the Fleet terminal tabs:
-
-```bash
-agent-manager-fleet
-# Live tabs: 1 Runs · 2 Goals · 3 Core · 4 Tokens · Tab to cycle
-```
-
-5. Only then plan lanes / workflow. Put `goal_refs` on the workflow so runs
-   attach to the graph. Skip Step 0 only when the operator explicitly points at
-   an existing goal id or says “no goals, just run”.
+Keep the shared packet concise: requested outcome, acceptance criteria, source
+references, scope, permissions, and required verification. Let the worker choose
+implementation steps, native tools, and context management. See
+[HARNESS-ALIGNMENT.md](../../docs/HARNESS-ALIGNMENT.md) for settings and supervision.
 
 ### Steps 1+ — Plan, detach, supervise
 
 1. **Check in and plan** - review the authoritative work source, target-repo
    instructions, relevant code, base commit, lane scopes, and shared context.
    Complete `workflow.planning`; `validate` and `run` fail closed if it is
-   missing, incomplete, or stale. Include `goal_refs` from Step 0.
+   missing, incomplete, or stale. Include `goal_refs` when selected.
 2. **Run detached** — `agent-manager run <workflow> --detach`. Read `runId` /
    `telemetry` from stdout (exits immediately). **Do not** await a non-detach run.
    Codex and Claude Code launches automatically capture the originating thread
@@ -199,11 +191,11 @@ agent-manager-fleet
 8. **Delivery Review · Pass 1** — compare proposal vs worktrees; post the board;
    wait for `accept` | `accept-with-notes` | `revise` | `relaunch` | `reject`,
    then persist that decision before Ship Gate.
-9. **At most one correction** — on `revise` / `relaunch` only: feed gaps to
-   workers once (same worktrees or one new workflow slice). When that finishes,
-   post **Delivery Review · Pass 2** to the operator. **Stop.** Master does not
-   eval again.
-10. **Ship** only via Ship Gate after Pass 1 or Pass 2 accepts. On
+9. **Correction within budget** — after a recorded `revise` / `relaunch`,
+   feed the exact gaps to workers and present the next sequential review pass.
+   Follow the frozen count/time budget and report evidence of progress. Existing
+   workflows still end corrections at Pass 2; do not add authority by inference.
+10. **Ship** only via Ship Gate after a permitted review pass accepts. On
     `through-pr` or `all`, load `skills/pr-manager/SKILL.md`, launch
     `agent-manager ship ... --detach`, post the PR Manager Handoff board, and
     exit the turn.
@@ -215,9 +207,9 @@ agent-manager-fleet
 | Plan ready | `WAIT_OPERATOR` unless already authorized | Present Build plan; launch without asking twice when already approved |
 | Run/ship active | `AUTO_CONTINUE` | Monitor detached telemetry and report cadence updates |
 | Lane/ship blocked | `WAIT_OPERATOR` | Ask one exact question; continue independent work |
-| Workers complete | `AUTO_CONTINUE` | Post Run outcome and perform Delivery Review Pass 1 in the same turn |
+| Workers complete | `AUTO_CONTINUE` | Post Run outcome and perform the next sequential Delivery Review in the same turn |
 | Delivery Review presented | `WAIT_OPERATOR` | Wait for the pass-specific verdict |
-| `revise` / `relaunch` persisted | `AUTO_CONTINUE` | Launch the single correction; do not ask again |
+| `revise` / `relaunch` persisted | `AUTO_CONTINUE` | Launch the recorded correction; do not ask again |
 | Review accepted | `AUTO_CONTINUE` | Persist it and present Ship Gate in the same turn |
 | Ship Gate presented | `WAIT_OPERATOR` | Wait for exact shipping authority |
 | Overall delivery terminal | `TERMINAL` | Post final evidence, close the source record, stop watching |
@@ -225,7 +217,8 @@ agent-manager-fleet
 ## Watch loop (mandatory after detach)
 
 Silence after detach is a bug. Master must wake on status changes and on a
-**3-minute** heartbeat so the operator sees activity without asking.
+**3-minute** telemetry heartbeat. Surface meaningful changes immediately; do not
+open repetitive model turns merely to restate unchanged status.
 
 ### Arm (Cursor / hosts with notify_on_output)
 
@@ -258,8 +251,8 @@ heartbeat.
    or JSONL event consumer.
 4. **Always** re-read `$AGENT_MANAGER_RUNS_ROOT/<runId>/status.json` before posting
    (never invent state from the wake payload alone).
-5. Post the matching template:
-   - `heartbeat` + still running → **Heartbeat**
+5. Post the matching template for actionable changes. Routine unchanged heartbeats may stay in telemetry unless the operator requests chat pulses:
+   - `heartbeat` + still running → update telemetry; **Heartbeat** in chat only when requested
    - `state_change` → **Run board** or PR Manager **Ship board**
    - `needs_input` → lane **Escalation** or PR Manager **Ship escalation**
    - `terminal` → final reviewed/merged/released/rejected/failed/cancelled outcome, then stop
@@ -276,7 +269,7 @@ agent-manager monitor <runId>
 
 Live lane board; exits on `reviewed` / `merged` / `released` / `rejected` / `failed` /
 `cancelled`. Does **not** replace
-chat Heartbeat / Run outcome posts.
+actionable chat updates / Run outcome posts.
 
 ### If the host has `/loop`
 

@@ -82,6 +82,9 @@ export function writeReport(runId, status) {
     lines.push(`- harness: ${lane.harness}`);
     lines.push(`- model requested: ${lane.modelRequested || "default"}`);
     lines.push(`- model observed: ${lane.modelObserved || "unverified"}`);
+    lines.push(`- effort requested: ${lane.harnessOptions?.effort || "inherited"}; observed: ${lane.effortObserved || "unverified"}`);
+    lines.push(`- harness profile: ${lane.harnessOptions?.profile || "inherited"}`);
+    if (lane.supervision) lines.push(`- supervision: ${lane.supervision.state}${lane.supervision.reason ? ` (${lane.supervision.reason})` : ""}`);
     lines.push(`- kind: ${lane.kind || "-"}`);
     lines.push(`- state: ${lane.state}`);
     lines.push(`- completion: ${lane.completion?.state || "-"}`);
@@ -158,7 +161,7 @@ export function writeReport(runId, status) {
     lines.push("- Ship Gate remains blocked until an accepted review is persisted.");
   } else if (status.state === "correction_pending") {
     lines.push("- **Correction required:** follow the recorded Delivery Review verdict.");
-    lines.push("- After the single correction cycle, record Delivery Review Pass 2.");
+    lines.push("- After correction, record the next sequential Delivery Review pass within the run budget.");
   } else if (status.state === "ship_gate_pending") {
     lines.push("- **Ship Gate pending:** Delivery Review is accepted; obtain explicit shipping approval.");
     lines.push("- For a train, ship each target in order with `--target <id>`.");

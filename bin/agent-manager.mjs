@@ -149,7 +149,7 @@ function usage() {
     "  agent-manager ratify <runId> <laneId> --reason <text> [--by <id>] [--json]",
     "    records Master acceptance of a guardrail-failed lane's violations so",
     "    `integrate --force-lanes failed-with-snapshot` may fold it",
-    "  agent-manager review <runId> [--pass 1|2] [--verdict <decision> --reviewer <id> [--reviewer-role manager] [--automation-policy <file>] [--notes <text>]] [--recovered] [--json]",
+    "  agent-manager review <runId> [--pass <n>] [--verdict <decision> --reviewer <id> [--reviewer-role manager] [--automation-policy <file>] [--notes <text>]] [--recovered] [--json]",
     "    --recovered: record a verdict on a blocked, failed, or cancelled run",
     "  agent-manager closeout <runId> --operator <id> --goal-disposition <goal-id>=<outcome> [options]",
     "    accept-without-ship terminal: retains outputs, records every goal outcome, and ends as `filed`",

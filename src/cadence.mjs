@@ -1,3 +1,4 @@
+import { canCorrect } from "./review-budget.mjs";
 import { goalDispositionHints, requiresGoalDisposition, staleGoalHints } from "./delivery.mjs";
 import { inspectAuthorization } from "./authorization.mjs";
 
@@ -89,7 +90,7 @@ export function deriveOperatorCadence(status, { wakeReason = "state_change" } = 
       `delivery_review_pass_${pass}`,
       OPERATOR_TRANSITIONS.WAIT_OPERATOR,
       `Wait for the operator's Delivery Review Pass ${pass} verdict, then persist it before continuing.`,
-      pass === 2
+      !canCorrect(status, pass)
         ? ["accept", "accept-with-notes", "reject"]
         : ["accept", "accept-with-notes", "revise", "relaunch", "reject"],
       `Agent Manager · Delivery Review · Pass ${pass}`,
@@ -101,15 +102,15 @@ export function deriveOperatorCadence(status, { wakeReason = "state_change" } = 
       return cadence(
         "workers_complete",
         OPERATOR_TRANSITIONS.AUTO_CONTINUE,
-        "Post Run Outcome, verify the delivered work, then present Delivery Review Pass 1 before ending the turn.",
+        `Post Run Outcome, verify the delivered work, then present Delivery Review Pass ${(review?.history?.length || 0) + 1} before ending the turn.`,
         [],
-        "Run outcome + Delivery Review · Pass 1",
+        `Run outcome + Delivery Review · Pass ${(review?.history?.length || 0) + 1}`,
       );
     case "correction_pending":
       return cadence(
         "correction_required",
         OPERATOR_TRANSITIONS.AUTO_CONTINUE,
-        "Launch the one authorized correction with exact gaps, rearm monitoring, and post the Correction kickoff.",
+        "Launch the authorized correction with exact gaps, rearm monitoring, and post the Correction kickoff.",
         [],
         "Agent Manager · Correction kickoff",
       );

@@ -1,3 +1,5 @@
+import { assertReviewPass, canCorrect } from "./review-budget.mjs";
+
 const ACCEPTED_VERDICTS = new Set(["accept", "accept-with-notes"]);
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const REVIEW_VERDICTS = new Set([
@@ -40,6 +42,7 @@ export function createDeliveryStatus(workflow, laneStates) {
     releaseRequired: workflow.delivery?.release_required === true,
     workersCompletedAt: null,
     review: {
+      budget: workflow.delivery?.review_budget || null,
       state: "not_started",
       latestPass: 0,
       presentedAt: null,
@@ -116,7 +119,7 @@ export function recordReviewDecision(status, {
   at = new Date().toISOString(),
 }) {
   const reviewPass = Number(pass);
-  if (![1, 2].includes(reviewPass)) throw new Error("review pass must be 1 or 2");
+  assertReviewPass(status, reviewPass);
   if (!REVIEW_VERDICTS.has(verdict)) {
     throw new Error("review verdict must be accept, accept-with-notes, revise, relaunch, or reject");
   }
@@ -135,13 +138,12 @@ export function recordReviewDecision(status, {
   if (review.history.some((item) => item.pass === reviewPass)) {
     throw new Error(`delivery review pass ${reviewPass} already has a recorded decision`);
   }
-  if (reviewPass === 2) {
-    const passOne = review.history.find((item) => item.pass === 1);
-    if (!passOne || !["revise", "relaunch"].includes(passOne.verdict)) {
-      throw new Error("delivery review pass 2 requires a recorded pass 1 correction decision");
+  if (["revise", "relaunch"].includes(verdict)) {
+    if (!canCorrect(status, reviewPass, Date.parse(at))) {
+      throw new Error(`delivery review pass ${reviewPass} must accept, accept-with-notes, or reject; correction budget exhausted`);
     }
-    if (["revise", "relaunch"].includes(verdict)) {
-      throw new Error("delivery review pass 2 must accept, accept-with-notes, or reject");
+    if (reviewPass > 1 && !String(notes || "").trim()) {
+      throw new Error("further correction requires notes describing progress and remaining gaps");
     }
   }
   const decision = {
@@ -191,18 +193,12 @@ export function recordReviewPresentation(status, {
   at = new Date().toISOString(),
 }) {
   const reviewPass = Number(pass);
-  if (![1, 2].includes(reviewPass)) throw new Error("review pass must be 1 or 2");
+  assertReviewPass(status, reviewPass);
   status.delivery ||= legacyDelivery(status);
   const review = status.delivery.review;
   review.history ||= [];
   if (review.history.some((item) => item.pass === reviewPass)) {
     throw new Error(`delivery review pass ${reviewPass} already has a recorded decision`);
-  }
-  if (reviewPass === 2) {
-    const passOne = review.history.find((item) => item.pass === 1);
-    if (!passOne || !["revise", "relaunch"].includes(passOne.verdict)) {
-      throw new Error("delivery review pass 2 requires a recorded pass 1 correction decision");
-    }
   }
   if (review.state === "awaiting_operator" && review.latestPass === reviewPass) return status;
   review.state = "awaiting_operator";

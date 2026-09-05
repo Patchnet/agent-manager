@@ -22,18 +22,23 @@ export const DEFAULT_CLAUDE_LOGS_ROOT = join(homedir(), ".claude", "projects");
 export const DEFAULT_CODEX_LOGS_ROOT = join(homedir(), ".codex", "sessions");
 export const DEFAULT_JSONL_LOGS_ROOT = join(homedir(), ".agent-manager", "token-logs");
 
-// USD per million tokens. Cache economics: Anthropic bills cache reads at
-// 0.1x input, 5m-TTL cache writes at 1.25x, 1h-TTL writes at 2x. OpenAI bills
-// cached input at a flat discounted rate and does not charge cache writes.
-// Verified against provider pricing 2026-08-07 — update rates here as they
+// USD per million tokens, Standard API estimates (not subscription invoices).
+// Model-specific rates verified 2026-09-05 at developers.openai.com/api/docs/pricing
+// and platform.claude.com/docs/en/models/fable-5-1/overview.
+// Legacy family estimates below retain their historical rates; update as they
 // change, or extend at runtime with registerModelPricing() / a pricing file
 // pointed at by AGENT_MANAGER_TOKEN_PRICING.
 export const PRICING = [
+  { family: "gpt-6-astra", test: /^gpt-6-astra(?:$|-\d{4}-\d{2}-\d{2}$)/, inputPerM: 10, outputPerM: 50, cacheReadPerM: 1, cacheWrite5mPerM: 12.5, cacheWrite1hPerM: 12.5, longContextThreshold: 272000, verifiedAt: "2026-09-05" },
+  { family: "gpt-5.6-sol", test: /^gpt-5\.6(?:-sol)?(?:$|-\d{4}-\d{2}-\d{2}$)/, inputPerM: 4, outputPerM: 20, cacheReadPerM: 0.4, cacheWrite5mPerM: 5, cacheWrite1hPerM: 5, longContextThreshold: 272000, verifiedAt: "2026-09-05" },
+  { family: "gpt-5.6-terra", test: /^gpt-5\.6-terra(?:$|-\d{4}-\d{2}-\d{2}$)/, inputPerM: 2, outputPerM: 12, cacheReadPerM: 0.2, cacheWrite5mPerM: 2.5, cacheWrite1hPerM: 2.5, longContextThreshold: 272000, verifiedAt: "2026-09-05" },
+  { family: "gpt-5.6-luna", test: /^gpt-5\.6-luna(?:$|-\d{4}-\d{2}-\d{2}$)/, inputPerM: 0.2, outputPerM: 1.2, cacheReadPerM: 0.02, cacheWrite5mPerM: 0.25, cacheWrite1hPerM: 0.25, longContextThreshold: 272000, verifiedAt: "2026-09-05" },
+  { family: "claude-fable-5-1", test: /^claude-fable-5-1(?:$|-\d{8}$)/, inputPerM: 10, outputPerM: 50, cacheReadPerM: 0.25, cacheWrite5mPerM: 12.5, cacheWrite1hPerM: 20, verifiedAt: "2026-09-05" },
   { family: "claude-fable/mythos", test: /^claude-(fable|mythos)/, inputPerM: 10, outputPerM: 50, cacheReadPerM: 1, cacheWrite5mPerM: 12.5, cacheWrite1hPerM: 20 },
   { family: "claude-opus", test: /^claude-opus/, inputPerM: 5, outputPerM: 25, cacheReadPerM: 0.5, cacheWrite5mPerM: 6.25, cacheWrite1hPerM: 10 },
   { family: "claude-sonnet", test: /^claude-sonnet/, inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWrite5mPerM: 3.75, cacheWrite1hPerM: 6 },
   { family: "claude-haiku", test: /^claude-haiku/, inputPerM: 1, outputPerM: 5, cacheReadPerM: 0.1, cacheWrite5mPerM: 1.25, cacheWrite1hPerM: 2 },
-  { family: "gpt-5", test: /^gpt-5/, inputPerM: 1.25, outputPerM: 10, cacheReadPerM: 0.125, cacheWrite5mPerM: 0, cacheWrite1hPerM: 0 },
+  { family: "gpt-5", test: /^gpt-5(?:$|-\d{4}-\d{2}-\d{2}$)/, inputPerM: 1.25, outputPerM: 10, cacheReadPerM: 0.125, cacheWrite5mPerM: 0, cacheWrite1hPerM: 0 },
 ];
 
 function rate(entry, key, origin) {
@@ -63,6 +68,7 @@ function normalizePricingEntry(entry, origin) {
     cacheReadPerM: rate(entry, "cacheReadPerM", origin),
     cacheWrite5mPerM: rate(entry, "cacheWrite5mPerM", origin),
     cacheWrite1hPerM: rate(entry, "cacheWrite1hPerM", origin),
+    longContextThreshold: rate(entry, "longContextThreshold", origin) || null,
   };
 }
 
@@ -124,14 +130,16 @@ export function pricingFor(model, { env = process.env } = {}) {
 export function costForRecord(record, { env = process.env } = {}) {
   const pricing = pricingFor(record.model, { env });
   if (!pricing) return null;
-  const write5m = record.cacheWrite5m ?? record.cacheWrite;
+  const write5m = record.cacheWrite5m ?? record.cacheWrite ?? 0;
   const write1h = record.cacheWrite1h ?? 0;
+  const totalInput = (record.input || 0) + (record.cacheRead || 0) + write5m + write1h;
+  const long = pricing.longContextThreshold && totalInput > pricing.longContextThreshold;
   return (
-    record.input * pricing.inputPerM
-    + record.output * pricing.outputPerM
-    + record.cacheRead * pricing.cacheReadPerM
+    ((record.input || 0) * pricing.inputPerM
+    + (record.cacheRead || 0) * pricing.cacheReadPerM
     + write5m * pricing.cacheWrite5mPerM
-    + write1h * pricing.cacheWrite1hPerM
+    + write1h * pricing.cacheWrite1hPerM) * (long ? 2 : 1)
+    + (record.output || 0) * pricing.outputPerM * (long ? 1.5 : 1)
   ) / 1_000_000;
 }
 

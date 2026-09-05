@@ -157,7 +157,7 @@ Use `agent-manager next-action <runId> --json` to resolve the current stage.
 Never report only that a stage completed. In particular, worker completion is
 `AUTO_CONTINUE`: post Run Outcome, perform Delivery Review, and only then wait
 for the operator's verdict. A persisted `revise` or `relaunch` automatically
-starts the one correction. An accepted review automatically advances to Ship
+starts the recorded correction. An accepted review automatically advances to Ship
 Gate presentation.
 
 ## Observe without blocking
@@ -406,7 +406,7 @@ Calling `review` without a verdict records that the review was presented and
 transitions cadence to `WAIT_OPERATOR`. This distinguishes “review must be
 performed” from “the operator is now deciding.”
 
-The generated Pass 1 document collects lane states, scopes, changed files, violations, exits, and evidence logs. The host must still compare those facts with the original request and rerun relevant tests. At most one correction is allowed, followed by Pass 2. There is no automatic Pass 3.
+The generated Pass 1 document collects lane states, scopes, changed files, violations, exits, and evidence logs. The host must still compare those facts with the original request and rerun relevant tests. The default permits one correction followed by Pass 2. An explicitly authorized `delivery.review_budget` can bound additional corrections by count and elapsed time; each requires a recorded verdict and evidence of progress. See [Harness alignment](HARNESS-ALIGNMENT.md).
 
 Only a persisted accepted Delivery Review can proceed to Ship Gate. The ship
 command rejects conversational approval that was not recorded in `status.json`.

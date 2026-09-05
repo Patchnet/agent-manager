@@ -15,6 +15,8 @@ import { deriveRunState, readStatus, writeStatus } from "./status.mjs";
 import { loadWorkflow } from "./workflow.mjs";
 import { markWorkersComplete } from "./delivery.mjs";
 import { validateLaneCompletion } from "./completion.mjs";
+import { inspectSupervision } from "./supervision.mjs";
+import { parseEffort } from "./harness/options.mjs";
 
 /**
  * Operator vocabulary for talking to a worker lane:
@@ -369,6 +371,9 @@ export async function resumeLane(runId, laneId, messagePath) {
   const prompt = readFileSync(safeMessagePath, "utf8");
   const inspectPolicyEvent = createPolicyEventInspector(workflow.policy);
   let runtimeViolation = null;
+  lane.supervision = null;
+  lane.harnessOptions = { ...laneConfig.harness_options };
+  lane.effortObserved = null;
   let handle;
   handle = adapter.resume({
     sessionId: lane.sessionId,
@@ -378,6 +383,7 @@ export async function resumeLane(runId, laneId, messagePath) {
     lane: laneConfig,
     logName: "resume-" + lane.attempt + ".log",
     model: laneConfig.model || workflow.model_default || null,
+    harnessOptions: laneConfig.harness_options,
     permissionMode: laneConfig.permission_mode,
     allowedTools: laneConfig.allowed_tools,
     dangerouslySkipPermissions: !!workflow.policy.dangerously_skip_permissions,
@@ -387,6 +393,7 @@ export async function resumeLane(runId, laneId, messagePath) {
     },
     onEvent: (event) => {
       lane.modelObserved ||= adapter.parseModel?.(event) || null;
+      lane.effortObserved = parseEffort(event) || lane.effortObserved;
       runtimeViolation ||= inspectPolicyEvent(event);
       if (runtimeViolation) handle?.kill?.();
     },
@@ -409,6 +416,11 @@ export async function resumeLane(runId, laneId, messagePath) {
   const timer = setInterval(() => {
     lane.elapsedSec = elapsedBeforeReply + Math.round((Date.now() - started) / 1000);
     lane.sessionId = handle.getSessionId?.() || lane.sessionId;
+    if (lane.state === "running") {
+      lane.supervision = inspectSupervision({
+        startedAt: started, lastByteAt: handle.getLastByteAt(), policy: workflow.policy,
+      });
+    }
     if (existsSync(join(runDir(runId), "cancelled.json"))) {
       lane.state = "cancelled";
       lane.lastActivity = "cancel requested";
@@ -429,11 +441,11 @@ export async function resumeLane(runId, laneId, messagePath) {
       adapter.cancel(handle);
     }
     if (
-      Date.now() - handle.getLastByteAt() > (workflow.policy.stall_timeout_sec || 600) * 1000 &&
+      lane.supervision?.action === "cancel" &&
       lane.state === "running"
     ) {
       lane.state = "failed";
-      lane.lastActivity = "stalled (silence exceeded timeout)";
+      lane.lastActivity = `supervision: ${lane.supervision.reason}`;
       adapter.cancel(handle);
     }
     persistReplyStatus();
@@ -463,6 +475,9 @@ export async function resumeLane(runId, laneId, messagePath) {
       sessionId: lane.sessionId,
       attempt: lane.attempt,
     });
+  } else if (lane.supervision?.action === "cancel") {
+    lane.state = "failed";
+    lane.lastActivity = `supervision: ${lane.supervision.reason}`;
   } else if (result.exitCode === 0) {
     try {
       const check = validateLaneGuardrails({

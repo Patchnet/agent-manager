@@ -5,6 +5,7 @@ import { buildHarnessEnv } from "../environment.mjs";
 import { resolveSpawnCommand } from "../command.mjs";
 import { terminateProcessTree } from "../process.mjs";
 import { ensurePrivateDir, writePrivateFile } from "../fs-safe.mjs";
+import { normalizeHarnessOptions } from "./options.mjs";
 
 export function resolveClaudeBin({
   env = process.env,
@@ -53,7 +54,9 @@ export function spawnClaude({
   onEvent,
   logName = "stdout.log",
   envAllowlist = [],
+  env = null,
   model = null,
+  harnessOptions = {},
 }) {
   return spawnClaudeProcess({
     cwd,
@@ -66,7 +69,9 @@ export function spawnClaude({
     onEvent,
     logName,
     envAllowlist,
+    env,
     model,
+    harnessOptions,
   });
 }
 
@@ -113,6 +118,7 @@ export function resumeClaude({
   envAllowlist = [],
   env = null,
   model = null,
+  harnessOptions = {},
 }) {
   if (!sessionId) throw new Error("Claude resume requires a session id");
   return spawnClaudeProcess({
@@ -129,6 +135,7 @@ export function resumeClaude({
     envAllowlist,
     env,
     model,
+    harnessOptions,
   });
 }
 
@@ -146,6 +153,7 @@ function spawnClaudeProcess({
   envAllowlist = [],
   env = null,
   model = null,
+  harnessOptions = {},
 }) {
   ensurePrivateDir(laneDir);
   const promptPath = join(
@@ -176,7 +184,13 @@ function spawnClaudeProcess({
     args.push("--model", model.trim());
   }
 
-  const childEnv = env || buildHarnessEnv(envAllowlist);
+  const options = normalizeHarnessOptions(harnessOptions, "claude", model);
+  const childEnv = { ...(env || buildHarnessEnv(envAllowlist)) };
+  if (options.effort) {
+    args.push("--effort", options.effort);
+    // An explicit lane choice wins over an inherited environment choice.
+    childEnv.CLAUDE_CODE_EFFORT_LEVEL = options.effort;
+  }
   const cmd = resolveClaudeBin({ env: childEnv });
   const resolved = resolveSpawnCommand(cmd, args, { env: childEnv });
   const child = spawn(resolved.command, resolved.args, {

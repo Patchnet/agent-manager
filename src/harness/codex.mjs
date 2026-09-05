@@ -6,6 +6,7 @@ import { resolveSpawnCommand } from "../command.mjs";
 import { terminateProcessTree } from "../process.mjs";
 import { ensurePrivateDir, writePrivateFile } from "../fs-safe.mjs";
 import { detectNeedsInput } from "./claude.mjs";
+import { normalizeHarnessOptions } from "./options.mjs";
 
 export function resolveCodexBin({
   env = process.env,
@@ -106,10 +107,8 @@ export function resolveCodexInstallation({
 export const CODEX_MODELS_CACHE_FILE = "models_cache.json";
 
 /**
- * Fields codex requires when it deserializes the models cache. A cache missing
- * one of these makes every run log `failed to load models cache: missing field
- * <name>` plus `failed to renew cache TTL` — degraded, not fatal, which is why
- * the doctor check warns rather than fails.
+ * Historical cache fields, retained for compatibility diagnostics. Their absence
+ * alone does not prove incompatibility with the installed Codex version.
  */
 export const CODEX_MODELS_CACHE_REQUIRED_FIELDS = ["base_instructions"];
 
@@ -207,11 +206,11 @@ export function inspectCodexModelsCache({
     return {
       name,
       path,
-      state: "missing-fields",
-      ok: false,
+      state: "schema-unverified",
+      ok: true,
       missingFields: missing,
-      detail: `${path}: missing field ${missing.join(", ")}`,
-      recommendation: `codex will log "failed to load models cache" every run; ${renameAsideCommand(path, platform)} so codex regenerates it`,
+      detail: `${path}: cache schema differs from the historical contract; compatibility belongs to the installed Codex version`,
+      recommendation: "Check the installed Codex diagnostics before changing this cache; a missing historical field does not prove corruption.",
     };
   }
 
@@ -253,6 +252,7 @@ export const CODEX_OPTION_CONTRACT = {
     "--json",
     "-C", "--cd",
     "-m", "--model",
+    "-p", "--profile",
     "-s", "--sandbox",
     "-c", "--config",
     "-i", "--image",
@@ -277,6 +277,7 @@ export function buildCodexArgs({
   cwd,
   resumeSessionId = null,
   model = null,
+  harnessOptions = {},
   permissionMode = "acceptEdits",
   dangerouslySkipPermissions = false,
   platform = process.platform,
@@ -287,6 +288,9 @@ export function buildCodexArgs({
     (typeof env.CODEX_MODEL === "string" && env.CODEX_MODEL.trim()) ||
     "";
   const args = ["exec"];
+  const options = normalizeHarnessOptions(harnessOptions, "codex", resolvedModel);
+  if (options.profile) args.push("--profile", options.profile);
+  if (options.effort) args.push("-c", `model_reasoning_effort=${JSON.stringify(options.effort)}`);
 
   if (resumeSessionId) {
     // `resume` is a subcommand, and `-C/--cd` + `-s/--sandbox` belong to the
@@ -342,6 +346,7 @@ function spawnCodexProcess({
   permissionMode = "acceptEdits",
   dangerouslySkipPermissions = false,
   model = null,
+  harnessOptions = {},
   onActivity,
   onEvent,
   logName = "stdout.log",
@@ -362,8 +367,10 @@ function spawnCodexProcess({
     cwd,
     resumeSessionId,
     model,
+    harnessOptions,
     permissionMode,
     dangerouslySkipPermissions,
+    env: env || buildHarnessEnv(envAllowlist),
   });
 
   const childEnv = env || buildHarnessEnv(envAllowlist);

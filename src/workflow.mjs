@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import YAML from "yaml";
+import { normalizeHarnessOptions } from "./harness/options.mjs";
 import { DEFAULT_MAX_CONCURRENCY, MAX_LANES } from "./constants.mjs";
 import { normalizePlanning, planningPrompt } from "./planning.mjs";
 import { assertPathInside, assertSafeSlug, repoPath } from "./paths.mjs";
@@ -20,21 +21,21 @@ const TOP_LEVEL_KEYS = new Set([
   "integrate", "policy", "claim_mode", "remote", "base_ref", "env_allowlist",
   "max_concurrency", "scope_overrides", "verification",
   "planning", "delivery", "title", "repo_shorthand", "goal_refs",
-  "classification", "parent_run_id",
+  "classification", "parent_run_id", "harness_defaults",
 ]);
 const LANE_KEYS = new Set([
   "id", "harness", "model", "scope", "prompt", "prompt_file", "fake", "depends_on",
-  "kind", "expected_outputs", "allow_no_changes", "permission_mode", "allowed_tools", "setup",
+  "kind", "expected_outputs", "allow_no_changes", "permission_mode", "allowed_tools", "setup", "harness_options",
 ]);
 const SCOPE_OVERRIDE_KEYS = new Set(["path", "lanes", "owner", "reason", "access"]);
 const VERIFICATION_KEYS = new Set(["commands", "timeout_sec", "setup"]);
 const COMMAND_PLAN_KEYS = new Set(["commands", "timeout_sec"]);
 const VERIFICATION_COMMAND_KEYS = new Set(["command", "args"]);
-const DELIVERY_KEYS = new Set(["mode", "targets", "release_required", "release_mode"]);
+const DELIVERY_KEYS = new Set(["mode", "targets", "release_required", "release_mode", "review_budget"]);
 const DELIVERY_TARGET_KEYS = new Set(["id", "lane", "branch", "base", "pr"]);
 const POLICY_KEYS = new Set([
   "allow_commit", "allow_pr", "dangerously_skip_permissions", "permission_mode",
-  "stall_timeout_sec", "poll_interval_ms",
+  "stall_timeout_sec", "stall_grace_sec", "max_runtime_sec", "poll_interval_ms",
 ]);
 const HARNESSES = new Set(["claude", "codex", "cursor", "fake"]);
 const PERMISSION_MODES = new Set([
@@ -104,6 +105,18 @@ export function loadWorkflow(filePath, {
   const ids = new Set();
   const lanes = doc.lanes.map((lane, index) =>
     normalizeLane(lane, index, repoRoot, harnessDefault, ids, policy));
+  const harnessDefaults = doc.harness_defaults ?? {};
+  if (!isMapping(harnessDefaults)) throw new Error("workflow.harness_defaults must be a mapping");
+  for (const [name, options] of Object.entries(harnessDefaults)) {
+    normalizeHarness(name, "workflow.harness_defaults key");
+    normalizeHarnessOptions(options, name);
+  }
+  for (const lane of lanes) {
+    lane.harness_options = normalizeHarnessOptions({
+      ...(harnessDefaults[lane.harness] || {}),
+      ...lane.harness_options,
+    }, lane.harness, lane.model || doc.model_default);
+  }
   validateDependencies(lanes);
   assertShellPolicyCoherence(lanes, policy);
   const scopeOverrides = normalizeScopeOverrides(doc.scope_overrides, lanes);
@@ -222,6 +235,15 @@ function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDev
   }
   const raw = input || {};
   assertKnownKeys(raw, DELIVERY_KEYS, "workflow.delivery");
+  let reviewBudget;
+  if (raw.review_budget !== undefined) {
+    if (!isMapping(raw.review_budget)) throw new Error("workflow.delivery.review_budget must be a mapping");
+    assertKnownKeys(raw.review_budget, new Set(["max_corrections", "max_elapsed_sec"]), "workflow.delivery.review_budget");
+    reviewBudget = {
+      max_corrections: boundedInteger(raw.review_budget.max_corrections, 1, 0, 5, "review_budget.max_corrections"),
+      max_elapsed_sec: boundedInteger(raw.review_budget.max_elapsed_sec, 3600, 60, 604800, "review_budget.max_elapsed_sec"),
+    };
+  }
   assertBoolean(raw.release_required, "workflow.delivery.release_required", { optional: true });
   if (raw.release_mode !== undefined && !["tag-only", "published-release"].includes(raw.release_mode)) {
     throw new Error("workflow.delivery.release_mode must be tag-only or published-release");
@@ -315,6 +337,7 @@ function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDev
     targets,
     release_required: raw.release_required === true,
     release_mode: raw.release_mode || "tag-only",
+    ...(reviewBudget ? { review_budget: reviewBudget } : {}),
   };
 }
 
@@ -378,10 +401,12 @@ function normalizeLane(input, index, repoRoot, harnessDefault, ids, policy) {
     throw new Error(`lane ${id}.fake is only valid as a mapping for the fake harness`);
   }
   const dependsOn = normalizeDependencies(input.depends_on, id);
+  const harnessOptions = normalizeHarnessOptions(input.harness_options, harness, input.model);
   return {
     ...input,
     id,
     harness,
+    harness_options: harnessOptions,
     kind,
     scope,
     expected_outputs: expectedOutputs,
@@ -999,6 +1024,8 @@ function normalizePolicy(input) {
     dangerously_skip_permissions: raw.dangerously_skip_permissions === true,
     permission_mode: permissionMode,
     stall_timeout_sec: boundedNumber(raw.stall_timeout_sec, 600, 5, 86_400, "workflow.policy.stall_timeout_sec"),
+    stall_grace_sec: boundedNumber(raw.stall_grace_sec, 600, 0, 86_400, "workflow.policy.stall_grace_sec"),
+    ...(raw.max_runtime_sec === undefined ? {} : { max_runtime_sec: boundedNumber(raw.max_runtime_sec, 7200, 5, 604_800, "workflow.policy.max_runtime_sec") }),
     poll_interval_ms: boundedNumber(raw.poll_interval_ms, 2_000, 100, 60_000, "workflow.policy.poll_interval_ms"),
   };
 }
@@ -1061,7 +1088,8 @@ export function lanePrompt(lane, workflow) {
   if (lane._promptFile) body = readFileSync(lane._promptFile, "utf8");
   const policyBlock = `
 ## agent-manager policy (mandatory)
-- Worker mode is active. Planning and source orientation are already complete; do not query the planning system or wait for another Go.
+- Worker mode is active. The assignment and authority are established; begin authorized work without another Go. The shared context is a starting snapshot, not a substitute for investigation.
+- Inspect relevant code and permitted read-only sources, verify assumptions, and adapt your implementation plan within the assigned outcome and write scope. Do not mutate the planning system.
 - Lane kind: ${lane.kind}
 - Stay inside scope: ${lane.scope.join(", ")}
 - Required output paths: ${lane.expected_outputs.length ? lane.expected_outputs.join(", ") : "(none declared)"}
@@ -1072,7 +1100,9 @@ export function lanePrompt(lane, workflow) {
 - Do NOT commit, push, merge, tag, or bump versions unless policy explicitly permits it.
 - Target repo dev_flow: ${workflow.target_dev_flow}
 - If blocked on a product or architecture decision, write needs-input.json in the supplied lane directory with { "type":"question", "prompt":"...", "blocking":true } and stop.
-- Prefer finishing a thin slice over expanding scope.
+- Complete every requested behavior within scope. Make routine implementation decisions yourself; do not narrow the deliverable to a thin slice or add unrelated improvements.
+- Use native harness tools and context management. When delegation is authorized, all child work shares this lane's scope, permissions, and delivery contract; do not create competing outer runs.
+- Run the required checks and tests appropriate to the change. Repeat or broaden them only when new evidence justifies it. Prefer targeted edits.
 `.trim();
   const sharedPlanning = planningPrompt(workflow.planning);
   const sharedAwareness = workflow.awareness?.context || "";
