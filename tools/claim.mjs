@@ -51,7 +51,7 @@ const isStale = (claim) => {
 };
 const localHost = hostname();
 const owningProcessIsActive = (claim) => {
-  if (claim.owner_host !== localHost || !Number.isInteger(Number(claim.owner_pid))) {
+  if (claim.owner_host !== localHost || !Number.isInteger(Number(claim.owner_pid)) || Number(claim.owner_pid) <= 0) {
     return null;
   }
   try {
@@ -118,9 +118,22 @@ function fmt(claim) {
   const state = canRecover(claim)
     ? "RECOVERABLE"
     : isStale(claim)
-      ? "STALE-ACTIVE"
+      ? owningProcessIsActive(claim) === null ? "STALE-UNKNOWN" : "STALE-ACTIVE"
       : "live";
   return `  [${state}] ${claim.repo} - ${claim.branch} - lane=${claim.lane ?? "-"} - agent=${claim.agent} - ${age}h old\n         scope: ${(claim.scope ?? []).join(", ") || "(whole repo)"}`;
+}
+
+if (cmd === "check") {
+  if (!opt.repo) throw new Error("check requires --repo");
+  const scope = opt.scope ? String(opt.scope).split(",").map((s) => s.trim()).filter(Boolean) : [""];
+  const claims = loadClaims(opt.repo).filter((claim) => claim.branch !== opt.branch && (!opt.group || claim.group !== opt.group))
+    .filter((claim) => scope.some((mine) => (claim.scope?.length ? claim.scope : [""]).some((other) => overlaps(mine, other))))
+    .map((claim) => ({ branch: claim.branch, lane: claim.lane, scope: claim.scope,
+      stale: isStale(claim), ownerActive: owningProcessIsActive(claim), recoverable: canRecover(claim) }));
+  const blocked = claims.some((claim) => !claim.recoverable);
+  console.log(JSON.stringify({ schema: "agent-manager.claim-preflight.v1", blocked, claims,
+    nextAction: blocked ? "Verify the owner or coordinate scope; retrying unchanged will still conflict. Unknown or live ownership is never evicted by age." : "Admission may proceed; claim acquisition rechecks under lock." }));
+  process.exit(blocked ? 2 : 0);
 }
 
 if (cmd === "claim") {

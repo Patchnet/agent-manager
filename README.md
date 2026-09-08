@@ -519,6 +519,9 @@ platform-specific command adapters use the detected profile. On Windows, npm
 and other command scripts run through `cmd.exe` while authored lane commands
 are identified as PowerShell commands.
 
+For activation, goal routing, correction families and external release completion,
+see [foundation continuity](docs/FOUNDATION-ALIGNMENT.md).
+
 Doctor also reports three separate versions: the inspected Agent Manager source
 checkout (when `--repo` points to one), the invoked runtime, and each installed
 host skill. When a host skill is missing or stale, `activation.command` gives

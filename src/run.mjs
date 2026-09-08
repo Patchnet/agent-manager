@@ -29,7 +29,7 @@ import { deriveRunState, readStatus, writeStatus } from "./status.mjs";
 import { createDeliveryStatus, markWorkersComplete } from "./delivery.mjs";
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { buildRunIdentity } from "./identity.mjs";
-import { AGENT_MANAGER_VERSION } from "./version.mjs";
+import { AGENT_MANAGER_VERSION, ENGINE_IDENTITY } from "./version.mjs";
 import { writeReport } from "./report.mjs";
 import { resolveRunContract } from "./run-classification.mjs";
 import { integrateLanes } from "./integrate.mjs";
@@ -45,7 +45,8 @@ import {
   listGoals,
 } from "./goals.mjs";
 import { assertPlanningReady } from "./planning.mjs";
-import { preflightSelectedHarnesses } from "./preflight.mjs";
+import { preflightSelectedHarnesses, diagnoseHarnessFailure } from "./preflight.mjs";
+import { inheritCorrectionBudget } from "./review-budget.mjs";
 import { validateLaneCompletion } from "./completion.mjs";
 import { inspectSupervision } from "./supervision.mjs";
 import { parseEffort } from "./harness/options.mjs";
@@ -311,6 +312,8 @@ export async function runWorkflow(workflowPath, {
   }
   const harnessChecks = preflightSelectedHarnesses(workflow);
   const goalContext = await buildRunGoalContext(workflow.goal_refs);
+  const correctionContext = { goalRefs: workflow.goal_refs, delivery: { review: {} } };
+  inheritCorrectionBudget(correctionContext, runContract.parent);
   const runId = assertSafeSlug(forcedId || newRunId(), "run id");
   const identity = buildRunIdentity({ runId, workflow, overrides: identityOverrides });
   const dir = runDir(runId);
@@ -389,7 +392,7 @@ export async function runWorkflow(workflowPath, {
 
   const status = {
     runId,
-    agentManager: { version: AGENT_MANAGER_VERSION },
+    agentManager: { ...ENGINE_IDENTITY },
     harnessChecks,
     identity,
     state: "running",
@@ -414,6 +417,8 @@ export async function runWorkflow(workflowPath, {
     goalRefs: [...goalContext.refs],
     goals: {
       alignmentRequired: goalContext.refs.length > 0,
+      policy: workflow.goal_policy || (goalContext.refs.length ? "required" : "legacy"),
+      exemption: workflow.goal_exemption || null,
       schema: goalContext.schema,
       refs: [...goalContext.refs],
       goals: goalContext.goals,
@@ -435,6 +440,7 @@ export async function runWorkflow(workflowPath, {
     execution: { state: "running", endedAt: null },
     delivery: createDeliveryStatus(workflow, laneStates),
   };
+  if (correctionContext.delivery.review.family) Object.assign(status.delivery.review, correctionContext.delivery.review);
   writeStatus(runId, status);
   const persistStatus = () => {
     syncExternalLaneStates(laneStates, readStatus(runId));
@@ -455,7 +461,7 @@ export async function runWorkflow(workflowPath, {
         contextSnapshot: goalContextSnapshot,
       },
       runtime,
-      agentManager: { version: AGENT_MANAGER_VERSION },
+      agentManager: { ...ENGINE_IDENTITY },
       identity,
       classification: runContract.classification,
       lineage: runContract.lineage,
@@ -765,6 +771,7 @@ export async function runWorkflow(workflowPath, {
         laneState.elapsedSec = Math.round((Date.now() - attemptStarted) / 1000);
         laneState.exitCode = result.exitCode;
         laneState.lastActivity = result.lastActivity || laneState.lastActivity;
+        laneState.failureDiagnostic = result.exitCode ? diagnoseHarnessFailure(lane.harness, laneState.lastActivity) : null;
         if (laneState.supervision?.action === "cancel") {
           laneState.lastActivity = `supervision: ${laneState.supervision.reason}`;
         }

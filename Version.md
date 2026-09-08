@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 2.0.0
+current: 2.1.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 2.1.0 - 2026-09-08
+
+Verify installed skills against source content and report runtime identity. Add explicit goal policy, preserve correction budgets across recovery runs, and reconcile verified external releases and superseded correction parents. Preflight claims without modifying ownership and explain actionable harness startup failures.
 
 ## 2.0.0 - 2026-09-05
 

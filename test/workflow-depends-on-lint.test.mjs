@@ -28,6 +28,8 @@ function load(files, lanes, overrides = {}) {
   const workflowPath = join(root, `workflow-${counter}.json`);
   writeFileSync(workflowPath, JSON.stringify({
     repo: `repo-${counter}`,
+    goal_policy: "exempt",
+    goal_exemption: "Isolated dependency-lint fixture",
     integrate: true,
     lanes: lanes.map((lane) => ({ prompt: "work", ...lane })),
     ...overrides,

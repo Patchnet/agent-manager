@@ -25,11 +25,22 @@ export class ReconciliationError extends Error {
  */
 export async function reconcileExternalDelivery(status, {
   provider,
+  externalTag = null,
+  operator = null,
+  authorityRef = null,
   now = () => new Date(),
 } = {}) {
   if (!provider) throw new ReconciliationError("provider-required", "external delivery reconciliation requires a provider adapter");
   if (!status?.runId || !status.delivery) {
     throw new ReconciliationError("status-invalid", "external delivery reconciliation requires a recorded run delivery ledger");
+  }
+  if (externalTag && (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(externalTag)
+    || !String(operator || "").trim() || !String(authorityRef || "").trim())) {
+    throw new ReconciliationError("external-release-authority", "external tag requires a version tag, operator and existing authority reference");
+  }
+  const recordedTag = status.ship?.tag || status.ship?.plannedTag || status.delivery.release?.tag;
+  if (externalTag && recordedTag && externalTag !== recordedTag) {
+    throw new ReconciliationError("tag-drift", "external tag conflicts with the recorded release tag");
   }
   if (status.reconciliation?.state === "verified"
     && ["merged", "released"].includes(status.state)) {
@@ -68,11 +79,17 @@ export async function reconcileExternalDelivery(status, {
         `delivery target ${target.id} recorded merge ${target.mergeSha}, but provider reports ${mergeSha}`,
       );
     }
+    let baseVerifiedThrough = "merge";
     if (baseIdentity.baseCommit && await provider.isAncestor(baseIdentity.baseCommit, mergeSha) !== true) {
-      throw new ReconciliationError(
-        "base-ancestry-mismatch",
-        `delivery target ${target.id} merge ${mergeSha} does not contain immutable base ${baseIdentity.baseCommit}`,
-      );
+      // A squash of a correction may omit its unmerged parent commit from main.
+      // Bind the provider PR head to the accepted lane snapshot before using
+      // head ancestry; never accept arbitrary caller-supplied replacement SHAs.
+      const lane = candidate.lanes?.find((item) => item.id === target.laneId);
+      const acceptedHead = lane?.snapshot?.ok === true ? lane.snapshot.commit : null;
+      if (!externalTag || !acceptedHead || pr.headSha !== acceptedHead || await provider.isAncestor(baseIdentity.baseCommit, acceptedHead) !== true) {
+        throw new ReconciliationError("base-ancestry-mismatch", `delivery target ${target.id} merge ${mergeSha} does not contain immutable base ${baseIdentity.baseCommit}; accepted PR-head ancestry is unavailable`);
+      }
+      baseVerifiedThrough = "accepted-pr-head";
     }
     if (!Array.isArray(pr.checks) || pr.checks.length === 0) {
       throw new ReconciliationError(
@@ -92,6 +109,8 @@ export async function reconcileExternalDelivery(status, {
       base: pr.base || null,
       baseBranch: baseIdentity.baseBranch,
       baseCommit: baseIdentity.baseCommit,
+      baseVerifiedThrough,
+      headSha: pr.headSha || null,
       checks: (pr.checks || []).map(checkEvidence),
     });
   }
@@ -108,12 +127,12 @@ export async function reconcileExternalDelivery(status, {
     }
   }
 
-  const releaseRequired = candidate.delivery.releaseRequired === true ||
+  const releaseRequired = Boolean(externalTag) || candidate.delivery.releaseRequired === true ||
     candidate.ship?.approve === "all" || Boolean(candidate.ship?.plannedTag || candidate.ship?.tag);
   let releaseEvidence = null;
   if (releaseRequired) {
     const releaseMode = normalizeReleaseMode(candidate.delivery.release?.mode);
-    const tag = candidate.ship?.tag || candidate.ship?.plannedTag || candidate.delivery.release?.tag;
+    const tag = externalTag || candidate.ship?.tag || candidate.ship?.plannedTag || candidate.delivery.release?.tag;
     if (!tag) throw new ReconciliationError("tag-missing", "release reconciliation requires the recorded planned tag");
     if (candidate.ship?.version && tag !== `v${candidate.ship.version}`) {
       throw new ReconciliationError("version-drift", `recorded version ${candidate.ship.version} does not match tag ${tag}`);
@@ -121,6 +140,18 @@ export async function reconcileExternalDelivery(status, {
     const remoteTag = await provider.inspectTag(tag);
     if (!remoteTag?.sha) throw new ReconciliationError("tag-unverified", `provider cannot verify remote tag ${tag}`);
     const releaseSha = normalizeSha(remoteTag.sha, `tag ${tag} SHA`);
+    if (externalTag) {
+      if (!targets.length || typeof provider.inspectBranch !== "function") {
+        throw new ReconciliationError("release-base-unavailable", "external release requires target branch evidence");
+      }
+      for (const target of evidenceTargets) {
+        if (!target.baseBranch) throw new ReconciliationError("release-base-unavailable", "external release requires a named base branch");
+        const baseSha = normalizeSha(await provider.inspectBranch(target.baseBranch), "remote base SHA");
+        if (await provider.isAncestor(releaseSha, baseSha) !== true) {
+          throw new ReconciliationError("release-base-mismatch", "external release is not contained in the target base branch");
+        }
+      }
+    }
     const recordedReleaseSha = candidate.ship?.releaseSha || candidate.delivery.release?.sha || null;
     if (recordedReleaseSha && recordedReleaseSha !== releaseSha) {
       throw new ReconciliationError(
@@ -201,6 +232,7 @@ export async function reconcileExternalDelivery(status, {
     priorState: status.state,
     targets: evidenceTargets,
     release: releaseEvidence,
+    ...(externalTag ? { externalRelease: { tag: externalTag, operator, authorityRef } } : {}),
   };
   if (candidate.ship) {
     candidate.ship.state = "done";
@@ -350,6 +382,15 @@ function compareGoalDisposition(left, right) {
 export async function reconcileRun(runId, options = {}) {
   const status = readStatus(runId);
   if (!status) throw new ReconciliationError("run-missing", `no status for ${runId}`);
+  if (options.supersededBy) {
+    const child = readStatus(options.supersededBy);
+    const candidate = reconcileCorrectionParent(status, child, options);
+    if (candidate === status) return status;
+    const saved = writeStatus(runId, candidate);
+    await syncBrainStatus(saved, { root: options.root || BRAIN_ROOT });
+    writeReport(runId, saved);
+    return saved;
+  }
   if (options.goalDispositions?.length) {
     const reconciled = await reconcileGoalDispositions(status, {
       dispositions: options.goalDispositions,
@@ -370,6 +411,7 @@ export async function reconcileRun(runId, options = {}) {
   });
   const reconciled = await reconcileExternalDelivery(status, { ...options, provider });
   if (reconciled === status) return status;
+  if (JSON.stringify(readStatus(runId)) !== JSON.stringify(status)) throw new ReconciliationError("status-drift", "run changed during provider verification; retry against current status");
   const saved = writeStatus(runId, reconciled);
   await syncBrainStatus(saved, { root: options.root || BRAIN_ROOT }).catch((error) => {
     saved.awareness ||= {};
@@ -378,6 +420,29 @@ export async function reconcileRun(runId, options = {}) {
   const finalStatus = writeStatus(runId, saved);
   writeReport(runId, finalStatus);
   return finalStatus;
+}
+
+export function reconcileCorrectionParent(parent, child, { operator, authorityRef, now = () => new Date() } = {}) {
+  if (!String(operator || "").trim() || !String(authorityRef || "").trim()) throw new ReconciliationError("correction-authority", "correction closeout requires operator and authority reference");
+  if (parent.correctionResolution) {
+    if (parent.correctionResolution.childRunId !== child?.runId) throw new ReconciliationError("correction-drift", "parent already superseded by another child");
+    return parent;
+  }
+  const family = child?.delivery?.review?.family;
+  if (!child || child.runId === parent.runId || child.lineage?.parentRunId !== parent.runId || family?.parentRunId !== parent.runId
+    || child.delivery.review.state !== "accepted" || !["ship_gate_pending", "shipping", "release_pending", "merged", "released", "reviewed", "filed"].includes(child.state)
+    || parent.state !== "correction_pending" || parent.delivery?.review?.history?.at(-1)?.pass !== family.parentPass
+    || JSON.stringify([...(parent.goalRefs || [])].sort()) !== JSON.stringify([...(child.goalRefs || [])].sort())) {
+    throw new ReconciliationError("correction-unverified", "requires an accepted child with the recorded parent correction pass and goal binding");
+  }
+  const candidate = structuredClone(parent);
+  candidate.state = "cancelled";
+  candidate.delivery.state = "cancelled";
+  candidate.delivery.state = "cancelled";
+  candidate.endedAt = isoNow(now);
+  candidate.correctionResolution = { childRunId: child.runId, parentPass: family.parentPass, operator, authorityRef, at: candidate.endedAt,
+    reason: "Original snapshot retired in favor of accepted correction; shipping belongs to the child." };
+  return candidate;
 }
 
 export function createGitHubProvider({ cwd, remote = "origin", exec = execute } = {}) {
@@ -400,10 +465,14 @@ export function createGitHubProvider({ cwd, remote = "origin", exec = execute } 
   };
   return {
     name: "github",
+    async inspectBranch(branch) {
+      const rows = command("git", ["ls-remote", remote, `refs/heads/${branch}`], "read remote base").trim().split(/\r?\n/);
+      return rows.map((line) => line.split(/\s+/)).find(([, ref]) => ref === `refs/heads/${branch}`)?.[0] || null;
+    },
     async inspectPullRequest(ref) {
       const pr = parseJson(command("gh", [
         "pr", "view", String(ref), "--json",
-        "state,statusCheckRollup,mergedAt,mergeCommit,url,headRefName,baseRefName",
+        "state,statusCheckRollup,mergedAt,mergeCommit,url,headRefName,headRefOid,baseRefName",
       ], `read pull request ${ref}`), `pull request ${ref}`);
       const checks = pr.statusCheckRollup || [];
       return {
@@ -412,6 +481,7 @@ export function createGitHubProvider({ cwd, remote = "origin", exec = execute } 
         mergeSha: pr.mergeCommit?.oid || pr.mergeCommit || null,
         mergedAt: pr.mergedAt || null,
         head: pr.headRefName || null,
+        headSha: pr.headRefOid || null,
         base: pr.baseRefName || null,
         checks,
         requiredChecksSatisfied: checks.length > 0 && failedOrPendingChecks(checks).length === 0,
@@ -540,11 +610,17 @@ export function parseReconcileArgs(args = []) {
       const value = args[++index];
       if (!value) throw new Error("--reason requires a value");
       flags.reason = value;
+    } else if (["--external-tag", "--authority-ref", "--superseded-by"].includes(arg)) {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
+      flags[arg === "--external-tag" ? "externalTag" : arg === "--superseded-by" ? "supersededBy" : "authorityRef"] = value;
     } else if (arg.startsWith("-")) throw new Error(`unknown reconcile flag: ${arg}`);
     else if (flags.runId) throw new Error(`unexpected reconcile argument: ${arg}`);
     else flags.runId = arg;
   }
   if (!flags.runId) throw new Error("reconcile requires <runId>");
+  if (flags.externalTag && flags.goalDispositions.length) throw new Error("external release and goal disposition must be reconciled separately");
+  if (flags.supersededBy && (flags.externalTag || flags.goalDispositions.length)) throw new Error("correction closeout must be reconciled separately");
   if (flags.goalDispositions.length && !flags.operator) {
     throw new Error("goal reconciliation requires --operator <id>");
   }

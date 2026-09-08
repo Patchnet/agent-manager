@@ -122,7 +122,8 @@ override.
 ## Host workflow
 
 1. Validate that Delivery Review accepted the work.
-2. Present Ship Gate and wait for `through-pr` or `all`.
+2. Resolve existing Ship Gate authority for this scope; request `through-pr` or
+   `all` only if it is not already covered. Preserve repository release policy.
 3. Launch `ship --detach` with the exact approval and release inputs.
 4. Post **PR Manager · Handoff** and exit the turn.
 5. Arm:
@@ -143,6 +144,12 @@ override.
    when safe.
 
 ## Telemetry
+
+When a repository requires stamping on main after merge, use `through-pr`, then
+its approved release helper. Reconcile the verified external tag with
+`agent-manager reconcile <runId> --external-tag <tag> --operator <id> --authority-ref <existing-approval>`.
+Do not rerun shipping or edit status files to clear `release_pending`.
+See [release continuity](../agent-manager/foundation-alignment.md).
 
 `status.json.ship` contains:
 

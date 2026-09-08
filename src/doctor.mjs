@@ -1,14 +1,14 @@
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { RUNS_ROOT } from "./paths.mjs";
-import { hostNames, hostSkillsRoot, readInstallMarker } from "./install.mjs";
+import { hostNames, hostSkillsRoot, readInstallMarker, contentDigest, bundledSkillDigest, INSTALLED_SKILLS } from "./install.mjs";
 import { checkCommand } from "./preflight.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
 import { inspectCodexModelsCache, resolveCodexInstallation } from "./harness/codex.mjs";
 import { resolveCursorBin } from "./harness/cursor.mjs";
 import { harnessFailureRecommendation, harnessSetup } from "./harness/setup.mjs";
 import { detectRuntimeProfile, formatRuntime } from "./runtime.mjs";
-import { AGENT_MANAGER_VERSION } from "./version.mjs";
+import { AGENT_MANAGER_VERSION, ENGINE_IDENTITY, sourceIdentity } from "./version.mjs";
 
 export function runDoctor({ repo = process.cwd(), home } = {}) {
   const root = resolve(repo);
@@ -51,13 +51,16 @@ export function runDoctor({ repo = process.cwd(), home } = {}) {
     versions: {
       sourceCheckoutVersion,
       runtimeVersion: AGENT_MANAGER_VERSION,
+      runtimeIdentity: ENGINE_IDENTITY,
+      sourceIdentity: sourceIdentity(root),
       installedHostSkills: hostSkill.installed,
       drift: Boolean(
         (sourceCheckoutVersion && sourceCheckoutVersion !== AGENT_MANAGER_VERSION) ||
-        hostSkill.installed.some((item) => item.version !== AGENT_MANAGER_VERSION)
+        hostSkill.installed.some((item) => item.version !== AGENT_MANAGER_VERSION || item.modified)
       ),
     },
     activation: hostSkill.activation,
+    aligned: !hostSkill.activation.required && (!sourceCheckoutVersion || sourceCheckoutVersion === AGENT_MANAGER_VERSION),
     ok: coreReady && harnessReady,
     runtime,
     checks,
@@ -68,9 +71,16 @@ function hostSkillCheck({ home } = {}) {
   const found = hostNames().flatMap((host) => {
     const path = join(hostSkillsRoot(host, home ? { home } : {}), "agent-manager");
     if (!existsSync(path)) return [];
-    return [{ host, path, version: readInstallMarker(path)?.version || "unknown" }];
+    const skills = INSTALLED_SKILLS.map((skill) => {
+      const target = join(hostSkillsRoot(host, home ? { home } : {}), skill);
+      const marker = readInstallMarker(target);
+      const digest = existsSync(target) ? contentDigest(target) : null;
+      return { skill, version: marker?.version || "unknown", modified: marker?.contentDigest !== digest,
+        current: digest === bundledSkillDigest(skill) && marker?.version === AGENT_MANAGER_VERSION };
+    });
+    return [{ host, path, version: readInstallMarker(path)?.version || "unknown", modified: skills.some((s) => !s.current), skills }];
   });
-  const drifted = found.filter((item) => item.version !== AGENT_MANAGER_VERSION);
+  const drifted = found.filter((item) => item.version !== AGENT_MANAGER_VERSION || item.modified);
   const activationHost = drifted[0]?.host || found[0]?.host || null;
   const activationCommand = activationHost
     ? `agent-manager install ${activationHost}`
@@ -86,6 +96,7 @@ function hostSkillCheck({ home } = {}) {
     activation: {
       required: !found.length || drifted.length > 0,
       command: activationCommand,
+      commands: drifted.map((item) => `agent-manager install ${item.host}`),
       safe: true,
       idempotent: true,
       note: "Managed files update only when their recorded digest is unchanged; operator-modified files fail closed.",
@@ -166,6 +177,7 @@ export function formatDoctor(result) {
     lines.push(`${label}  ${check.name}: ${check.detail}${via}`);
     if (check.recommendation) lines.push(`      fix: ${check.recommendation}`);
   }
-  if (result.activation?.required) lines.push(`ACTIVATE  ${result.activation.command}`);
+  lines.push(`alignment: ${result.aligned ? "aligned" : "action required"} (separate from executable readiness)`);
+  if (result.activation?.required) for (const command of result.activation.commands?.length ? result.activation.commands : [result.activation.command]) lines.push(`ACTIVATE  ${command}`);
   return lines.join("\n");
 }

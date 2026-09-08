@@ -21,7 +21,7 @@ const TOP_LEVEL_KEYS = new Set([
   "integrate", "policy", "claim_mode", "remote", "base_ref", "env_allowlist",
   "max_concurrency", "scope_overrides", "verification",
   "planning", "delivery", "title", "repo_shorthand", "goal_refs",
-  "classification", "parent_run_id", "harness_defaults",
+  "classification", "parent_run_id", "harness_defaults", "goal_policy", "goal_exemption",
 ]);
 const LANE_KEYS = new Set([
   "id", "harness", "model", "scope", "prompt", "prompt_file", "fake", "depends_on",
@@ -144,6 +144,11 @@ export function loadWorkflow(filePath, {
   if (dependencySetupWarning) lintWarnings.push(dependencySetupWarning);
   synthesizeAllowedTools(lanes, verification);
   const goalRefs = normalizeGoalRefs(doc.goal_refs);
+  if (doc.goal_policy !== undefined && !["required", "exempt"].includes(doc.goal_policy)) throw new Error("goal_policy must be required or exempt");
+  if (doc.goal_policy === "required" && !goalRefs.length) throw new Error("goal_policy required needs goal_refs");
+  if (doc.goal_policy === "exempt" && (!isNonEmptyString(doc.goal_exemption) || goalRefs.length)) throw new Error("goal exemption requires a reason and no goal_refs");
+  if (doc.goal_exemption !== undefined && doc.goal_policy !== "exempt") throw new Error("goal_exemption requires goal_policy exempt");
+  if (!goalRefs.length && doc.goal_policy !== "exempt") lintWarnings.push({ code: "goal-alignment-inactive", message: "No goal_refs: goal alignment is inactive. Sustained development should use goal_policy: required; small tasks may use exempt with a reason." });
   const planning = normalizePlanning(doc.planning, {
     repoRoot,
     contextOverridePath: planningContextOverride,

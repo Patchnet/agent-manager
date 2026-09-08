@@ -70,6 +70,16 @@ export function claimLanes({ repo, group, lanes, mode = "auto" }) {
   }
 }
 
+export function preflightClaims(workflow) {
+  if (workflow.claim_mode === "off") return [];
+  return workflow.lanes.map((lane) => {
+    const result = runClaim(["check", "--repo", workflow.repo, "--scope", lane.scope.join(",")]);
+    let detail;
+    try { detail = JSON.parse(result.stdout); } catch { detail = { blocked: false, checked: false, error: "Claim adapter has no structured check support; locked admission remains authoritative." }; }
+    return { lane: lane.id, ...detail };
+  });
+}
+
 export function releaseLane({ repo, branch, mode = "auto" }) {
   if (mode === "off") return { ok: true, skipped: true };
   return runClaim(["release", "--repo", repo, "--branch", branch]);

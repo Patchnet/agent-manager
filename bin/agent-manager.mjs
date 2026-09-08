@@ -162,6 +162,8 @@ function usage() {
     "  agent-manager next-action <runId> [--json]",
     "  agent-manager delivery-ready <runId> [--require merged|released] [--json]",
     "  agent-manager reconcile <runId> [--provider github] [--json]",
+    "  agent-manager reconcile <runId> --external-tag <vX.Y.Z> --operator <id> --authority-ref <existing-approval>",
+    "  agent-manager reconcile <parentRunId> --superseded-by <childRunId> --operator <id> --authority-ref <existing-approval>",
     "  agent-manager reconcile <runId> --goal-disposition <goal-id>=<outcome> --operator <id> [options]",
     "    verifies external delivery, or records replay-safe goal dispositions for terminal history",
     "    outcomes: delivered | superseded | deferred | open | cancelled; repeat for every goal ref",
@@ -745,7 +747,7 @@ async function detachRun(flags) {
   preflightWorkflow(workflow);
   if (workflow.goal_refs.length) await assertGoalsExist(workflow.goal_refs);
   const topologyWarnings = workflow.lint_warnings.filter(
-    (warning) => warning.code === "fully-serialized-multi-lane",
+    (warning) => ["fully-serialized-multi-lane", "goal-alignment-inactive"].includes(warning.code),
   );
   if (!flags.quiet && !flags.json) {
     for (const warning of topologyWarnings) console.error(`warning: ${warning.message}`);
@@ -1400,6 +1402,9 @@ async function main() {
       goalDispositions: flags.goalDispositions,
       operator: flags.operator,
       reason: flags.reason,
+      externalTag: flags.externalTag,
+      supersededBy: flags.supersededBy,
+      authorityRef: flags.authorityRef,
     });
     console.log(flags.json ? JSON.stringify(result) : formatReconciliation(result));
     return;

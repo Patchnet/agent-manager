@@ -10,7 +10,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["version"],
-      "properties": { "version": { "type": "string" } }
+      "properties": { "version": { "type": "string" },
+        "commit": { "type": ["string", "null"] },
+        "dirty": { "type": ["boolean", "null"] } }
     },
     "identity": { "$ref": "#/$defs/runIdentity" },
     "classification": { "enum": ["operational", "benchmark", "demo", "retry", "recovery"] },
@@ -90,6 +92,7 @@
       "required": ["schema", "state", "provider", "reconciledAt", "priorState", "targets", "release"],
       "properties": {
         "schema": { "const": "agent-manager.external-reconciliation.v1" },
+        "externalRelease": { "type": "object", "required": ["tag", "operator", "authorityRef"], "properties": { "tag": {"type":"string"}, "operator": {"type":"string"}, "authorityRef": {"type":"string"} } },
         "state": { "const": "verified" },
         "provider": { "type": "string", "minLength": 1 },
         "reconciledAt": { "type": "string", "format": "date-time" },

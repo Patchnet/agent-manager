@@ -151,16 +151,28 @@ planner LLM, or invoke Ship Gate. Keep `security` forbidden by default; use
 
 ### Step 0 — Outcome and authority
 
+Check engine/skill alignment with `doctor --json` after an upgrade. An executable
+runtime (`ok`) does not imply current instructions (`aligned`). Use its activation
+commands for the affected hosts; loaded conversations need an explicit refresh
+or a new session. See [foundation continuity](./foundation-alignment.md)
+for goal policy, claim preflight, external release reconciliation and correction
+families. Corrections must retain retry/recovery lineage and the parent budget;
+after accepting a child, use supported parent closeout instead of leaving the
+original snapshot at another shipping gate.
+
 Use the repo and outcome already supplied by the operator. Ask only for missing
 information that materially changes the work. Start with one cohesive lane;
 add lanes for independent work or distinct ownership, not arbitrary phases.
 
-Use existing goal references when available. Create a local goal graph when the
-operator requests goal tracking or a sustained wave needs it; goal creation is
-not a prerequisite for a small authorized run. Put any selected goals in
-`goal_refs`. The Fleet view remains available through `agent-manager-fleet`.
+For sustained development, select the existing goal, include its `goal_refs`,
+and set `goal_policy: required`. Carry those references into corrections and
+retries. Create a goal only when the operator has requested one or goal tracking.
+If a sustained assignment has no agreed goal, establish that outcome before launch.
+A small authorized task may use `goal_policy: exempt` with a concrete
+`goal_exemption` reason. Do not use an exemption merely to avoid goal migration.
+The Fleet view remains available through `agent-manager-fleet`.
 
-For goal-driven work, apply [goal alignment](../../docs/GOAL-ALIGNMENT.md) at
+For goal-driven work, apply [goal alignment](https://github.com/Patchnet/agent-manager/blob/main/docs/GOAL-ALIGNMENT.md) at
 assignment, material new instructions, review, and release closeout. Identify
 which success criterion the work advances. Carry the original goal through side
 questions and compaction; discussing an idea does not add it to the release.

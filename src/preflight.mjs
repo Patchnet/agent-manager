@@ -6,6 +6,7 @@ import { assertPlanningReady } from "./planning.mjs";
 import { spawnCommandSync } from "./command.mjs";
 import { harnessFailureRecommendation } from "./harness/setup.mjs";
 import { detectRuntimeProfile, formatRuntime } from "./runtime.mjs";
+import { preflightClaims } from "./claim.mjs";
 
 export class HarnessPreflightError extends Error {
   constructor(failures, runtime) {
@@ -99,6 +100,12 @@ export function validateRepository(workflow) {
   return checks;
 }
 
+export function diagnoseHarnessFailure(harness, message) {
+  if (harness !== "codex" || !/failed to initialize.*app-server/i.test(message || "") || !/access is denied|permission denied|os error 5/i.test(message)) return null;
+  return { code: "harness-startup-permission", retryUnchanged: false,
+    nextAction: "Verify Codex startup in the same launching environment and inspect its sandbox permissions. Do not create another run until the environment changes; do not disable sandbox protections automatically." };
+}
+
 export function checkHarnessOptions(command, harness, options, spawnOptions = {}) {
   const flags = new Set(options.flatMap((option) => [
     ...(option?.effort ? [harness === "claude" ? "--effort" : "--config"] : []),
@@ -122,10 +129,15 @@ export function checkHarnessOptions(command, harness, options, spawnOptions = {}
 
 export function preflightWorkflow(workflow) {
   assertPlanningReady(workflow);
+  const claims = preflightClaims(workflow);
+  if (workflow.claim_mode === "required" && claims.some((item) => item.blocked)) {
+    throw new Error(`claim preflight blocked before detach: ${JSON.stringify(claims.filter((item) => item.blocked))}`);
+  }
   return [
     checkCommand("git"),
     ...validateRepository(workflow),
     ...preflightSelectedHarnesses(workflow),
+    ...claims.map((detail) => ({ command: `claim scope ${detail.lane}`, ok: !detail.blocked, ...detail })),
   ];
 }
 

@@ -494,6 +494,39 @@ test("the GitHub adapter reads PR checks, remote tags, releases, and compare anc
   assert.ok(calls.some((args) => args.includes("--branch") && args.includes("v1.23.0")));
 });
 
+test("external tags require authority, matching base ancestry and all existing release checks", async () => {
+  const status = blockedStatus();
+  status.ship.approve = "through-pr";
+  status.ship.version = status.ship.plannedTag = status.ship.releaseSha = null;
+  const original = structuredClone(status);
+  const options = { externalTag: "v1.23.0", operator: "reviewer", authorityRef: "approved release", provider: provider({ inspectBranch: async () => RELEASE_SHA }) };
+  await assert.rejects(reconcileExternalDelivery(status, { ...options, authorityRef: null }), /authority reference/);
+  await assert.rejects(reconcileExternalDelivery(status, { ...options, provider: provider({ inspectBranch: async () => BASE_SHA, isAncestor: async (a) => a !== RELEASE_SHA }) }), /target base branch/);
+  await assert.rejects(reconcileExternalDelivery(status, { ...options, provider: provider({ inspectBranch: async () => RELEASE_SHA, inspectVersionStamp: async () => ({ verified: false }) }) }), /stamp/);
+  assert.deepEqual(status, original);
+  const result = await reconcileExternalDelivery(status, options);
+  assert.equal(result.state, "released");
+  assert.equal(result.reconciliation.externalRelease.authorityRef, "approved release");
+  assert.equal(await reconcileExternalDelivery(result, options), result);
+  await assert.rejects(reconcileExternalDelivery(result, { ...options, externalTag: "v9.0.0" }), /conflicts/);
+  assert.equal(parseReconcileArgs(["run-example", "--external-tag", "v1.23.0", "--operator", "reviewer", "--authority-ref", "approved release"]).externalTag, "v1.23.0");
+});
+
+test("squashed correction reconciliation binds its immutable base to the accepted PR head", async () => {
+  const status = blockedStatus();
+  status.ship.plannedTag = status.ship.version = status.ship.releaseSha = null;
+  const head = "f".repeat(40);
+  status.lanes = [{ id: "integrate", snapshot: { ok: true, commit: head } }];
+  const adapter = provider({ inspectBranch: async () => RELEASE_SHA,
+    inspectPullRequest: async () => ({ ...(await provider().inspectPullRequest()), headSha: head }),
+    isAncestor: async (a, b) => !(a === BASE_SHA && b === MERGE_SHA) });
+  const options = { externalTag: "v1.23.0", operator: "reviewer", authorityRef: "approved release", provider: adapter };
+  const result = await reconcileExternalDelivery(status, options);
+  assert.equal(result.reconciliation.targets[0].baseVerifiedThrough, "accepted-pr-head");
+  status.lanes[0].snapshot.commit = "e".repeat(40);
+  await assert.rejects(reconcileExternalDelivery(status, options), /accepted PR-head ancestry/);
+});
+
 test("the GitHub adapter does not treat an empty check rollup as successful CI", async () => {
   const github = createGitHubProvider({
     cwd: "C:\\fixture",

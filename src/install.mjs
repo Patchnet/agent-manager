@@ -32,6 +32,11 @@ export const HOSTS = {
 
 export const INSTALLED_SKILLS = ["agent-manager", "pr-manager"];
 
+export function bundledSkillDigest(skill) {
+  if (!INSTALLED_SKILLS.includes(skill)) throw new Error("unknown managed skill");
+  return contentDigest(join(PACKAGE_ROOT, "skills", skill));
+}
+
 export function hostNames() {
   return Object.keys(HOSTS);
 }
@@ -142,7 +147,7 @@ function applyManagedPath({ source, target, kind, action }) {
   return { kind, path: target, action, version: kind === "skill" ? AGENT_MANAGER_VERSION : null };
 }
 
-function contentDigest(root) {
+export function contentDigest(root) {
   const hash = createHash("sha256");
   const visit = (path, relativePath = "") => {
     const stat = lstatSync(path);
