@@ -74,8 +74,9 @@ exact plan, use `AUTO_CONTINUE` and launch it.
 
 ## Template — Heartbeat (unchanged running tick)
 
-Post on a `watch-signal` `heartbeat` wake when the run is still `running` and
-lane states did not change. Keep it short — not a full Run board.
+Post on an unchanged `watch-signal` heartbeat only when the operator requested
+chat pulses. Otherwise retain the heartbeat in telemetry without opening a
+model turn. When requested, keep it short — not a full Run board.
 
 Default cadence is **180s** (`--heartbeat-sec 180`). Operator may ask for
 another interval at any time; Master restarts `watch-signal` with the new value.
@@ -482,7 +483,7 @@ agent-manager closeout <runId> --operator <id> \
 |---|---|
 | Build plan ready | Post **Build plan**; launch immediately when already authorized |
 | Run kicked off (`--detach`) | Capture `runId`; post **Run board**, arm watch, and keep going |
-| ~15–30s while running (or on operator ask) | Re-read `status.json`; post updated **Run board** only if something changed |
+| State-change wake, 180s fallback heartbeat, or operator ask | Re-read `status.json`; post the matching board only for actionable changes or requested status. Unchanged heartbeats stay in telemetry; do not open model turns to poll. |
 | Lane blocked | Post **Escalation** immediately |
 | Workers finished (`delivery_review_pending`) | Post **Run outcome**, then the next sequential **Delivery Review**; keep the watcher active |
 | Operator says `revise` / `relaunch` | Persist it, post **Correction kickoff**, and launch the recorded correction without another prompt |

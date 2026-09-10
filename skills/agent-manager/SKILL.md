@@ -198,6 +198,32 @@ references, scope, permissions, and required verification. Let the worker choose
 implementation steps, native tools, and context management. See
 [HARNESS-ALIGNMENT.md](../../docs/HARNESS-ALIGNMENT.md) for settings and supervision.
 
+### Efficient assignment and fleet review
+
+Use a focused session for small cohesive work; launch lanes for independent
+ownership or useful parallel work. Do not create an authoring lane solely to
+work around Ship Gate role selection. When Master Dev authored the work, use
+the canonical Ship Gate's independently reviewed author path where available;
+review evidence and operator shipping authority remain separate.
+
+Before retrying a startup failure, identify what changed: executable access,
+authentication, claim ownership, dependency setup, or workflow input. A successful
+version check does not prove the worker can initialize. Repeating the same
+environment failure is not a correction strategy. Keep retry/recovery lineage
+and the existing budget; include required integration files in the planned scope.
+
+For a fleet audit, distinguish unfinished delivery from executing workers. The
+default fleet view shows only 12 rows: compare `counts.visible` with `counts.total`
+and raise `--limit` to inspect all matching records. Read compact status and
+`next-action` first, then inspect logs only for the relevant blocker. Token
+telemetry is local observed usage, not a complete account bill or a reliable
+manager-versus-worker split unless those roles are explicitly attributed.
+
+Check accepted correction children and verified external releases before
+proposing another run. Use the supported reconciliation paths in
+[foundation continuity](./foundation-alignment.md); stale age alone is not
+evidence to cancel, release claims, or mark work delivered.
+
 ### Steps 1+ — Plan, detach, supervise
 
 1. **Check in and plan** - review the authoritative work source, target-repo

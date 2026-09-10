@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 2.1.0
+current: 2.1.1
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 2.1.1 - 2026-09-09
+
+Clarify independently reviewed author integration, event-driven supervision, startup retry diagnosis, and complete fleet audits.
 
 ## 2.1.0 - 2026-09-08
 

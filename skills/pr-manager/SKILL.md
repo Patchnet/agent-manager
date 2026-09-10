@@ -124,6 +124,16 @@ override.
 1. Validate that Delivery Review accepted the work.
 2. Resolve existing Ship Gate authority for this scope; request `through-pr` or
    `all` only if it is not already covered. Preserve repository release policy.
+   Resolve the invoking agent's role through the canonical Ship Gate first.
+   If it permits Master Dev author execution, retain the separate reviewer's
+   acceptance of the current PR head and explicit operator authority. A worker's
+   completion, persisted Delivery Review, or this shipping command alone does
+   not establish independent review or elevate an ordinary PR author.
+   If a shipping phase changes the reviewed PR head (including an automated
+   stamp or base update), it needs fresh independent acceptance before enabling
+   auto-merge. Do not use an unattended path that cannot enforce that pause;
+   use the repository's supported review/release handoff. Existing scope-specific
+   operator authority remains valid when the review is refreshed.
 3. Launch `ship --detach` with the exact approval and release inputs.
 4. Post **PR Manager · Handoff** and exit the turn.
 5. Arm:
