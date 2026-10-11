@@ -64,13 +64,15 @@ test("detached run publishes feed events, resumes the exact session, and release
     },
   ]));
 
-  const launchStarted = Date.now();
   const launch = await runCli([
     "run", workflow, "--detach", "--json", "--run-id", runId,
     "--title", "Reply workflow", "--repo-shorthand", "fixture",
     "--manager-harness", "codex", "--manager-model", "manager-test-model",
   ]);
-  assert.ok(Date.now() - launchStarted < 1_000, "detached launch should return immediately");
+  // The "question" lane cannot finish until this test replies below, so a
+  // launch that returned at all did not wait for the run. That, with the
+  // "detached" state asserted next, replaces a wall-clock bound that failed
+  // under CPU load.
   const launchPayload = JSON.parse(launch.stdout.trim());
   assert.equal(launchPayload.runId, runId);
   assert.equal(launchPayload.state, "detached");

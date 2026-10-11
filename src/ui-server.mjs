@@ -710,7 +710,7 @@ function openBrowser(url, { platform = process.platform } = {}) {
       : { command: "xdg-open", args: [url] };
   import("node:child_process")
     .then(({ spawn }) => {
-      const child = spawn(spec.command, spec.args, { stdio: "ignore", detached: true });
+      const child = spawn(spec.command, spec.args, { stdio: "ignore", detached: true, windowsHide: true });
       child.on("error", () => {});
       child.unref();
     })

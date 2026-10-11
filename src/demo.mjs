@@ -48,6 +48,7 @@ export function createDemo({ dir = DEFAULT_DEMO_DIR, now = new Date() } = {}) {
 
   const git = (...argv) => execFileSync("git", ["-C", repo, ...argv], {
     encoding: "utf8",
+    windowsHide: true,
     stdio: "pipe",
   });
   git("init", "--quiet");

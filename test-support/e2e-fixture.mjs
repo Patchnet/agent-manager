@@ -37,14 +37,15 @@ export async function createE2eFixture() {
     "Every lane must preserve the fixture contract.",
     "",
   ].join("\n"));
-  execFileSync("git", ["init", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "add", "README.md", "agent-manager.context.md"]);
-  execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "Test"]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "test@example.invalid"]);
-  execFileSync("git", ["-C", repo, "remote", "add", "origin", repo]);
+  execFileSync("git", ["init", "-b", "main", repo], { windowsHide: true });
+  execFileSync("git", ["-C", repo, "add", "README.md", "agent-manager.context.md"], { windowsHide: true });
+  execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base"], { windowsHide: true });
+  execFileSync("git", ["-C", repo, "config", "user.name", "Test"], { windowsHide: true });
+  execFileSync("git", ["-C", repo, "config", "user.email", "test@example.invalid"], { windowsHide: true });
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", repo], { windowsHide: true });
   const fixtureBase = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], {
     encoding: "utf8",
+    windowsHide: true,
   }).trim();
   appendFileSync(join(repo, ".git", "info", "exclude"), "\nAGENTS.md\n");
   writeFileSync(join(repo, "AGENTS.md"), "# Local fixture instructions\n");

@@ -510,7 +510,7 @@ export function canonicalRepoIdentity(repoRoot, { remote = "origin" } = {}) {
     remoteValue = execFileSync(
       "git",
       ["-C", root, "config", "--get", `remote.${remote}.url`],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
   } catch {
     // A path identity still gives deterministic coordination on this machine.

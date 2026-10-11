@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 2.1.1
+current: 2.1.2
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 2.1.2 - 2026-10-08
+
+Stop detached runs from opening console windows on Windows, run CI once per change, and replace a load-sensitive launch timing check.
 
 ## 2.1.1 - 2026-09-09
 
