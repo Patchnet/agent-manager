@@ -14,6 +14,30 @@ const CHANNEL_FILE = "master-return.json";
 const HANDOFF_FILE = "master-handoff.json";
 const DIRECT_HOSTS = new Set(["codex", "claude", "cursor"]);
 
+// The Manager thread is mid-turn. The next wake retries; nothing is wrong.
+const BUSY_FAILURES = [/already has an active writer/i];
+// Retrying cannot succeed until the operator acts: expired sign-in, spent
+// usage, or a thread with no room left. Re-launching the host every heartbeat
+// only repeats the failure (thousands of attempts in practice).
+const UNRECOVERABLE_FAILURES = [
+  /failed to authenticate/i,
+  /oauth session expired/i,
+  /hit your (session|usage) limit/i,
+  /ran out of room in the model'?s context window/i,
+];
+
+/** Classify a failed return as `busy`, `stopped`, or `failed` (retryable). */
+export function classifyReturnFailure(message) {
+  const text = String(message || "");
+  if (BUSY_FAILURES.some((pattern) => pattern.test(text))) return "busy";
+  if (UNRECOVERABLE_FAILURES.some((pattern) => pattern.test(text))) return "stopped";
+  return "failed";
+}
+
+function returnStage(payload) {
+  return payload?.cadence?.stage || payload?.reason || null;
+}
+
 function cleanValue(value, label) {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error(`${label} must be a non-empty string`);
@@ -322,6 +346,10 @@ export async function dispatchMasterReturn(runId, payload, status, {
   if (!shouldReturnToMaster(payload)) {
     return { delivered: false, skipped: true, reason: "not_actionable" };
   }
+  const stage = returnStage(payload);
+  if (channel.state === "stopped" && channel.stoppedStage === stage) {
+    return { delivered: false, skipped: true, reason: "stopped", channel: masterReturnSummary(channel) };
+  }
 
   const handoff = buildMasterHandoff(runId, payload, status);
   writePrivateFile(masterHandoffPath(runId), JSON.stringify(handoff, null, 2) + "\n", "utf8");
@@ -378,17 +406,23 @@ export async function dispatchMasterReturn(runId, payload, status, {
       lastDeliveredAt: new Date().toISOString(),
       lastError: null,
     };
+    delete delivered.stoppedStage;
     writeMasterReturn(runId, delivered);
     return { delivered: true, handoff, channel: masterReturnSummary(delivered) };
   } catch (error) {
+    const lastError = String(error?.message || error).slice(0, 500);
+    const outcome = classifyReturnFailure(lastError);
     const failed = {
       ...nextChannel,
-      state: "failed",
-      lastError: String(error?.message || error).slice(0, 500),
+      state: outcome === "busy" ? "deferred" : outcome,
+      lastError,
+      ...(outcome === "stopped" ? { stoppedStage: stage } : {}),
     };
     writeMasterReturn(runId, failed);
     return {
       delivered: false,
+      deferred: outcome === "busy",
+      stopped: outcome === "stopped",
       handoff,
       channel: masterReturnSummary(failed),
       error: failed.lastError,

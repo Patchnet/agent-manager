@@ -739,6 +739,44 @@ function spawnDetached(childArgs, logPath, envOverrides = {}) {
   return child;
 }
 
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+/**
+ * The return watcher starts once at launch and nothing else restarts it, so a
+ * watcher that dies leaves the Manager thread unaware until someone asks.
+ * Commands that act on a live run call this: it restarts a dead watcher and
+ * clears a stopped return so a fixed sign-in or a fresh thread is retried.
+ */
+function ensureMasterReturnWatcher(runId) {
+  let channel;
+  try {
+    channel = readMasterReturn(runId);
+  } catch {
+    return null;
+  }
+  const status = channel ? readStatus(runId) : null;
+  if (!status || isTerminalState(status.state)) return null;
+  let next = channel;
+  if (next.state === "stopped") {
+    next = { ...next, state: "configured" };
+    delete next.stoppedStage;
+  }
+  if (!processAlive(next.watcherPid)) {
+    const watcher = spawnDetached(["_watch-master-return", runId], join(runDir(runId), "master-return-supervisor.log"));
+    next = { ...next, state: "watching", watcherPid: watcher.pid, watcherStartedAt: new Date().toISOString() };
+  }
+  if (next === channel) return null;
+  return writeMasterReturn(runId, next);
+}
+
 async function detachRun(flags) {
   const workflowPath = resolve(flags.file);
   const workflow = loadWorkflow(workflowPath, { repoOverride: flags.repo });
@@ -1266,6 +1304,7 @@ async function main() {
   if (cmd === "reply") {
     if (!args[1] || !args[2]) throw new Error("reply requires <runId> <laneId>");
     adoptDemoRun(runDir(args[1]));
+    ensureMasterReturnWatcher(args[1]);
     detachReply(args[1], args[2], flagValue("--message"), args.includes("--json"), {
       force: args.includes("--force"),
       extendScope: flagValue("--extend-scope") || [],
@@ -1299,6 +1338,7 @@ async function main() {
     const runId = firstPositional(args.slice(1), ["--pass", "--verdict", "--reviewer", "--reviewer-role", "--automation-policy", "--notes", "--goal-evidence"])
       || latestRunId();
     if (!runId) throw new Error("review requires <runId>");
+    ensureMasterReturnWatcher(runId);
     const result = buildDeliveryReview(runId, {
       pass: Number(flagValue("--pass") || 1),
       verdict: flagValue("--verdict"),
@@ -1418,6 +1458,7 @@ async function main() {
   if (cmd === "next-action") {
     const runId = args[1] || latestRunId();
     if (!runId) throw new Error("next-action requires <runId>");
+    ensureMasterReturnWatcher(runId);
     const status = readStatus(runId);
     if (!status) throw new Error(`no status for ${runId}`);
     const result = { runId, state: status.state, ...deriveOperatorCadence(status) };
@@ -1438,7 +1479,9 @@ async function main() {
 
   if (cmd === "ship") {
     warnIgnoredPathOverrides();
-    detachShip(parseShipFlags(args.slice(1)));
+    const shipFlags = parseShipFlags(args.slice(1));
+    if (shipFlags.runId) ensureMasterReturnWatcher(shipFlags.runId);
+    detachShip(shipFlags);
     return;
   }
   if (cmd === "_ship-run") {

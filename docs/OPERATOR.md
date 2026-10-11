@@ -345,6 +345,18 @@ Inspect the sanitized return state with
 retried on its next heartbeat if a direct return attempt fails. The normal
 `watch-signal` remains the portable heartbeat and fallback path for every host.
 
+A failed return records why:
+
+| State | Cause | What happens |
+|---|---|---|
+| `deferred` | The Manager thread is mid-turn | Retried on the next heartbeat |
+| `stopped` | Expired sign-in, spent usage limit, or a full thread | No retries for that stage; fix the cause, then run any command below |
+| `failed` | Anything else | Retried on the next heartbeat |
+
+`next-action`, `review`, `reply`, and `ship` restart a return watcher that is
+no longer running and clear a `stopped` return, so a run whose watcher died
+resumes reporting as soon as anyone acts on it.
+
 Every wake payload includes `cadence.stage`, `cadence.transition`,
 `cadence.nextAction`, `cadence.operatorInputRequired`, and the canonical
 template name. Waiting stages do not emit repetitive heartbeats.

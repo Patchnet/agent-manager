@@ -356,7 +356,7 @@ export function isSuccessfulResultEvent(event) {
   return event?.type === "result" && event.is_error !== true;
 }
 
-function summarizeEvent(ev) {
+export function summarizeEvent(ev) {
   if (!ev || typeof ev !== "object") return null;
   if (ev.type === "assistant" && ev.message?.content) {
     const parts = ev.message.content;
@@ -368,7 +368,11 @@ function summarizeEvent(ev) {
     }
   }
   if (ev.type === "result") {
-    return `result: ${ev.subtype || ev.result || "done"}`.slice(0, 180);
+    // A failed session still reports subtype "success" (an expired sign-in
+    // ends with terminal_reason "api_error"), so surface the message instead.
+    const failed = ev.is_error === true || (ev.terminal_reason && ev.terminal_reason !== "completed");
+    const detail = failed ? ev.result || ev.terminal_reason : ev.subtype || ev.result;
+    return `result: ${detail || "done"}`.slice(0, 180);
   }
   if (ev.type === "tool_result" || ev.type === "user") {
     return String(ev.type);

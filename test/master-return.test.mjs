@@ -10,6 +10,7 @@ process.env.AGENT_MANAGER_RUNS_ROOT = join(root, "runs");
 
 const {
   buildMasterHandoff,
+  classifyReturnFailure,
   dispatchMasterReturn,
   masterHandoffPath,
   masterReturnPrompt,
@@ -228,4 +229,61 @@ test("failed direct delivery is persisted for diagnosis", async () => {
   assert.equal(result.delivered, false);
   assert.match(result.error, /session is active/);
   assert.equal(readMasterReturn(runId).state, "failed");
+});
+
+test("a busy Manager thread defers the return instead of failing it", async () => {
+  const runId = "run-busy-return";
+  writeMasterReturn(runId, resolveMasterReturn({ host: "codex", sessionId: "thread-busy", env: {} }));
+  const result = await dispatchMasterReturn(
+    runId,
+    actionablePayload({ runId }),
+    { repoRoot: root },
+    {
+      executeCodex: async () => ({
+        exitCode: 1,
+        lastActivity: "thread/resume failed: thread abc already has an active writer (code -32600)",
+      }),
+    },
+  );
+  assert.equal(result.deferred, true);
+  assert.equal(readMasterReturn(runId).state, "deferred");
+});
+
+test("an expired sign-in stops retries for that stage and a new stage tries again", async () => {
+  const runId = "run-stopped-return";
+  writeMasterReturn(runId, resolveMasterReturn({ host: "claude", sessionId: "thread-stopped", env: {} }));
+  let calls = 0;
+  const executeClaude = async () => {
+    calls += 1;
+    return { exitCode: 1, lastActivity: "result: Failed to authenticate: OAuth session expired and could not be refreshed" };
+  };
+  const first = await dispatchMasterReturn(runId, actionablePayload({ runId }), { repoRoot: root }, { executeClaude });
+  assert.equal(first.stopped, true);
+  assert.equal(readMasterReturn(runId).state, "stopped");
+
+  const repeat = await dispatchMasterReturn(
+    runId,
+    actionablePayload({ runId, reason: "heartbeat" }),
+    { repoRoot: root },
+    { executeClaude },
+  );
+  assert.equal(repeat.skipped, true);
+  assert.equal(repeat.reason, "stopped");
+  assert.equal(calls, 1, "the same stage must not relaunch the host");
+
+  const nextStage = await dispatchMasterReturn(
+    runId,
+    actionablePayload({ runId, cadence: { stage: "ship_gate_ready", operatorInputRequired: [] } }),
+    { repoRoot: root },
+    { executeClaude: async () => ({ exitCode: 0 }) },
+  );
+  assert.equal(nextStage.delivered, true);
+  assert.equal(readMasterReturn(runId).stoppedStage, undefined);
+});
+
+test("return failures are classified by whether a retry can help", () => {
+  assert.equal(classifyReturnFailure("thread x already has an active writer"), "busy");
+  assert.equal(classifyReturnFailure("You've hit your session limit · resets 7:30am"), "stopped");
+  assert.equal(classifyReturnFailure("Codex ran out of room in the model's context window."), "stopped");
+  assert.equal(classifyReturnFailure("network timeout"), "failed");
 });

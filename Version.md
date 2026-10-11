@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 2.1.2
+current: 2.2.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 2.2.0 - 2026-10-11
+
+Make Manager-thread returns dependable: a busy thread defers, an expired sign-in or spent limit stops retrying instead of relaunching every heartbeat, failures record their real cause, and acting on a run restarts a dead return watcher.
 
 ## 2.1.2 - 2026-10-08
 
