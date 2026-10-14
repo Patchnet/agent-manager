@@ -112,6 +112,34 @@ Scheduled harness tasks, one per concern, each with a short prompt: `main`/CI
 health (backs up auto-revert), production health and billing ledger (Ops
 owns these two), stale PRs. Documented in HARNESS-NATIVE.md as recipes.
 
+### 6. Event stream (one log of every delivery transition)
+
+Every deterministic run or ship transition appends **one JSON line** to
+`<runsRoot>/events.jsonl` and to the run's own `events.jsonl`. This replaces
+today's per-run status snapshots, which are bulky.
+
+- **Kinds:** `lane_started`, `lane_done`, `review_verdict`
+  (accept/revise/reject plus the reviewer's identity), `pr_opened` (number,
+  url, tier), `automerge_armed`, `merged` (sha), `reverted`, `waiting_operator`
+  (the exact question), `operator_reply` (the verbatim text and the decision it
+  unblocked), `blocked`, `cancelled`, `run_closed`.
+- **Shape (stable, versioned):**
+  `{v:1, ts, kind, repo, runId?, lane?, pr?, sha?, tier?, verdict?, text?, actor}`,
+  documented in `docs/EVENTS.md`. New fields are additive; anything that
+  changes or removes a field bumps `v`.
+- **Sinks:** config `event_sinks: [<command>, …]`. Each event goes as one JSON
+  line to each sink command's stdin, fire-and-forget, with a timeout (default
+  5 s). A sink failure never fails a run; it is logged once per sink per
+  process. The file is the only built-in sink. Sinks receive exactly the line
+  written to the file, so a private sink can drain, store or report without
+  any other contract.
+- **Standalone emitter:** `agent-manager emit <kind> --repo … [--pr …]
+  [--sha …] [--tier …] [--text …]`. Threads that are not inside an Agent
+  Manager run (for example, a plain desktop coding thread opening its own PR)
+  log the same events with one command. `runId` is optional for these.
+- Agent Manager owns only the log, the sink hook and the emitter. Any
+  tracker-specific sink, outbox or report is built separately.
+
 ## Testing: how much do we need?
 
 Safety per minute, for a TypeScript/Next.js repo with a large `node:test` suite:
@@ -168,7 +196,7 @@ Recommendation:
   2,514. No polling loop: the harness's PR/CI monitor (or `wait`) watches.
 - `bin/agent-manager.mjs`: ~30 subcommands → ~12 (`run --detach`, `status`,
   `wait`, `reply`, `cancel`, `cleanup`, `integrate`, `review`, `ship`, `tier`,
-  `doctor`, `validate`, `config`, `version`).
+  `emit`, `doctor`, `validate`, `config`, `version`).
 - Skills: `agent-manager/SKILL.md` + reporting + reference (1,410 lines) →
   ~250. Boards: Run board, Escalation, Outcome — no mandatory transition
   footer, no heartbeat template.
@@ -183,14 +211,19 @@ Recommendation:
 Cross-harness lanes (Claude Code, Codex, Cursor) in one run; one worktree per
 lane; scope claims; `status.json` as deterministic run state; lane fold
 (`integrate`); reply/resume of a blocked lane; guardrails on lane scope;
-dependency cache; the tier classifier.
+dependency cache; the tier classifier; the event log (rewritten as small
+transition events, see §6).
 
 ### Add
 
 - `agent-manager tier` + `.github/ship-tiers.yml` format (~120 lines incl.
   tests).
-- `agent-manager wait <runId>` — blocks until the run changes state, prints
-  one JSON line, exits (~80 lines). Hosts run it as a background command.
+- `agent-manager wait <runId>` — blocks until the run's next event (§6),
+  prints that JSON line, exits (~80 lines). Hosts run it as a background
+  command, so the harness wakes the thread.
+- Event stream (§6): transition events, `event_sinks` hook, `emit` command,
+  `docs/EVENTS.md` (~150 lines incl. tests). It replaces the snapshot events
+  and part of the deleted notify/return code, so it adds nothing net.
 - `skills/ship-gate/reviewer.md` — the lighter reviewer prompt (~40 lines).
 - `templates/github/revert-on-red.yml` and `tier-gate.yml` (~100 lines).
 - `docs/HARNESS-NATIVE.md` — "what your harness already does", one table per
@@ -208,6 +241,9 @@ dependency cache; the tier classifier.
 | `ui/` dashboard | 1,800 | 0 |
 | Runtime deps | 2 | 1 (`yaml`) |
 | Local suite | 479 tests, ~130 s | ~250 tests, ~60 s |
+
+Totals include the additions (~600 lines: tier, wait, event stream, reviewer
+prompt, templates, HARNESS-NATIVE, EVENTS).
 
 Operator touches per PR: today 2–3 typed replies (Delivery Review, Ship Gate,
 release). After: **0** for tier 0/1 (a notice), **1** for tier 2, plus none
