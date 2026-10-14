@@ -188,8 +188,7 @@ cursor-agent --version
 ```
 
 See the [Cursor CLI installation guide](https://cursor.com/docs/cli/installation).
-Cursor can host the Manager workflow, receive Master returns, and run worker
-lanes (`harness: cursor`).
+Cursor can host the Manager workflow and run worker lanes (`harness: cursor`).
 
 The installer places both launcher names — `agent` and `cursor-agent` — in
 `%LOCALAPPDATA%\cursor-agent` on Windows and `~/.local/bin` elsewhere. Agent
