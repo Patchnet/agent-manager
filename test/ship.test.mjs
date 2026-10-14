@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isolatedRoot, useIsolatedRoots } from "../test-support/isolated-roots.mjs";
 
@@ -114,4 +114,60 @@ test("ship refuses without an accepted review or a Simple Flow message", () => {
   const { runId } = seedRun({ "src/c.ts": "c\n" });
   assert.throws(() => shipRun(runId, {}), /pass --message/);
   assert.equal(readStatus(runId).state, "ship_pending");
+});
+
+// A scripted `gh` (AGENT_MANAGER_GH_BIN) that keeps PR state in a JSON file.
+const ghState = join(root, "gh-state.json");
+const ghBin = join(root, "fake-gh.mjs");
+writeFileSync(ghBin, `
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const path = process.env.FAKE_GH_STATE;
+const state = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { prs: [], calls: [] };
+const args = process.argv.slice(2);
+state.calls.push(args.join(" "));
+const value = (name) => args[args.indexOf(name) + 1];
+const pr = (n) => state.prs.find((item) => String(item.number) === String(n));
+let out = "";
+if (args[0] === "pr" && args[1] === "list") out = JSON.stringify(state.prs.filter((item) => item.head === value("--head")));
+if (args[0] === "pr" && args[1] === "create") {
+  const number = state.prs.length + 1;
+  state.prs.push({ number, url: "https://example.invalid/pull/" + number, state: "OPEN", head: value("--head"), autoMerge: false });
+}
+if (args[0] === "pr" && args[1] === "merge") pr(args[2]).autoMerge = args.includes("--auto");
+if (args[0] === "pr" && args[1] === "view") out = JSON.stringify({ state: pr(args[2]).state, mergeCommit: pr(args[2]).mergeCommit || null, mergedAt: null });
+writeFileSync(path, JSON.stringify(state));
+process.stdout.write(out);
+`);
+
+test("Formal Flow arms auto-merge for tier 1 and disarms it when new commits reach tier 2", () => {
+  process.env.AGENT_MANAGER_GH_BIN = ghBin;
+  process.env.FAKE_GH_STATE = ghState;
+  try {
+    const { runId, worktree } = seedRun({ "src/formal.ts": "f\n" }, { flow: "formal" });
+    const first = shipRun(runId, { message: "feat: formal" });
+    const target = first.status.delivery.targets[0];
+    assert.equal(first.status.state, "shipping");
+    assert.equal(target.tier, 1);
+    assert.equal(target.autoMerge, true);
+    assert.equal(git(remote, "rev-parse", target.branch), target.pushedSha, "the delivery branch was pushed");
+    assert.match(first.lines[0], /tier 1 · PR https:\/\/example\.invalid\/pull\/1 · auto-merge armed/);
+
+    mkdirSync(join(worktree, "secrets"), { recursive: true });
+    writeFileSync(join(worktree, "secrets", "x.md"), "tier 2 now\n");
+    const second = shipRun(runId, { message: "feat: formal" });
+    const raised = second.status.delivery.targets[0];
+    assert.equal(raised.tier, 2);
+    assert.equal(raised.autoMerge, false);
+    assert.equal(second.status.state, "waiting_operator");
+    const state = JSON.parse(readFileSync(ghState, "utf8"));
+    assert.ok(state.calls.includes("pr merge 1 --disable-auto"), "auto-merge was disarmed on GitHub");
+    assert.equal(state.prs[0].autoMerge, false);
+
+    const approved = shipRun(runId, { message: "feat: formal", approvedBy: "operator" });
+    assert.equal(approved.status.delivery.targets[0].autoMerge, true);
+    assert.equal(approved.status.state, "shipping");
+  } finally {
+    delete process.env.AGENT_MANAGER_GH_BIN;
+    delete process.env.FAKE_GH_STATE;
+  }
 });

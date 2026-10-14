@@ -71,7 +71,9 @@ jobs:
           git revert --no-edit "$SHA"
           git push origin "$branch"
           gh label create "tier:0" --force --color 0e8a16 >/dev/null
-          gh pr create --base main --head "$branch" --label "tier:0" \
+          gh label create "ship:approved" --force --color 5319e7 >/dev/null
+          # A revert restores already-reviewed code, so it is pre-approved for tier-gate.
+          gh pr create --base main --head "$branch" --label "tier:0" --label "ship:approved" \
             --title "revert: $subject" \
             --body "Automatic revert: main CI failed twice on $SHA and passed on its parent $parent. Run: ${{ github.event.workflow_run.html_url }}"
           gh pr merge "$branch" --auto --squash

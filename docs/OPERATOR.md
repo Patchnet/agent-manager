@@ -85,7 +85,10 @@ tier0:                # docs, tests, copy
 | 2 | PR + `tier:2` label, then stops (Formal); nothing pushed (Simple) | a `waiting_operator` event naming the tier 2 paths |
 
 Approve a tier 2 change with `ship <runId> --approved-by <you>`. The approval
-is recorded on the target and in the event log.
+is recorded on the target and in the event log, and covers the change as it
+stands when you approve. A later `ship` without `--approved-by` re-classifies
+the branch: if new commits reach tier 2 while auto-merge is armed, `ship`
+disarms it (`gh pr merge --disable-auto`) and asks again.
 
 **Formal Flow** (`dev_flow: formal` in the target's `Version.md`, or
 `target_dev_flow` in the workflow) pushes the delivery branch, opens or reuses

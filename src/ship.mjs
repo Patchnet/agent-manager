@@ -9,7 +9,9 @@ import { TIERS_FILE, classifyPaths, parseTiers } from "../tools/ship-tier.mjs";
 // check, and the harness PR monitor take it from there.
 
 function run(command, args, cwd, { allowFail = false } = {}) {
-  const { result } = spawnCommandSync(command, args, { cwd, encoding: "utf8" });
+  // AGENT_MANAGER_GH_BIN points `gh` at a stand-in (a .mjs runs under node); tests use it.
+  const override = command === "gh" ? process.env.AGENT_MANAGER_GH_BIN || null : null;
+  const { result } = spawnCommandSync(command, args, { cwd, encoding: "utf8", override });
   const out = { ok: result.status === 0, stdout: (result.stdout || "").trim(), stderr: (result.stderr || result.error?.message || "").trim() };
   if (!out.ok && !allowFail) throw new Error(`${command} ${args.join(" ")} failed: ${out.stderr || out.stdout}`);
   return out;
@@ -85,7 +87,10 @@ function shipSimple({ status, target, cwd, origin, baseRef, approved, message })
 }
 
 function shipFormal({ status, target, cwd, origin, approved, message }) {
-  git(cwd, ["push", "--force-with-lease", "-u", origin, `HEAD:${target.branch}`]);
+  // Only overwrite the remote branch if it still holds what this tool pushed last.
+  const lease = target.pushedSha ? [`--force-with-lease=refs/heads/${target.branch}:${target.pushedSha}`] : [];
+  git(cwd, ["push", ...lease, "-u", origin, `HEAD:refs/heads/${target.branch}`]);
+  target.pushedSha = git(cwd, ["rev-parse", "HEAD"]).stdout;
   let pr = findPr(cwd, target);
   if (!pr) {
     const title = message || subject(status);
@@ -105,6 +110,11 @@ function shipFormal({ status, target, cwd, origin, approved, message }) {
   gh(cwd, ["label", "create", label, "--force", "--color", ["0e8a16", "fbca04", "d93f0b"][target.tier]], { allowFail: true });
   gh(cwd, ["pr", "edit", target.pr, "--add-label", label], { allowFail: true });
   if (!approved) {
+    // New commits can raise a PR to tier 2 after auto-merge was armed: disarm it.
+    if (target.autoMerge) {
+      gh(cwd, ["pr", "merge", target.pr, "--disable-auto"]);
+      target.autoMerge = false;
+    }
     target.waitingOperator = waitingText(status, target, `arm auto-merge on PR #${target.pr}`);
     return;
   }
