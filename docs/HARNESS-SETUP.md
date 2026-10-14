@@ -24,17 +24,12 @@ After an install or PATH change:
    start a session.
 
 Doctor reports the detected runtime and returns structured `setup` and
-`recommendation` fields for a missing worker harness. It separately reports
-the inspected source-checkout version, invoked runtime version, and installed
-host-skill versions. Use its single `activation.command` to install or refresh
-one host safely. The installer updates only a managed copy whose recorded
-digest still matches; local edits fail closed.
-It reports that a CLI is not executable from the current process; it does not
+`recommendation` fields for a missing worker harness. It reports that a CLI is not executable from the current process; it does not
 claim that the CLI is uninstalled. A stale PATH, a missing override, or the
 launching harness's sandbox can produce the same result.
 
 Every run repeats the existing version check for each distinct selected worker
-harness after planning validation and before run admission, claims, worktrees,
+harness after workflow validation and before claims, worktrees,
 or workers. An unavailable harness that the workflow does not select does not
 block the run, and GitHub CLI remains a shipping-phase dependency only. This
 check proves executable discovery and version-command usability; it does not

@@ -1,491 +1,115 @@
-import { assertReviewPass, canCorrect } from "./review-budget.mjs";
-import { evaluateGoalEvidence } from "./goal-alignment.mjs";
+// Run delivery state: one review verdict, then one target per PR.
+//
+// running → review_pending → ship_pending → shipping → merged
+//                          ↘ correction_pending (revise) ↘ rejected
+//                          ↘ reviewed (accepted, nothing to ship) / closed
 
-const ACCEPTED_VERDICTS = new Set(["accept", "accept-with-notes"]);
-const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
-const REVIEW_VERDICTS = new Set([
-  ...ACCEPTED_VERDICTS,
-  "revise",
-  "relaunch",
-  "reject",
-]);
-
-/** Goal lifecycles that no longer need Master advancement after a run ends. */
-const ADVANCED_GOAL_LIFECYCLES = new Set(["delivered", "superseded", "cancelled"]);
+export const VERDICTS = new Set(["accept", "revise", "reject"]);
 
 export function createDeliveryStatus(workflow, laneStates) {
-  const targets = (workflow.delivery?.targets || []).map((target, index) => {
+  const base = normalizeBase(workflow.base_ref, workflow.remote);
+  const targets = (workflow.delivery?.targets || []).map((target) => {
     const lane = laneStates.find((candidate) => candidate.id === target.lane);
     if (!lane) throw new Error(`delivery target ${target.id} references unknown lane ${target.lane}`);
-    const base = target.base || normalizeBase(workflow.base_ref, workflow.remote) || "main";
-    return {
-      id: target.id,
-      laneId: target.lane,
-      order: index + 1,
-      state: "pending",
-      branch: target.branch || lane.branch,
-      base,
-      baseBranch: isSha(base) ? null : base,
-      baseCommit: isSha(base) ? base : workflow.planning?.reviewedBaseSha || null,
-      pr: target.pr || null,
-      worktree: null,
-      changedFiles: [],
-      prUrl: null,
-      mergeSha: null,
-      mergedAt: null,
-    };
+    return newTarget({ id: target.id, laneId: target.lane, branch: target.branch || lane.branch, base: target.base || base, pr: target.pr });
   });
-
   return {
-    schema: "agent-manager.delivery.v1",
     mode: workflow.delivery?.mode || (targets.length > 1 ? "train" : "single"),
-    state: "workers_running",
-    releaseRequired: workflow.delivery?.release_required === true,
-    workersCompletedAt: null,
-    review: {
-      budget: workflow.delivery?.review_budget || null,
-      state: "not_started",
-      latestPass: 0,
-      presentedAt: null,
-      verdict: null,
-      reviewer: null,
-      notes: null,
-      decidedAt: null,
-      history: [],
-    },
+    review: { verdict: null, reviewer: null, notes: null, decidedAt: null, history: [] },
     targets,
-    release: {
-      mode: workflow.delivery?.release_mode || "tag-only",
-      state: "pending",
-      sha: null,
-      tag: null,
-      verifiedMergeShas: [],
-    },
+  };
+}
+
+function newTarget({ id, laneId, branch, base, pr = null }) {
+  return {
+    id, laneId, branch, base: base || null, worktree: null, changedFiles: [], state: "pending",
+    pr: pr ? String(pr) : null, prUrl: null, tier: null, autoMerge: false, waitingOperator: null,
+    mergeSha: null, mergedAt: null,
   };
 }
 
 export function markWorkersComplete(status, at = new Date().toISOString()) {
-  status.execution = {
-    ...(status.execution || {}),
-    state: "done",
-    endedAt: at,
-  };
-  status.delivery ||= legacyDelivery(status);
-  status.delivery.state = "review_pending";
-  status.delivery.workersCompletedAt = at;
-  const integratedChangedFiles = [...new Set(
-    (status.lanes || []).flatMap((lane) => lane.changedFiles || []),
-  )];
-  if (status.integrate?.state === "ready"
-    && status.delivery.mode !== "review-only"
-    && integratedChangedFiles.length) {
+  status.execution = { ...(status.execution || {}), state: "done", endedAt: at };
+  status.delivery ||= { mode: "single", review: { verdict: null, history: [] }, targets: [] };
+  const changed = [...new Set((status.lanes || []).flatMap((lane) => lane.changedFiles || []))];
+  if (status.integrate?.state === "ready" && status.delivery.mode !== "review-only" && changed.length) {
     status.delivery.mode = "single";
-    const base = normalizeBase(status.baseRef, status.integrate.remote || "origin") || "main";
     status.delivery.targets = [{
-      id: "integrate",
-      laneId: "integrate",
-      order: 1,
-      state: "changes_ready",
-      branch: status.integrate.branch,
-      base,
-      baseBranch: isSha(base) ? null : base,
-      baseCommit: isSha(base) ? base : status.baseCommit || null,
-      pr: null,
+      ...newTarget({
+        id: "integrate",
+        laneId: "integrate",
+        branch: status.integrate.branch,
+        base: normalizeBase(status.baseRef, status.integrate.remote || "origin"),
+      }),
       worktree: status.integrate.worktree,
-      changedFiles: integratedChangedFiles,
-      prUrl: null,
-      mergeSha: null,
-      mergedAt: null,
+      changedFiles: changed,
+      state: "changes_ready",
     }];
   }
-  for (const target of status.delivery.targets || []) {
+  for (const target of status.delivery.targets) {
     const lane = (status.lanes || []).find((candidate) => candidate.id === target.laneId);
     if (!lane) continue;
-    target.worktree = lane.worktree || target.worktree || null;
+    target.worktree = lane.worktree || target.worktree;
     target.branch ||= lane.branch;
     target.changedFiles = [...(lane.changedFiles || [])];
     target.state = target.changedFiles.length ? "changes_ready" : "no_changes";
   }
-  status.state = "delivery_review_pending";
+  status.state = "review_pending";
   status.endedAt = null;
   return status;
 }
 
-export function recordReviewDecision(status, {
-  pass,
-  verdict,
-  reviewer,
-  reviewerIdentity = null,
-  goalEvidence = null,
-  notes = null,
-  at = new Date().toISOString(),
-}) {
-  const reviewPass = Number(pass);
-  assertReviewPass(status, reviewPass);
-  if (!REVIEW_VERDICTS.has(verdict)) {
-    throw new Error("review verdict must be accept, accept-with-notes, revise, relaunch, or reject");
+export function recordReview(status, { verdict, reviewer, notes = null, at = new Date().toISOString() }) {
+  if (!VERDICTS.has(verdict)) throw new Error("verdict must be accept, revise, or reject");
+  if (!reviewer || !String(reviewer).trim()) throw new Error("review requires --reviewer");
+  if (!["review_pending", "correction_pending", "ship_pending"].includes(status.state)) {
+    throw new Error(`run ${status.runId} is ${status.state}; review applies after workers finish`);
   }
-  if (!reviewer || !String(reviewer).trim()) throw new Error("reviewer is required");
-  const goalAssessment = ACCEPTED_VERDICTS.has(verdict) && status.goals?.alignmentRequired
-    ? evaluateGoalEvidence(status, goalEvidence) : null;
-  status.delivery ||= legacyDelivery(status);
-  const review = status.delivery.review ||= {
-    state: "not_started",
-    latestPass: 0,
-    verdict: null,
-    reviewer: null,
-    notes: null,
-    decidedAt: null,
-    history: [],
-  };
-  review.history ||= [];
-  if (review.history.some((item) => item.pass === reviewPass)) {
-    throw new Error(`delivery review pass ${reviewPass} already has a recorded decision`);
-  }
-  if (["revise", "relaunch"].includes(verdict)) {
-    if (!canCorrect(status, reviewPass, Date.parse(at))) {
-      throw new Error(`delivery review pass ${reviewPass} must accept, accept-with-notes, or reject; correction budget exhausted`);
-    }
-    if (reviewPass > 1 && !String(notes || "").trim()) {
-      throw new Error("further correction requires notes describing progress and remaining gaps");
-    }
-  }
-  const decision = {
-    pass: reviewPass,
-    verdict,
-    reviewer: String(reviewer).trim(),
-    reviewerIdentity,
-    ...(goalAssessment ? { goalAssessment } : {}),
-    notes: notes ? String(notes).trim() : null,
-    decidedAt: at,
-  };
-  review.history.push(decision);
-  review.state = ACCEPTED_VERDICTS.has(verdict)
-    ? "accepted"
-    : verdict === "reject"
-      ? "rejected"
-      : "correction_required";
-  review.latestPass = reviewPass;
-  review.verdict = verdict;
-  review.reviewer = decision.reviewer;
-  review.notes = decision.notes;
-  review.decidedAt = at;
-
-  if (ACCEPTED_VERDICTS.has(verdict)) {
-    if (status.delivery.mode === "review-only" || status.delivery.targets.length === 0) {
-      status.delivery.state = "reviewed";
-      status.state = "reviewed";
-      status.endedAt = at;
-    } else {
-      status.delivery.state = "ship_gate_pending";
-      status.state = "ship_gate_pending";
-      status.endedAt = null;
-    }
-  } else if (verdict === "reject") {
-    status.delivery.state = "rejected";
+  const review = status.delivery.review;
+  review.history = [...(review.history || []), { verdict, reviewer, notes, at }];
+  Object.assign(review, { verdict, reviewer: String(reviewer).trim(), notes, decidedAt: at });
+  if (verdict === "reject") {
     status.state = "rejected";
     status.endedAt = at;
-  } else {
-    status.delivery.state = "correction_pending";
+  } else if (verdict === "revise") {
     status.state = "correction_pending";
-    status.endedAt = null;
+  } else {
+    const shippable = status.delivery.targets.some((target) => target.state === "changes_ready");
+    status.state = shippable ? "ship_pending" : "reviewed";
+    if (!shippable) status.endedAt = at;
   }
   return status;
 }
 
-export function recordReviewPresentation(status, {
-  pass,
-  at = new Date().toISOString(),
-}) {
-  const reviewPass = Number(pass);
-  assertReviewPass(status, reviewPass);
-  status.delivery ||= legacyDelivery(status);
-  const review = status.delivery.review;
-  review.history ||= [];
-  if (review.history.some((item) => item.pass === reviewPass)) {
-    throw new Error(`delivery review pass ${reviewPass} already has a recorded decision`);
+export function assertAccepted(status) {
+  if (status.delivery?.review?.verdict !== "accept") {
+    throw new Error(`run ${status.runId} has no accepted review; record one with: agent-manager review ${status.runId} --verdict accept --reviewer <id>`);
   }
-  if (review.state === "awaiting_operator" && review.latestPass === reviewPass) return status;
-  review.state = "awaiting_operator";
-  review.latestPass = reviewPass;
-  review.presentedAt = at;
-  review.verdict = null;
-  review.reviewer = null;
-  review.notes = null;
-  review.decidedAt = null;
+}
+
+/** Recompute the run state after a target changed. */
+export function settleTargets(status, at = new Date().toISOString()) {
+  const shippable = status.delivery.targets.filter((target) => target.state !== "no_changes");
+  if (shippable.length && shippable.every((target) => target.mergeSha)) {
+    status.state = "merged";
+    status.endedAt = at;
+  } else if (shippable.some((target) => target.waitingOperator && !target.autoMerge)) {
+    status.state = "waiting_operator";
+  } else if (shippable.some((target) => target.prUrl)) {
+    status.state = "shipping";
+  }
   return status;
 }
 
-export function assertAcceptedReview(status) {
-  const review = status.delivery?.review;
-  if (review?.state !== "accepted" || !ACCEPTED_VERDICTS.has(review.verdict)) {
-    throw new Error("shipping requires a persisted accepted Delivery Review");
-  }
-  if (!["ship_gate_pending", "release_pending", "blocked"].includes(status.state)) {
-    throw new Error(`run ${status.runId} is not ready for Ship Gate shipping (state ${status.state})`);
-  }
-  return review;
-}
-
-/**
- * Accept-without-ship terminal. An accepted run whose outputs are kept as
- * filed evidence instead of being shipped ends in `filed`, never `cancelled`:
- * successful filing is delivery, not abandonment.
- */
-export function recordFiled(status, {
-  operator,
-  reason = null,
-  at = new Date().toISOString(),
-} = {}) {
-  if (!operator || !String(operator).trim()) throw new Error("filing requires an operator id");
-  status.delivery ||= legacyDelivery(status);
-  if (status.state === "filed" && status.delivery.filed) {
-    const sameOperator = status.delivery.filed.operator === String(operator).trim();
-    const sameReason = status.delivery.filed.reason === (reason ? String(reason).trim() : null);
-    if (sameOperator && sameReason) return status;
-    throw new Error(`run ${status.runId} is already filed with a different operator disposition`);
-  }
-  const review = status.delivery.review;
-  if (review?.state !== "accepted" || !ACCEPTED_VERDICTS.has(review.verdict)) {
-    throw new Error("filing requires a persisted accepted Delivery Review");
-  }
-  if (!["ship_gate_pending", "blocked"].includes(status.state)) {
-    throw new Error(
-      `run ${status.runId} cannot be filed from state ${status.state}; filing closes an accepted run that is not being shipped`,
-    );
-  }
-  const merged = (status.delivery.targets || []).filter((target) => target.state === "merged");
-  if (merged.length) {
-    throw new Error(
-      `run ${status.runId} already merged ${merged.map((target) => target.id).join(", ")}; finish the delivery instead of filing it`,
-    );
-  }
-  status.delivery.state = "filed";
-  status.delivery.filed = {
-    state: "filed",
-    operator: String(operator).trim(),
-    reason: reason ? String(reason).trim() : null,
-    filedAt: at,
-    unshippedTargets: (status.delivery.targets || [])
-      .filter((target) => (target.changedFiles || []).length)
-      .map((target) => target.id),
-  };
-  status.state = "filed";
+export function closeRun(status, { reason = "closed without shipping", at = new Date().toISOString() } = {}) {
+  status.state = "closed";
+  status.closedReason = reason;
   status.endedAt = at;
   return status;
 }
 
-/**
- * Goal references this run declared that the frozen goal snapshot still shows
- * in a pre-delivery lifecycle. Advisory only — Agent Manager never infers a
- * disposition without an explicit operator reconciliation.
- */
-export function staleGoalHints(status) {
-  const refs = status?.goalRefs || [];
-  if (!refs.length) return [];
-  const frozen = new Map((status?.goals?.goals || []).map((goal) => [goal.id, goal]));
-  const settled = settledGoalIds(status);
-  return refs
-    .map((id) => {
-      const goal = frozen.get(id) || null;
-      return {
-        id,
-        title: goal?.title || null,
-        lifecycle: goal?.lifecycle || "unknown",
-        source: goal ? "frozen-goal-snapshot" : "declared-goal-ref",
-      };
-    })
-    .filter((hint) => !settled.has(hint.id) && !ADVANCED_GOAL_LIFECYCLES.has(hint.lifecycle));
-}
-
-export function goalDispositionHints(status) {
-  const refs = status?.goalRefs || [];
-  const frozen = new Map((status?.goals?.goals || []).map((goal) => [goal.id, goal]));
-  const settled = settledGoalIds(status);
-  return refs.filter((id) => !settled.has(id)).map((id) => {
-    const goal = frozen.get(id) || null;
-    return {
-      id,
-      title: goal?.title || null,
-      lifecycle: goal?.lifecycle || "unknown",
-      source: goal ? "frozen-goal-snapshot" : "declared-goal-ref",
-    };
-  });
-}
-
-export function settledGoalIds(status) {
-  const dispositions = status?.goalReconciliation?.dispositions
-    || status?.closeout?.dispositions
-    || [];
-  return new Set(dispositions.map((item) => item.goalId));
-}
-
-export function hasSettledGoalCloseout(status) {
-  const refs = [...new Set(status?.goalRefs || [])];
-  if (!refs.length) return true;
-  const settled = settledGoalIds(status);
-  return refs.every((goalId) => settled.has(goalId));
-}
-
-export function requiresGoalDisposition(status) {
-  if (!["filed", "rejected", "failed", "cancelled"].includes(status?.state)) return false;
-  return goalDispositionHints(status).length > 0;
-}
-
-export function selectDeliveryTarget(status, targetId = null, { allowMerged = false } = {}) {
-  const targets = status.delivery?.targets || [];
-  if (!targets.length) return null;
-  if (targets.length > 1 && !targetId) {
-    throw new Error("multi-PR delivery requires --target <delivery-target-id>");
-  }
-  const target = targetId
-    ? targets.find((candidate) => candidate.id === targetId)
-    : targets[0];
-  if (!target) throw new Error(`unknown delivery target: ${targetId}`);
-  if (target.state === "merged" && !allowMerged) {
-    throw new Error(`delivery target ${target.id} is already merged`);
-  }
-  return target;
-}
-
-export function recordMergedTarget(status, {
-  targetId,
-  prUrl,
-  mergeSha,
-  at = new Date().toISOString(),
-}) {
-  status.delivery ||= legacyDelivery(status);
-  const target = (status.delivery.targets || []).find((candidate) => candidate.id === targetId);
-  if (!target) throw new Error(`unknown delivery target: ${targetId}`);
-  if (!mergeSha) throw new Error(`delivery target ${targetId} has no merge SHA`);
-  target.state = "merged";
-  target.prUrl = prUrl || target.prUrl || target.pr || null;
-  target.mergeSha = mergeSha;
-  target.mergedAt = at;
-  const allMerged = status.delivery.targets.every((candidate) => candidate.state === "merged");
-  status.delivery.state = allMerged
-    ? status.delivery.releaseRequired ? "release_pending" : "merged"
-    : "targets_pending";
-  status.state = allMerged
-    ? status.delivery.releaseRequired ? "release_pending" : "merged"
-    : "ship_gate_pending";
-  status.endedAt = allMerged && !status.delivery.releaseRequired ? at : null;
-  return { status, target, allMerged };
-}
-
-export function recordRelease(status, {
-  sha,
-  tag,
-  verifiedMergeShas,
-  mode = null,
-  tagCi = null,
-  providerRelease = null,
-  at = new Date().toISOString(),
-}) {
-  status.delivery ||= legacyDelivery(status);
-  const prior = status.delivery.release || {};
-  status.delivery.release = {
-    mode: mode || prior.mode || "tag-only",
-    state: "released",
-    sha,
-    tag,
-    verifiedMergeShas: [...new Set(verifiedMergeShas || [])],
-    tagCi,
-    providerRelease,
-    releasedAt: at,
-  };
-  status.delivery.state = "released";
-  status.state = "released";
-  status.endedAt = at;
-  return status;
-}
-
-export function expectedMergeShas(status, currentShip = null) {
-  const values = [];
-  for (const target of status.delivery?.targets || []) {
-    if (target.mergeSha) values.push(target.mergeSha);
-    else if (currentShip?.targetId === target.id && currentShip.mergeSha) values.push(currentShip.mergeSha);
-  }
-  return [...new Set(values.filter(Boolean))];
-}
-
-export function isOverallTerminalState(state) {
-  return ["reviewed", "filed", "merged", "released", "rejected", "failed", "cancelled"].includes(state);
-}
-
-export function deliveryReadiness(status, { require = "released" } = {}) {
-  if (!["merged", "released"].includes(require)) {
-    throw new Error("delivery readiness requires merged or released");
-  }
-  const targets = status.delivery?.targets || [];
-  const allTargetsMerged = targets.length > 0
-    && targets.every((target) => target.state === "merged" && target.mergeSha);
-  const ready = require === "released"
-    ? status.state === "released"
-    : allTargetsMerged && ["release_pending", "merged", "released"].includes(status.state);
-  return {
-    schema: "agent-manager.delivery-readiness.v1",
-    runId: status.runId,
-    ready,
-    requiredState: require,
-    state: status.state,
-    deliveryState: status.delivery?.state || null,
-    reviewState: status.delivery?.review?.state || null,
-    targets: targets.map((target) => ({
-      id: target.id,
-      state: target.state,
-      prUrl: target.prUrl || null,
-      mergeSha: target.mergeSha || null,
-    })),
-    release: status.delivery?.release || null,
-  };
-}
-
-function legacyDelivery(status) {
-  const targets = (status.lanes || []).map((lane, index) => ({
-    id: lane.id,
-    laneId: lane.id,
-    order: index + 1,
-    state: lane.changedFiles?.length ? "changes_ready" : "no_changes",
-    branch: lane.branch || null,
-    base: normalizeBase(status.baseRef, "origin") || "main",
-    baseBranch: isSha(normalizeBase(status.baseRef, "origin"))
-      ? null
-      : normalizeBase(status.baseRef, "origin") || "main",
-    baseCommit: status.baseCommit || null,
-    pr: null,
-    worktree: lane.worktree || null,
-    changedFiles: [...(lane.changedFiles || [])],
-    prUrl: null,
-    mergeSha: null,
-    mergedAt: null,
-  }));
-  return {
-    schema: "agent-manager.delivery.v1",
-    mode: targets.length > 1 ? "train" : "single",
-    state: "review_pending",
-    releaseRequired: false,
-    workersCompletedAt: status.executionEndedAt || status.endedAt || null,
-    review: {
-      state: "not_started",
-      latestPass: 0,
-      presentedAt: null,
-      verdict: null,
-      reviewer: null,
-      notes: null,
-      decidedAt: null,
-      history: [],
-    },
-    targets,
-    release: { mode: "tag-only", state: "pending", sha: null, tag: null, verifiedMergeShas: [] },
-  };
-}
-
-function normalizeBase(value, remote) {
+function normalizeBase(value, remote = "origin") {
   const text = String(value || "");
+  if (!text || text === "HEAD" || /^[0-9a-f]{40}$/i.test(text)) return null;
   return text.startsWith(`${remote}/`) ? text.slice(remote.length + 1) : text;
-}
-
-function isSha(value) {
-  return SHA.test(String(value || "").trim());
 }

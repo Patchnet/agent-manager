@@ -1,11 +1,20 @@
 ---
 enabled: true
-current: 2.2.0
+current: 3.0.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 3.0.0 - 2026-10-13
+
+Lighter and faster: ship by path-based tier, wake on events, and let harnesses do what they now do natively. Two thirds less code (52.5k → 18k lines, 216 → 119 files).
+
+- Added `tier` and `.github/ship-tiers.yml` (zero-dependency classifier in `tools/ship-tier.mjs`), a one-command `ship` (tier 0/1 auto-merge with a one-line notice; tier 2 waits for `--approved-by`), an event stream (`events.jsonl`, `emit`, `AGENT_MANAGER_EVENT_SINKS`), `wait`, `close`, the light reviewer prompt, and `revert-on-red` / `tier-gate` workflow templates.
+- Review is one recorded verdict: `accept`, `revise`, or `reject`.
+- Removed: Director, fleet, tokens, UI dashboard, goals and the brain store (`@maadb/core`), conditional authorization, release stamping and tagging, PR Manager, Manager-thread return, `watch-signal`, `monitor`, `next-action`, reconcile, demo, install, run classification, review budgets, feed publishing, and the planning gate.
+- Breaking: run states are now `review_pending`, `ship_pending`, `shipping`, `waiting_operator`, `merged`, `reviewed`, `closed`; `released` and `filed` are gone. Legacy workflow keys (`planning`, `goal_refs`, `feed`, `classification`, …) are ignored with a warning. `--by` is required for ratify and scope grants.
 
 ## 2.2.0 - 2026-10-11
 

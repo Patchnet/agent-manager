@@ -1,12 +1,10 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { normalizeHarnessOptions } from "./harness/options.mjs";
 import { DEFAULT_MAX_CONCURRENCY, MAX_LANES } from "./constants.mjs";
-import { normalizePlanning, planningPrompt } from "./planning.mjs";
 import { assertPathInside, assertSafeSlug, repoPath } from "./paths.mjs";
 import { detectRuntimeProfile, runtimePrompt } from "./runtime.mjs";
-import { normalizeRunContract } from "./run-classification.mjs";
 import {
   listScopedFiles,
   matchesScope,
@@ -17,12 +15,17 @@ import {
 } from "./scope.mjs";
 
 const TOP_LEVEL_KEYS = new Set([
-  "repo", "lanes", "feed", "target_dev_flow", "harness_default", "model_default",
+  "repo", "lanes", "target_dev_flow", "harness_default", "model_default",
   "integrate", "policy", "claim_mode", "remote", "base_ref", "env_allowlist",
   "max_concurrency", "scope_overrides", "verification",
-  "planning", "delivery", "title", "repo_shorthand", "goal_refs",
-  "classification", "parent_run_id", "harness_defaults", "goal_policy", "goal_exemption",
+  "delivery", "title", "goal", "repo_shorthand", "harness_defaults",
 ]);
+// Removed in 3.0. Older workflows still load; these keys are ignored with a warning.
+const LEGACY_KEYS = new Set([
+  "feed", "planning", "goal_refs", "goal_policy", "goal_exemption",
+  "classification", "parent_run_id",
+]);
+const LEGACY_DELIVERY_KEYS = new Set(["release_required", "release_mode", "review_budget"]);
 const LANE_KEYS = new Set([
   "id", "harness", "model", "scope", "prompt", "prompt_file", "fake", "depends_on",
   "kind", "expected_outputs", "allow_no_changes", "permission_mode", "allowed_tools", "setup", "harness_options",
@@ -31,7 +34,7 @@ const SCOPE_OVERRIDE_KEYS = new Set(["path", "lanes", "owner", "reason", "access
 const VERIFICATION_KEYS = new Set(["commands", "timeout_sec", "setup"]);
 const COMMAND_PLAN_KEYS = new Set(["commands", "timeout_sec"]);
 const VERIFICATION_COMMAND_KEYS = new Set(["command", "args"]);
-const DELIVERY_KEYS = new Set(["mode", "targets", "release_required", "release_mode", "review_budget"]);
+const DELIVERY_KEYS = new Set(["mode", "targets"]);
 const DELIVERY_TARGET_KEYS = new Set(["id", "lane", "branch", "base", "pr"]);
 const POLICY_KEYS = new Set([
   "allow_commit", "allow_pr", "dangerously_skip_permissions", "permission_mode",
@@ -68,10 +71,7 @@ const CLAUDE_UNATTENDED_SHELL_MODES = new Set(["auto", "dontAsk"]);
 // under-grant it.
 const SYNTHESIZED_ALLOWED_TOOL_MODES = new Set(["acceptEdits", "auto", "workspace-write"]);
 
-export function loadWorkflow(filePath, {
-  repoOverride = null,
-  planningContextOverride = null,
-} = {}) {
+export function loadWorkflow(filePath, { repoOverride = null } = {}) {
   const abs = resolve(filePath);
   if (!existsSync(abs)) throw new Error(`workflow not found: ${abs}`);
   const raw = readFileSync(abs, "utf8");
@@ -83,6 +83,16 @@ export function loadWorkflow(filePath, {
   }
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
     throw new Error("workflow must be a mapping");
+  }
+  const legacyKeys = Object.keys(doc).filter((key) => LEGACY_KEYS.has(key));
+  for (const key of legacyKeys) delete doc[key];
+  if (isMapping(doc.delivery)) {
+    for (const key of Object.keys(doc.delivery)) {
+      if (LEGACY_DELIVERY_KEYS.has(key)) {
+        legacyKeys.push(`delivery.${key}`);
+        delete doc.delivery[key];
+      }
+    }
   }
   assertKnownKeys(doc, TOP_LEVEL_KEYS, "workflow");
 
@@ -122,7 +132,12 @@ export function loadWorkflow(filePath, {
   const scopeOverrides = normalizeScopeOverrides(doc.scope_overrides, lanes);
   const sequentialOverlaps = applyScopeOwnership(lanes, scopeOverrides);
   const lintWarnings = collectLintWarnings(lanes, repoRoot);
-  const feed = normalizeFeed(doc.feed, basename(repoRoot));
+  if (legacyKeys.length) {
+    lintWarnings.push({
+      code: "legacy-keys-ignored",
+      message: `Ignored keys removed in 3.0: ${legacyKeys.join(", ")}`,
+    });
+  }
   const claimMode = doc.claim_mode || "auto";
   if (!CLAIM_MODES.has(claimMode)) {
     throw new Error("workflow.claim_mode must be auto, off, or required");
@@ -143,16 +158,6 @@ export function loadWorkflow(filePath, {
   const dependencySetupWarning = assertNodeDependencySetup(verification, repoRoot);
   if (dependencySetupWarning) lintWarnings.push(dependencySetupWarning);
   synthesizeAllowedTools(lanes, verification);
-  const goalRefs = normalizeGoalRefs(doc.goal_refs);
-  if (doc.goal_policy !== undefined && !["required", "exempt"].includes(doc.goal_policy)) throw new Error("goal_policy must be required or exempt");
-  if (doc.goal_policy === "required" && !goalRefs.length) throw new Error("goal_policy required needs goal_refs");
-  if (doc.goal_policy === "exempt" && (!isNonEmptyString(doc.goal_exemption) || goalRefs.length)) throw new Error("goal exemption requires a reason and no goal_refs");
-  if (doc.goal_exemption !== undefined && doc.goal_policy !== "exempt") throw new Error("goal_exemption requires goal_policy exempt");
-  if (!goalRefs.length && doc.goal_policy !== "exempt") lintWarnings.push({ code: "goal-alignment-inactive", message: "No goal_refs: goal alignment is inactive. Sustained development should use goal_policy: required; small tasks may use exempt with a reason." });
-  const planning = normalizePlanning(doc.planning, {
-    repoRoot,
-    contextOverridePath: planningContextOverride,
-  });
 
   assertBoolean(doc.integrate, "workflow.integrate", { optional: true });
   if (doc.model_default !== undefined && !isNonEmptyString(doc.model_default)) {
@@ -163,10 +168,9 @@ export function loadWorkflow(filePath, {
   }
   validateIdentityText(doc.title, "workflow.title", 160);
   validateIdentityText(doc.repo_shorthand, "workflow.repo_shorthand", 64);
-  const runContract = normalizeRunContract({
-    classification: doc.classification,
-    parentRunId: doc.parent_run_id,
-  });
+  if (doc.goal !== undefined && !isNonEmptyString(doc.goal)) {
+    throw new Error("workflow.goal must be a non-empty string");
+  }
 
   const targetDevFlow = doc.target_dev_flow || readTargetDevFlow(repoRoot) || "simple";
   const delivery = normalizeDelivery(doc.delivery, {
@@ -206,32 +210,12 @@ export function loadWorkflow(filePath, {
     sequential_overlaps: sequentialOverlaps,
     lint_warnings: lintWarnings,
     verification,
-    goal_refs: goalRefs,
-    classification: runContract.classification,
-    parent_run_id: runContract.lineage?.parentRunId || null,
-    planning,
     delivery,
     remote,
     base_ref: baseRef,
     env_allowlist: envAllowlist,
-    feed,
     policy,
   };
-}
-
-function normalizeGoalRefs(input) {
-  if (input === undefined) return [];
-  if (!Array.isArray(input)) throw new Error("workflow.goal_refs must be an array");
-  const refs = input.map((value, index) => {
-    if (typeof value !== "string" || !/^goal-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value) || value.length > 128 || value.includes("..")) {
-      throw new Error(`workflow.goal_refs[${index}] must be a valid local goal ID`);
-    }
-    return value;
-  });
-  if (new Set(refs).size !== refs.length) {
-    throw new Error("workflow.goal_refs must not contain duplicate goal IDs");
-  }
-  return [...refs].sort();
 }
 
 function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDevFlow }) {
@@ -240,19 +224,6 @@ function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDev
   }
   const raw = input || {};
   assertKnownKeys(raw, DELIVERY_KEYS, "workflow.delivery");
-  let reviewBudget;
-  if (raw.review_budget !== undefined) {
-    if (!isMapping(raw.review_budget)) throw new Error("workflow.delivery.review_budget must be a mapping");
-    assertKnownKeys(raw.review_budget, new Set(["max_corrections", "max_elapsed_sec"]), "workflow.delivery.review_budget");
-    reviewBudget = {
-      max_corrections: boundedInteger(raw.review_budget.max_corrections, 1, 0, 5, "review_budget.max_corrections"),
-      max_elapsed_sec: boundedInteger(raw.review_budget.max_elapsed_sec, 3600, 60, 604800, "review_budget.max_elapsed_sec"),
-    };
-  }
-  assertBoolean(raw.release_required, "workflow.delivery.release_required", { optional: true });
-  if (raw.release_mode !== undefined && !["tag-only", "published-release"].includes(raw.release_mode)) {
-    throw new Error("workflow.delivery.release_mode must be tag-only or published-release");
-  }
   const readOnly = ["readOnly", "read-only", "read_only"].includes(policy.permission_mode);
   if (raw.targets !== undefined && !Array.isArray(raw.targets)) {
     throw new Error("workflow.delivery.targets must be an array");
@@ -331,19 +302,10 @@ function normalizeDelivery(input, { lanes, policy, integrate, baseRef, targetDev
   if (readOnly && targets.length) {
     throw new Error("read-only workflows cannot declare delivery targets");
   }
-  if (readOnly && raw.release_required === true) {
-    throw new Error("read-only workflows cannot require a release");
-  }
   if (integrate && targets.length) {
     throw new Error("integrated workflows cannot declare lane delivery targets");
   }
-  return {
-    mode,
-    targets,
-    release_required: raw.release_required === true,
-    release_mode: raw.release_mode || "tag-only",
-    ...(reviewBudget ? { review_budget: reviewBudget } : {}),
-  };
+  return { mode, targets };
 }
 
 function normalizeBaseRef(value) {
@@ -1035,28 +997,6 @@ function normalizePolicy(input) {
   };
 }
 
-function normalizeFeed(input, repo) {
-  if (input !== undefined && !isMapping(input)) throw new Error("workflow.feed must be a mapping");
-  const raw = input || {};
-  assertKnownKeys(raw, new Set(["enabled", "baseUrl", "topic"]), "workflow.feed");
-  assertBoolean(raw.enabled, "workflow.feed.enabled", { optional: true });
-  const baseUrl = raw.baseUrl || process.env.AGENT_FEED_BASE_URL || "http://localhost:8787";
-  const topic = raw.topic || process.env.AGENT_FEED_TOPIC || "agent-manager/" + repo;
-  if (!isNonEmptyString(baseUrl)) throw new Error("workflow.feed.baseUrl must be a non-empty URL");
-  if (!isNonEmptyString(topic)) throw new Error("workflow.feed.topic must be a non-empty string");
-  let parsed;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw new Error("workflow.feed.baseUrl must be an http(s) URL");
-  }
-  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("workflow.feed.baseUrl must use http or https");
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error("workflow.feed.baseUrl must not embed credentials, query parameters, or fragments");
-  }
-  return { enabled: raw.enabled === true, baseUrl: baseUrl.replace(/\/+$/, ""), topic };
-}
-
 function normalizeEnvAllowlist(input) {
   if (input === undefined) return [];
   if (!Array.isArray(input)) throw new Error("workflow.env_allowlist must be an array of environment variable names");
@@ -1094,7 +1034,7 @@ export function lanePrompt(lane, workflow) {
   const policyBlock = `
 ## agent-manager policy (mandatory)
 - Worker mode is active. The assignment and authority are established; begin authorized work without another Go. The shared context is a starting snapshot, not a substitute for investigation.
-- Inspect relevant code and permitted read-only sources, verify assumptions, and adapt your implementation plan within the assigned outcome and write scope. Do not mutate the planning system.
+- Inspect relevant code, verify assumptions, and adapt your plan within the assigned outcome and write scope.
 - Lane kind: ${lane.kind}
 - Stay inside scope: ${lane.scope.join(", ")}
 - Required output paths: ${lane.expected_outputs.length ? lane.expected_outputs.join(", ") : "(none declared)"}
@@ -1109,11 +1049,9 @@ export function lanePrompt(lane, workflow) {
 - Use native harness tools and context management. When delegation is authorized, all child work shares this lane's scope, permissions, and delivery contract; do not create competing outer runs.
 - Run the required checks and tests appropriate to the change. Repeat or broaden them only when new evidence justifies it. Prefer targeted edits.
 `.trim();
-  const sharedPlanning = planningPrompt(workflow.planning);
-  const sharedAwareness = workflow.awareness?.context || "";
-  const goalContext = workflow.goalContext?.context || "";
+  const goal = workflow.goal ? `## Run goal\n${workflow.goal.trim()}\n\n` : "";
   const hostRuntime = runtimePrompt(workflow.runtime || detectRuntimeProfile());
-  return `${sharedPlanning}\n\n${sharedAwareness}\n\n${goalContext}\n\n${hostRuntime}\n\n## Lane assignment\n${body.trim()}\n\n${policyBlock}\n`;
+  return `${goal}${hostRuntime}\n\n## Lane assignment\n${body.trim()}\n\n${policyBlock}\n`;
 }
 
 export function assertDangerousPermissionApproval(workflow, approved = false) {

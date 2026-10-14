@@ -2,290 +2,111 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Patchnet/agent-manager/schemas/status.schema.json",
   "title": "agent-manager status",
+  "description": "Run state at <runsRoot>/<runId>/status.json. Additional fields may appear; consumers ignore what they do not use.",
   "type": "object",
-  "required": ["runId", "state", "repo", "startedAt", "lanes"],
+  "required": ["runId", "state", "repo", "lanes"],
   "properties": {
-    "runId": { "type": "string" }, "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "reviewed", "filed", "merged", "released", "rejected", "failed", "cancelled"] },
-    "agentManager": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["version"],
-      "properties": { "version": { "type": "string" },
-        "commit": { "type": ["string", "null"] },
-        "dirty": { "type": ["boolean", "null"] } }
+    "runId": { "type": "string" },
+    "state": {
+      "enum": ["running", "blocked", "workers_done", "review_pending", "correction_pending", "ship_pending",
+        "shipping", "waiting_operator", "merged", "reviewed", "closed", "rejected", "failed", "cancelled"]
     },
-    "identity": { "$ref": "#/$defs/runIdentity" },
-    "classification": { "enum": ["operational", "benchmark", "demo", "retry", "recovery"] },
-    "lineage": {
-      "oneOf": [
-        { "type": "null" },
-        { "$ref": "#/$defs/runLineage" }
-      ]
-    },
-    "repo": { "type": "string" }, "startedAt": { "type": "string", "format": "date-time" },
+    "repo": { "type": "string" },
+    "repoRoot": { "type": "string" },
+    "goal": { "type": ["string", "null"] },
+    "target_dev_flow": { "type": "string" },
+    "baseRef": { "type": "string" },
+    "baseCommit": { "type": "string" },
+    "startedAt": { "type": "string", "format": "date-time" },
     "endedAt": { "type": ["string", "null"] },
-    "lanes": { "type": "array", "items": { "$ref": "#/$defs/laneStatus" } },
-    "topology": { "type": "object" },
-    "runtime": { "$ref": "#/$defs/runtime" },
-    "masterReturn": {
-      "oneOf": [
-        { "type": "null" },
-        { "$ref": "#/$defs/masterReturnSummary" }
-      ]
-    },
-    "planning": {
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "error": { "type": "string" },
+    "agentManager": { "type": "object", "properties": { "version": { "type": "string" } } },
+    "identity": {
       "type": "object",
-      "required": ["state", "sourceRefs", "planRef", "contextFile", "contextDigest", "reviewedBaseSha", "actualBaseSha", "verifiedBy", "verifiedAt", "reviewedPaths", "repositoryInstructionRefs", "attestations"],
       "properties": {
-        "state": { "const": "verified" },
-        "sourceRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-        "planRef": { "type": "string" },
-        "contextFile": { "type": "string" },
-        "contextDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "contextSnapshot": { "type": "string" },
-        "reviewedBaseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
-        "actualBaseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
-        "verifiedBy": { "type": "string" },
-        "verifiedAt": { "type": "string", "format": "date-time" },
-        "reviewedPaths": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-        "repositoryInstructionRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-        "attestations": { "type": "object" }
+        "displayTitle": { "type": "string" },
+        "subject": { "type": "string" },
+        "repoShorthand": { "type": "string" },
+        "manager": { "type": "object" }
       }
     },
-    "goalRefs": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^goal-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$" }
-    },
-    "goals": {
+    "runtime": { "type": "object" },
+    "lanes": { "type": "array", "items": { "$ref": "#/$defs/lane" } },
+    "integrate": {
       "type": "object",
-      "required": ["schema", "refs", "goals", "artifactLinks", "contextDigest", "contextSnapshot"],
       "properties": {
-        "schema": { "const": "agent-manager.run-goals.v1" },
-        "alignmentRequired": { "type": "boolean" },
-        "refs": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
-        "goals": { "type": "array", "items": { "type": "object" } },
-        "artifactLinks": { "type": "array", "items": { "type": "object" } },
-        "contextDigest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
-        "contextSnapshot": { "type": ["string", "null"] }
+        "state": { "enum": ["running", "ready", "blocked", "failed"] },
+        "branch": { "type": "string" },
+        "worktree": { "type": "string" },
+        "error": { "type": "string" }
       }
     },
-    "awareness": { "$ref": "#/$defs/awareness" },
-    "authorization": { "$ref": "#/$defs/authorizationSummary" },
     "delivery": {
       "type": "object",
-      "required": ["schema", "mode", "state", "review", "targets", "release"],
       "properties": {
-        "schema": { "const": "agent-manager.delivery.v1" },
         "mode": { "enum": ["single", "train", "review-only"] },
-        "state": { "enum": ["workers_running", "review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "targets_pending", "release_pending", "reviewed", "merged", "released", "rejected", "failed", "cancelled"] },
-        "releaseRequired": { "type": "boolean" },
-        "workersCompletedAt": { "type": ["string", "null"] },
-        "review": { "type": "object" },
-        "targets": { "type": "array" },
-        "release": { "type": "object" }
-      }
-    },
-    "reconciliation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["schema", "state", "provider", "reconciledAt", "priorState", "targets", "release"],
-      "properties": {
-        "schema": { "const": "agent-manager.external-reconciliation.v1" },
-        "externalRelease": { "type": "object", "required": ["tag", "operator", "authorityRef"], "properties": { "tag": {"type":"string"}, "operator": {"type":"string"}, "authorityRef": {"type":"string"} } },
-        "state": { "const": "verified" },
-        "provider": { "type": "string", "minLength": 1 },
-        "reconciledAt": { "type": "string", "format": "date-time" },
-        "priorState": { "type": "string" },
-        "targets": { "type": "array", "items": { "type": "object" } },
-        "release": { "type": ["object", "null"] }
-      }
-    },
-    "ship": {
-      "type": "object",
-      "required": ["schema", "state", "phase", "approve", "branch", "base", "remote"],
-      "properties": {
-        "schema": { "const": "agent-manager.ship.v1" },
-        "state": { "enum": ["queued", "running", "blocked", "done", "failed", "cancelled"] },
-        "phase": { "enum": ["preflight", "commit", "push", "pr", "merge", "release", "release-push", "ci", "tag", "done"] },
-        "approve": { "enum": ["through-pr", "all"] },
-        "runtime": { "$ref": "#/$defs/runtime" },
-        "branch": { "type": "string" },
-        "base": { "type": "string" },
-        "remote": { "type": "string" },
-        "prUrl": { "type": ["string", "null"] },
-        "targetId": { "type": ["string", "null"] },
-        "mergeSha": { "type": ["string", "null"] },
-        "releaseSha": { "type": ["string", "null"] },
-        "plannedTag": { "type": ["string", "null"] },
-        "tag": { "type": ["string", "null"] },
-        "lastActivity": { "type": ["string", "null"] },
-        "checks": { "type": "array" },
-        "ci": { "type": ["object", "null"] },
-        "releaseWorktree": { "type": ["string", "null"] },
-        "needsInput": { "type": ["object", "null"] },
-        "steps": { "type": "array" },
-        "authorization": {
-          "type": ["object", "null"],
+        "review": {
+          "type": "object",
           "properties": {
-            "grantDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "receiptDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            "verdict": { "enum": ["accept", "revise", "reject", null] },
+            "reviewer": { "type": ["string", "null"] },
+            "notes": { "type": ["string", "null"] },
+            "decidedAt": { "type": ["string", "null"] },
+            "history": { "type": "array" }
           }
-        }
+        },
+        "targets": { "type": "array", "items": { "$ref": "#/$defs/target" } }
       }
     }
   },
   "$defs": {
-    "authorizationSummary": {
+    "lane": {
       "type": "object",
-      "additionalProperties": false,
-      "required": ["schema", "state", "valid", "level", "grantDigest", "evidenceDigest", "manifestDigest", "riskCeiling", "providerMode", "expiresAt", "permittedMutations", "failureCode", "nextAction", "receiptDigest"],
-      "properties": {
-        "schema": { "const": "agent-manager.authorization-summary.v1" },
-        "state": { "enum": ["ready", "blocked", "revoked", "expired", "consumed"] },
-        "valid": { "type": "boolean" },
-        "level": { "enum": ["through-pr", "all"] },
-        "grantDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "evidenceDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "manifestDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "riskCeiling": { "enum": ["low", "moderate", "high", "critical"] },
-        "providerMode": { "type": "string" },
-        "expiresAt": { "type": "string", "format": "date-time" },
-        "permittedMutations": { "type": "array", "items": { "type": "string" } },
-        "failureCode": { "type": ["string", "null"] },
-        "nextAction": { "type": ["string", "null"] },
-        "receiptDigest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
-      }
-    },
-    "awareness": {
-      "type": "object",
-      "required": ["schema", "state"],
-      "properties": {
-        "schema": { "const": "agent-manager.awareness.v1" },
-        "state": { "enum": ["pending", "admitted", "running", "needs_input", "pending_delivery", "shipping", "reviewed", "merged", "released", "rejected", "failed", "cancelled", "abandoned", "blocked"] },
-        "phase": { "enum": ["editing", "delivery", "terminal"] },
-        "historyMode": { "const": "feed" },
-        "brainRoot": { "type": "string" },
-        "intentId": { "type": "string" },
-        "runId": { "type": "string" },
-        "repoKey": { "type": "string" },
-        "repoLabel": { "type": "string" },
-        "repoIdentitySource": { "enum": ["remote", "path"] },
-        "classification": { "enum": ["operational", "benchmark", "demo", "retry", "recovery"] },
-        "lineage": {
-          "oneOf": [
-            { "type": "null" },
-            { "$ref": "#/$defs/runLineage" }
-          ]
-        },
-        "scopes": { "type": "array", "items": { "type": "string" } },
-        "activeRelated": { "type": "array" },
-        "deliveryDependencies": { "type": "array" },
-        "admittedAt": { "type": "string", "format": "date-time" },
-        "heartbeatAt": { "type": "string", "format": "date-time" },
-        "leaseExpiresAt": { "type": "string", "format": "date-time" },
-        "context": { "type": "string" },
-        "contextDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "contextSnapshot": { "type": "string" },
-        "code": { "type": "string" },
-        "conflicts": { "type": "array" },
-        "lastError": { "type": "string" }
-      }
-    },
-    "runLineage": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["parentRunId", "relationship"],
-      "properties": {
-        "parentRunId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
-        "relationship": { "enum": ["retry", "recovery"] }
-      }
-    },
-    "runIdentity": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["schema", "displayTitle", "suggestedThreadTitle", "repoShorthand", "subject", "manager"],
-      "properties": {
-        "schema": { "const": "agent-manager.run-identity.v1" },
-        "displayTitle": { "type": "string", "minLength": 1, "maxLength": 80 },
-        "suggestedThreadTitle": { "type": "string", "minLength": 1, "maxLength": 80 },
-        "repoShorthand": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "subject": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "manager": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["harness", "model", "modelSource", "threadTitle"],
-          "properties": {
-            "harness": { "type": ["string", "null"] },
-            "model": { "type": ["string", "null"] },
-            "modelSource": { "enum": ["cli", "environment", "declared", "unavailable"] },
-            "threadTitle": { "type": ["string", "null"] }
-          }
-        }
-      }
-    },
-    "laneStatus": {
-      "type": "object",
-      "required": ["id", "harness", "state"],
+      "required": ["id", "state", "harness"],
       "properties": {
         "id": { "type": "string" },
+        "state": { "enum": ["queued", "dependency-waiting", "running", "blocked", "done", "failed", "cancelled"] },
         "harness": { "type": "string" },
         "modelRequested": { "type": ["string", "null"] },
-        "harnessOptions": { "type": "object" },
-        "effortObserved": { "type": ["string", "null"] },
-        "supervision": { "type": ["object", "null"] },
         "modelObserved": { "type": ["string", "null"] },
-        "permissionMode": { "type": "string" },
-        "allowedTools": { "type": "array", "items": { "type": "string" } },
-        "setup": {
-          "type": "object",
-          "properties": {
-            "cache": { "$ref": "#/$defs/setupCache" }
-          }
-        },
-        "state": { "type": "string" }
+        "branch": { "type": "string" },
+        "worktree": { "type": ["string", "null"] },
+        "scope": { "type": "string" },
+        "dependsOn": { "type": "array", "items": { "type": "string" } },
+        "sessionId": { "type": ["string", "null"] },
+        "attempt": { "type": "integer" },
+        "exitCode": { "type": ["integer", "null"] },
+        "lastActivity": { "type": "string" },
+        "changedFiles": { "type": "array", "items": { "type": "string" } },
+        "needsInput": { "type": ["object", "null"] },
+        "scopeViolations": { "type": "array" },
+        "readOnlyViolations": { "type": "array" },
+        "policyViolations": { "type": "array" },
+        "ratification": { "type": ["object", "null"] },
+        "claim": { "type": "object" }
       }
     },
-    "setupCache": {
+    "target": {
       "type": "object",
-      "required": ["schema", "outcome", "key", "reason", "restored", "stored"],
+      "required": ["id", "state"],
       "properties": {
-        "schema": { "const": "agent-manager.setup-cache.v1" },
-        "outcome": { "enum": ["hit", "miss", "fallback"] },
-        "key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "reason": { "type": "string" },
-        "restored": { "type": "boolean" },
-        "stored": { "type": "boolean" }
-      }
-    },
-    "masterReturnSummary": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["host", "mode", "configured", "state", "attempts", "lastAttemptAt", "lastDeliveredAt", "lastSignaledAt", "lastError"],
-      "properties": {
-        "host": { "enum": ["codex", "claude", "cursor"] },
-        "mode": { "enum": ["direct", "signal"] },
-        "configured": { "const": true },
-        "state": { "enum": ["configured", "watching", "delivering", "delivered", "signal_ready", "failed"] },
-        "attempts": { "type": "integer", "minimum": 0 },
-        "lastAttemptAt": { "type": ["string", "null"] },
-        "lastDeliveredAt": { "type": ["string", "null"] },
-        "lastSignaledAt": { "type": ["string", "null"] },
-        "lastError": { "type": ["string", "null"] }
-      }
-    },
-    "runtime": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["hostPlatform", "os", "arch", "release", "shell", "commandMode", "pathStyle"],
-      "properties": {
-        "hostPlatform": { "type": "string", "minLength": 1 },
-        "os": { "type": "string", "minLength": 1 },
-        "arch": { "type": "string", "minLength": 1 },
-        "release": { "type": "string" },
-        "shell": { "type": "string", "minLength": 1 },
-        "commandMode": { "const": "spawn-no-shell" },
-        "pathStyle": { "enum": ["windows", "posix"] }
+        "id": { "type": "string" },
+        "laneId": { "type": "string" },
+        "branch": { "type": "string" },
+        "base": { "type": ["string", "null"] },
+        "worktree": { "type": ["string", "null"] },
+        "changedFiles": { "type": "array", "items": { "type": "string" } },
+        "state": { "enum": ["pending", "changes_ready", "no_changes", "pr_open", "merged", "closed"] },
+        "tier": { "enum": [0, 1, 2, null] },
+        "tierFiles": { "type": "array", "items": { "type": "string" } },
+        "pr": { "type": ["string", "null"] },
+        "prUrl": { "type": ["string", "null"] },
+        "autoMerge": { "type": "boolean" },
+        "approvedBy": { "type": "string" },
+        "waitingOperator": { "type": ["string", "null"] },
+        "mergeSha": { "type": ["string", "null"] },
+        "mergedAt": { "type": ["string", "null"] }
       }
     }
   }

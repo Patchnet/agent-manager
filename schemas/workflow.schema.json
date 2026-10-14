@@ -4,155 +4,321 @@
   "title": "agent-manager workflow",
   "type": "object",
   "additionalProperties": false,
-  "required": ["repo", "planning", "lanes"],
+  "required": [
+    "repo",
+    "lanes"
+  ],
   "properties": {
-    "goal_policy": { "enum": ["required", "exempt"] },
-    "goal_exemption": { "type": "string", "minLength": 1 },
-    "repo": { "type": "string", "minLength": 1 },
-    "title": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "repo_shorthand": { "type": "string", "minLength": 1, "maxLength": 64 },
-    "classification": { "enum": ["operational", "benchmark", "demo", "retry", "recovery"] },
-    "parent_run_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
-    "harness_default": { "enum": ["claude", "codex", "cursor", "fake"] },
-    "harness_defaults": {"type":"object","additionalProperties":false,"properties":{"claude":{"$ref":"#/$defs/harnessOptions"},"codex":{"$ref":"#/$defs/harnessOptions"},"cursor":{"$ref":"#/$defs/harnessOptions"},"fake":{"$ref":"#/$defs/harnessOptions"}}},
-    "model_default": { "type": "string", "minLength": 1 },
-    "integrate": { "type": "boolean" },
-    "claim_mode": { "enum": ["auto", "off", "required"] },
-    "max_concurrency": { "type": "integer", "minimum": 1, "maximum": 5 },
-    "remote": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
-    "base_ref": { "type": "string", "minLength": 1 },
-    "env_allowlist": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" } },
-    "policy": { "$ref": "#/$defs/policy" },
-    "feed": { "$ref": "#/$defs/feed" },
-    "verification": { "$ref": "#/$defs/verification" },
-    "planning": { "$ref": "#/$defs/planning" },
-    "delivery": { "$ref": "#/$defs/delivery" },
+    "repo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "repo_shorthand": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "harness_default": {
+      "enum": [
+        "claude",
+        "codex",
+        "cursor",
+        "fake"
+      ]
+    },
+    "harness_defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claude": {
+          "$ref": "#/$defs/harnessOptions"
+        },
+        "codex": {
+          "$ref": "#/$defs/harnessOptions"
+        },
+        "cursor": {
+          "$ref": "#/$defs/harnessOptions"
+        },
+        "fake": {
+          "$ref": "#/$defs/harnessOptions"
+        }
+      }
+    },
+    "model_default": {
+      "type": "string",
+      "minLength": 1
+    },
+    "integrate": {
+      "type": "boolean"
+    },
+    "claim_mode": {
+      "enum": [
+        "auto",
+        "off",
+        "required"
+      ]
+    },
+    "max_concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "remote": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+    },
+    "base_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "env_allowlist": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z_][A-Z0-9_]*$"
+      }
+    },
+    "policy": {
+      "$ref": "#/$defs/policy"
+    },
+    "verification": {
+      "$ref": "#/$defs/verification"
+    },
+    "delivery": {
+      "$ref": "#/$defs/delivery"
+    },
     "scope_overrides": {
       "type": "array",
-      "items": { "$ref": "#/$defs/scopeOverride" }
-    },
-    "lanes": { "type": "array", "minItems": 1, "maxItems": 5, "items": { "$ref": "#/$defs/lane" } }
-  },
-  "allOf": [
-    {
-      "if": {
-        "required": ["classification"],
-        "properties": { "classification": { "enum": ["retry", "recovery"] } }
-      },
-      "then": { "required": ["parent_run_id"] }
-    },
-    {
-      "if": { "required": ["parent_run_id"] },
-      "then": {
-        "required": ["classification"],
-        "properties": { "classification": { "enum": ["retry", "recovery"] } }
+      "items": {
+        "$ref": "#/$defs/scopeOverride"
       }
+    },
+    "lanes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "$ref": "#/$defs/lane"
+      }
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One line shared by every lane prompt."
+    },
+    "target_dev_flow": {
+      "enum": [
+        "simple",
+        "formal"
+      ]
     }
-  ],
+  },
   "$defs": {
-    "harnessOptions": {"type":"object","additionalProperties":false,"properties":{"effort":{"enum":["none","minimal","low","medium","high","xhigh","max"]},"profile":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"}}},
+    "harnessOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "enum": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "profile": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"
+        }
+      }
+    },
     "delivery": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "mode": { "enum": ["single", "train", "review-only"] },
-        "review_budget": {"type":"object","additionalProperties":false,"properties":{"max_corrections":{"type":"integer","minimum":0,"maximum":5},"max_elapsed_sec":{"type":"integer","minimum":60,"maximum":604800}}},
-        "release_required": { "type": "boolean" },
-        "release_mode": { "enum": ["tag-only", "published-release"] },
+        "mode": {
+          "enum": [
+            "single",
+            "train",
+            "review-only"
+          ]
+        },
         "targets": {
           "type": "array",
-          "items": { "$ref": "#/$defs/deliveryTarget" }
+          "items": {
+            "$ref": "#/$defs/deliveryTarget"
+          }
         }
       }
     },
     "deliveryTarget": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "lane"],
-      "properties": {
-        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
-        "lane": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
-        "branch": { "type": "string", "minLength": 1 },
-        "base": { "type": "string", "minLength": 1 },
-        "pr": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "minimum": 1 }] }
-      }
-    },
-    "planning": {
-      "type": "object",
-      "additionalProperties": false,
       "required": [
-        "source_refs",
-        "plan_ref",
-        "reviewed_base_sha",
-        "verified_by",
-        "verified_at",
-        "reviewed_paths",
-        "repository_instruction_refs",
-        "attestations"
+        "id",
+        "lane"
       ],
-      "oneOf": [{ "required": ["context"] }, { "required": ["context_file"] }],
       "properties": {
-        "source_refs": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-        "plan_ref": { "type": "string", "minLength": 1 },
-        "context": { "type": "string", "minLength": 1, "maxLength": 131072 },
-        "context_file": { "type": "string", "minLength": 1 },
-        "reviewed_base_sha": { "type": "string", "pattern": "^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$" },
-        "verified_by": { "type": "string", "minLength": 1 },
-        "verified_at": { "type": "string", "format": "date-time" },
-        "reviewed_paths": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-        "repository_instruction_refs": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-        "attestations": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["source_reviewed", "repository_instructions_reviewed", "relevant_code_reviewed", "scope_verified"],
-          "properties": {
-            "source_reviewed": { "type": "boolean" },
-            "repository_instructions_reviewed": { "type": "boolean" },
-            "relevant_code_reviewed": { "type": "boolean" },
-            "scope_verified": { "type": "boolean" }
-          }
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+        },
+        "lane": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pr": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "integer",
+              "minimum": 1
+            }
+          ]
         }
       }
     },
     "lane": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "scope"],
-      "anyOf": [{ "required": ["prompt"] }, { "required": ["prompt_file"] }],
+      "required": [
+        "id",
+        "scope"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "prompt"
+          ]
+        },
+        {
+          "required": [
+            "prompt_file"
+          ]
+        }
+      ],
       "properties": {
-        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
-        "harness": { "enum": ["claude", "codex", "cursor", "fake"] },
-        "harness_options": { "$ref": "#/$defs/harnessOptions" },
-        "model": { "type": "string", "minLength": 1 },
-        "permission_mode": { "enum": ["acceptEdits", "auto", "dontAsk", "readOnly", "read-only", "read_only", "workspace-write"] },
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+        },
+        "harness": {
+          "enum": [
+            "claude",
+            "codex",
+            "cursor",
+            "fake"
+          ]
+        },
+        "harness_options": {
+          "$ref": "#/$defs/harnessOptions"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "permission_mode": {
+          "enum": [
+            "acceptEdits",
+            "auto",
+            "dontAsk",
+            "readOnly",
+            "read-only",
+            "read_only",
+            "workspace-write"
+          ]
+        },
         "allowed_tools": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
         },
-        "setup": { "$ref": "#/$defs/verificationSetup" },
-        "kind": { "enum": ["implementation", "review"] },
-        "scope": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }] },
+        "setup": {
+          "$ref": "#/$defs/verificationSetup"
+        },
+        "kind": {
+          "enum": [
+            "implementation",
+            "review"
+          ]
+        },
+        "scope": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ]
+        },
         "expected_outputs": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "allow_no_changes": { "type": "boolean" },
+        "allow_no_changes": {
+          "type": "boolean"
+        },
         "depends_on": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" }
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+          }
         },
-        "prompt": { "type": "string", "minLength": 1 },
-        "prompt_file": { "type": "string", "minLength": 1 },
-        "fake": { "type": "object" }
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fake": {
+          "type": "object"
+        }
       }
     },
     "policy": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "allow_commit": {
           "type": "boolean",
@@ -162,73 +328,148 @@
           "type": "boolean",
           "description": "Permit worker pull requests. Claude implementation lanes must then use permission_mode auto, or dontAsk with an allowed_tools rule for gh; acceptEdits and workspace-write prompt before shell commands and are rejected at load."
         },
-        "dangerously_skip_permissions": { "type": "boolean" },
-        "permission_mode": { "enum": ["acceptEdits", "auto", "dontAsk", "readOnly", "read-only", "read_only", "workspace-write"] },
-        "stall_grace_sec": { "type": "number", "minimum": 0, "maximum": 86400 },
-        "max_runtime_sec": { "type": "number", "minimum": 5, "maximum": 604800 },
-        "stall_timeout_sec": { "type": "number", "minimum": 5, "maximum": 86400 },
-        "poll_interval_ms": { "type": "number", "minimum": 100, "maximum": 60000 }
+        "dangerously_skip_permissions": {
+          "type": "boolean"
+        },
+        "permission_mode": {
+          "enum": [
+            "acceptEdits",
+            "auto",
+            "dontAsk",
+            "readOnly",
+            "read-only",
+            "read_only",
+            "workspace-write"
+          ]
+        },
+        "stall_grace_sec": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "max_runtime_sec": {
+          "type": "number",
+          "minimum": 5,
+          "maximum": 604800
+        },
+        "stall_timeout_sec": {
+          "type": "number",
+          "minimum": 5,
+          "maximum": 86400
+        },
+        "poll_interval_ms": {
+          "type": "number",
+          "minimum": 100,
+          "maximum": 60000
+        }
       }
-    },
-    "feed": {
-      "type": "object", "additionalProperties": false,
-      "properties": { "enabled": { "type": "boolean" }, "baseUrl": { "type": "string", "format": "uri" }, "topic": { "type": "string", "minLength": 1 } }
     },
     "scopeOverride": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "lanes", "owner", "reason"],
+      "required": [
+        "path",
+        "lanes",
+        "owner",
+        "reason"
+      ],
       "properties": {
-        "path": { "type": "string", "minLength": 1 },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
         "lanes": {
           "type": "array",
           "minItems": 2,
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" }
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+          }
         },
-        "owner": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
-        "reason": { "type": "string", "minLength": 1 },
+        "owner": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
         "access": {
           "type": "object",
-          "additionalProperties": { "enum": ["write", "read-only"] }
+          "additionalProperties": {
+            "enum": [
+              "write",
+              "read-only"
+            ]
+          }
         }
       }
     },
     "verification": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["commands"],
+      "required": [
+        "commands"
+      ],
       "properties": {
-        "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 86400 },
-        "setup": { "$ref": "#/$defs/verificationSetup" },
+        "timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "setup": {
+          "$ref": "#/$defs/verificationSetup"
+        },
         "commands": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/verificationCommand" }
+          "items": {
+            "$ref": "#/$defs/verificationCommand"
+          }
         }
       }
     },
     "verificationSetup": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["commands"],
+      "required": [
+        "commands"
+      ],
       "properties": {
-        "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
         "commands": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/verificationCommand" }
+          "items": {
+            "$ref": "#/$defs/verificationCommand"
+          }
         }
       }
     },
     "verificationCommand": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command"],
+      "required": [
+        "command"
+      ],
       "properties": {
-        "command": { "type": "string", "pattern": "^[^\\\\/\\s]+$" },
-        "args": { "type": "array", "items": { "type": "string" } }
+        "command": {
+          "type": "string",
+          "pattern": "^[^\\\\/\\s]+$"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     }
-  }
+  },
+  "description": "Keys removed in 3.0 (planning, goal_refs, goal_policy, goal_exemption, classification, parent_run_id, feed, delivery.release_required, delivery.release_mode, delivery.review_budget) are ignored with a warning."
 }

@@ -24,14 +24,13 @@ const {
 
 let runCounter = 0;
 
-function seedRun(lane, { verifiedBy = "test-manager" } = {}) {
+function seedRun(lane) {
   runCounter += 1;
   const runId = `run-ratify-${runCounter}`;
   writeStatus(runId, {
     runId,
     state: "failed",
     repo: "fixture-repo",
-    planning: { state: "verified", verifiedBy },
     lanes: [{
       id: "stray",
       state: "failed",
@@ -47,7 +46,7 @@ function seedRun(lane, { verifiedBy = "test-manager" } = {}) {
   return runId;
 }
 
-test("this test file resolves disposable runs, claims, and brain roots", async () => {
+test("this test file resolves disposable runs and claims roots", async () => {
   await assertResolvedRootsIsolated();
 });
 
@@ -55,10 +54,11 @@ test("ratify records who accepted which violations, and why", () => {
   const runId = seedRun({ scopeViolations: ["docs/OPERATOR.md", "src/review.mjs"] });
   const result = ratifyLane(runId, "stray", {
     reason: "cross-lane doc edit sanctioned during the audit",
+    by: "test-manager",
     at: "2026-08-17T12:00:00.000Z",
   });
 
-  assert.equal(result.by, "test-manager", "attribution falls back to the run's planning verifier");
+  assert.equal(result.by, "test-manager", "attribution is the explicit --by id");
   assert.equal(result.laneState, "failed", "ratification never relabels the lane");
   assert.deepEqual(result.violations, ["docs/OPERATOR.md", "src/review.mjs"]);
 
@@ -73,7 +73,7 @@ test("ratify records who accepted which violations, and why", () => {
   assert.deepEqual(lane.scopeViolations, ["docs/OPERATOR.md", "src/review.mjs"]);
 });
 
-test("an explicit --by wins over the recorded planning verifier", () => {
+test("an explicit --by is recorded as the ratifier", () => {
   const runId = seedRun({ policyViolations: ["worker created 1 commit(s) while allow_commit=false"] });
   const result = ratifyLane(runId, "stray", { reason: "snapshot commit reviewed", by: "master-dev" });
   assert.equal(result.by, "master-dev");
@@ -107,15 +107,17 @@ test("ratification refuses a lane with nothing to ratify and a lane with nothing
 });
 
 test("a run with no attributable identity is refused rather than attributed to nobody", () => {
-  const runId = seedRun({ scopeViolations: ["stray.txt"] }, { verifiedBy: "" });
+  const runId = seedRun({ scopeViolations: ["stray.txt"] });
   assert.throws(
     () => ratifyLane(runId, "stray", { reason: "fold it" }),
-    /requires --by <id>; the run records no planning verifier/,
+    /ratification requires --by <id>/,
   );
-  assert.equal(
-    resolveMasterIdentity({ planning: { verifiedBy: "" } }, "master-dev"),
-    "master-dev",
+  assert.throws(
+    () => ratifyLane(runId, "stray", { reason: "fold it", by: "  " }),
+    /ratification requires --by <id>/,
   );
+  assert.equal(readStatus(runId).lanes[0].ratification, undefined);
+  assert.equal(resolveMasterIdentity({}, "master-dev"), "master-dev");
 });
 
 test("a ratification covers only the violations it was shown", () => {
@@ -140,14 +142,14 @@ test("a ratification covers only the violations it was shown", () => {
 
 test("re-ratifying after new evidence covers the new violation list", () => {
   const runId = seedRun({ scopeViolations: ["stray.txt"] });
-  ratifyLane(runId, "stray", { reason: "first look" });
+  ratifyLane(runId, "stray", { reason: "first look", by: "master-dev" });
 
   const status = readStatus(runId);
   status.lanes[0].scopeViolations = ["stray.txt", "src/ship-run.mjs"];
   writeStatus(runId, status);
   assert.deepEqual(ratificationGap(readStatus(runId).lanes[0]), ["src/ship-run.mjs"]);
 
-  ratifyLane(runId, "stray", { reason: "second look, both accepted" });
+  ratifyLane(runId, "stray", { reason: "second look, both accepted", by: "master-dev" });
   const relooked = readStatus(runId).lanes[0];
   assert.deepEqual(relooked.ratification.violations, ["stray.txt", "src/ship-run.mjs"]);
   assert.deepEqual(ratificationGap(relooked), []);

@@ -44,7 +44,6 @@ function blockedRunFixture(laneOverrides = {}) {
     repo: "repo",
     repoRoot: repo,
     claimMode: "off",
-    planning: { state: "verified", verifiedBy: "test-manager" },
     supervisor: { pid: null, startedAt: new Date().toISOString(), kind: "run" },
     lanes: [{
       id: "lane",
@@ -63,7 +62,7 @@ function blockedRunFixture(laneOverrides = {}) {
   return { runId, worktree };
 }
 
-test("this test file resolves disposable runs, claims, and brain roots", async () => {
+test("this test file resolves disposable runs and claims roots", async () => {
   await assertResolvedRootsIsolated();
 });
 
@@ -83,10 +82,11 @@ test("reply --extend-scope records an attributed, appended grant", () => {
   const { runId } = blockedRunFixture();
   const first = prepareReply(runId, "lane", "yes, the operator guide too", {
     extendScope: "docs/OPERATOR.md",
+    by: "test-manager",
   });
   assert.equal(first.scopeExtensions.length, 1);
   assert.deepEqual(first.scopeExtensions[0].patterns, ["docs/OPERATOR.md"]);
-  assert.equal(first.scopeExtensions[0].by, "test-manager", "falls back to the planning verifier");
+  assert.equal(first.scopeExtensions[0].by, "test-manager", "records the explicit id");
   assert.equal(typeof first.scopeExtensions[0].at, "string");
 
   // The lane blocks again; a second grant appends rather than replacing.
@@ -138,9 +138,6 @@ test("a grant that escapes the repository is refused before anything is recorded
 
 test("an unattributable grant is refused rather than recorded anonymously", () => {
   const { runId } = blockedRunFixture();
-  const status = readStatus(runId);
-  status.planning = { state: "verified" };
-  writeStatus(runId, status);
   assert.throws(
     () => prepareReply(runId, "lane", "go", { extendScope: "docs/**" }),
     /a scope extension requires --by <id>/,

@@ -9,7 +9,7 @@ const {
   writeWorkflow,
   runCli,
   waitForStatus,
-  waitForFeed,
+  waitForEvent,
   baseWorkflow,
   close,
 } = await createE2eFixture();
@@ -32,7 +32,7 @@ test("lane setup completes before the worker starts and records evidence", async
   }]));
 
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
-  const status = await waitForStatus(runId, (item) => item.state === "delivery_review_pending");
+  const status = await waitForStatus(runId, (item) => item.state === "review_pending");
   assert.equal(status.lanes[0].state, "done");
   assert.equal(status.lanes[0].setup.state, "passed");
   assert.equal(status.lanes[0].setup.commands[0].exitCode, 0);
@@ -67,7 +67,7 @@ test("equivalent lanes reuse copied setup output without sharing mutable files",
   ]));
 
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
-  const status = await waitForStatus(runId, (item) => item.state === "delivery_review_pending");
+  const status = await waitForStatus(runId, (item) => item.state === "review_pending");
   const miss = status.lanes.find((lane) => lane.setup.cache?.outcome === "miss");
   const hit = status.lanes.find((lane) => lane.setup.cache?.outcome === "hit");
   assert.ok(miss);
@@ -81,7 +81,7 @@ test("equivalent lanes reuse copied setup output without sharing mutable files",
   assert.equal(readFileSync(join(miss.worktree, "AGENTS.md"), "utf8"), "cached setup output\n");
 });
 
-test("scope violations fail the lane and publish run_failed", async () => {
+test("scope violations fail the lane and emit run_closed", async () => {
   const runId = "run-test-scope";
   const workflow = writeWorkflow("scope", baseWorkflow([
     {
@@ -96,7 +96,8 @@ test("scope violations fail the lane and publish run_failed", async () => {
   assert.deepEqual(failed.lanes[0].scopeViolations, ["outside.txt"]);
   assert.match(failed.lanes[0].lastActivity, /scope violation/);
   assert.equal(failed.lanes[0].claim.state, "released");
-  await waitForFeed("run_failed", runId);
+  const closed = await waitForEvent("run_closed", runId);
+  assert.equal(closed.text, "failed");
   await runCli(["cleanup", runId]);
 });
 
@@ -111,10 +112,10 @@ test("manual integrate folds a successful lane and releases its integration clai
     },
   ]));
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
-  await waitForStatus(runId, (status) => status.state === "delivery_review_pending" && !status.integrate);
+  await waitForStatus(runId, (status) => status.state === "review_pending" && !status.integrate);
   const integratedOutput = await runCli(["integrate", runId, "--json"]);
   const integrated = JSON.parse(integratedOutput.stdout.trim());
-  assert.equal(integrated.state, "delivery_review_pending");
+  assert.equal(integrated.state, "review_pending");
   assert.equal(integrated.integrate.state, "ready");
   assert.equal(integrated.integrate.claim.state, "released");
   assert.ok(existsSync(join(integrated.integrate.worktree, "integrated.txt")));
@@ -139,7 +140,7 @@ test("failed integrated verification blocks delivery with command evidence", asy
     },
   });
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
-  await waitForStatus(runId, (status) => status.state === "delivery_review_pending" && !status.integrate);
+  await waitForStatus(runId, (status) => status.state === "review_pending" && !status.integrate);
   const output = await runCli(["integrate", runId, "--json"]);
   const blocked = JSON.parse(output.stdout.trim());
   assert.equal(blocked.state, "blocked");
@@ -179,7 +180,7 @@ test("failed integration setup persists evidence, skips tests, and retries", asy
     },
   });
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
-  await waitForStatus(runId, (status) => status.state === "delivery_review_pending" && !status.integrate);
+  await waitForStatus(runId, (status) => status.state === "review_pending" && !status.integrate);
 
   const firstOutput = await runCli(["integrate", runId, "--json"]);
   const first = JSON.parse(firstOutput.stdout.trim());
@@ -200,7 +201,7 @@ test("failed integration setup persists evidence, skips tests, and retries", asy
   writeFileSync(join(first.integrate.worktree, "setup-ready.txt"), "ready\n");
   const retryOutput = await runCli(["integrate", runId, "--json"]);
   const retried = JSON.parse(retryOutput.stdout.trim());
-  assert.equal(retried.state, "delivery_review_pending");
+  assert.equal(retried.state, "review_pending");
   assert.equal(retried.integrate.state, "ready");
   assert.equal(retried.integrate.verification.setup.state, "passed");
   assert.equal(retried.integrate.verification.state, "passed");
@@ -238,7 +239,7 @@ test("integration retries reuse successful setup evidence at the same revision",
     },
   });
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
-  await waitForStatus(runId, (status) => status.state === "delivery_review_pending" && !status.integrate);
+  await waitForStatus(runId, (status) => status.state === "review_pending" && !status.integrate);
 
   const firstOutput = await runCli(["integrate", runId, "--json"]);
   const first = JSON.parse(firstOutput.stdout.trim());
@@ -293,7 +294,7 @@ test("blocked prerequisites resume before dependent lanes launch", async () => {
   ]);
   const done = await waitForStatus(
     runId,
-    (status) => status.state === "delivery_review_pending",
+    (status) => status.state === "review_pending",
     40_000,
   );
   const consumer = done.lanes.find((lane) => lane.id === "consumer");
@@ -322,7 +323,7 @@ test("cancel remains authoritative and cleanup removes abandoned worktrees and l
   const cancelled = JSON.parse(readFileSync(join(runsRoot, runId, "status.json"), "utf8"));
   assert.equal(cancelled.state, "cancelled");
   assert.ok(cancelled.endedAt);
-  await waitForFeed("run_failed", runId);
+  await waitForEvent("cancelled", runId);
 
   cancelled.repo = ".";
   writeFileSync(join(runsRoot, runId, "status.json"), JSON.stringify(cancelled, null, 2));

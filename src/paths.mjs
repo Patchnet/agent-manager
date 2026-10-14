@@ -30,9 +30,8 @@ export const RUNS_ROOT_SOURCE = PATH_CONFIG.sources.AGENT_MANAGER_RUNS_ROOT;
 export const CLAIMS_ROOT = PATH_CONFIG.values.AGENT_MANAGER_CLAIMS_ROOT;
 export const CLAIMS_ROOT_SOURCE = PATH_CONFIG.sources.AGENT_MANAGER_CLAIMS_ROOT;
 
-/** MAADB-backed semantic awareness root. */
-export const BRAIN_ROOT = PATH_CONFIG.values.AGENT_MANAGER_BRAIN_ROOT;
-export const BRAIN_ROOT_SOURCE = PATH_CONFIG.sources.AGENT_MANAGER_BRAIN_ROOT;
+/** Commands that receive each event line on stdin (see docs/EVENTS.md). */
+export const EVENT_SINKS = PATH_CONFIG.eventSinks;
 
 /** Claims CLI — bundled by default; override for a shared fleet registry. */
 export const CLAIM_BIN =

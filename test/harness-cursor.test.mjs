@@ -217,7 +217,6 @@ test("workflows can declare cursor lanes with a model and a supported permission
       "-c", "user.email=test@example.invalid",
       "commit", "-m", "base",
     ]);
-    const base = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const { loadWorkflow } = await import("../src/workflow.mjs?cursor-harness-test");
 
     const load = (name, lane) => {
@@ -225,22 +224,6 @@ test("workflows can declare cursor lanes with a model and a supported permission
       writeFileSync(path, JSON.stringify({
         repo,
         harness_default: "cursor",
-        planning: {
-          source_refs: ["source-one"],
-          plan_ref: "plan-one",
-          context_file: "context.md",
-          reviewed_base_sha: base,
-          verified_by: "manager-one",
-          verified_at: "2026-01-01T00:00:00Z",
-          reviewed_paths: ["README.md"],
-          repository_instruction_refs: ["fixture instructions"],
-          attestations: {
-            source_reviewed: true,
-            repository_instructions_reviewed: true,
-            relevant_code_reviewed: true,
-            scope_verified: true,
-          },
-        },
         lanes: [{ id: "one", scope: "README.md", prompt: "Do the lane work.", ...lane }],
       }, null, 2));
       return loadWorkflow(path);

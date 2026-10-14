@@ -9,8 +9,6 @@ import { normalizeHarnessOptions, parseEffort } from "../src/harness/options.mjs
 import { buildCodexArgs } from "../src/harness/codex.mjs";
 import { buildHarnessEnv } from "../src/environment.mjs";
 import { inspectSupervision } from "../src/supervision.mjs";
-import { costForRecord, pricingFor } from "../src/token-usage.mjs";
-import { createDeliveryStatus, recordReviewDecision, recordReviewPresentation } from "../src/delivery.mjs";
 
 test("harness options preserve omission and reject unsupported combinations", () => {
   assert.deepEqual(normalizeHarnessOptions(undefined, "codex"), {});
@@ -50,40 +48,6 @@ test("quiet work gets grace, recovers on output, and cannot outrun its deadline"
   assert.equal(inspectSupervision({ startedAt: 0, lastByteAt: 9000000, now: 9000000 }).action, "continue");
   assert.equal(inspectSupervision({ startedAt: 0, lastByteAt: 0,
     policy: { ...policy, stall_grace_sec: 0 }, now: 10000 }).action, "cancel");
-});
-
-test("pricing distinguishes Fable cache rates and Astra context tiers", () => {
-  const env = {};
-  const price = (model, fields) => costForRecord({ model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...fields }, { env });
-  assert.equal(price("claude-fable-5-1", { cacheRead: 1000000 }), 0.25);
-  assert.equal(price("claude-fable-5", { cacheRead: 1000000 }), 1);
-  assert.equal(price("gpt-6-astra", { input: 272000 }), 2.72);
-  assert.equal(price("gpt-6-astra", { input: 272001, output: 1000 }), 5.51502);
-  assert.equal(price("gpt-6-astra", { cacheWrite: 1000 }), 0.0125);
-  assert.equal(price("gpt-5.6-sol", { input: 1000, output: 1000 }), 0.024);
-  assert.equal(pricingFor("gpt-5-future", { env }), null);
-});
-
-test("opt-in correction budget permits sequential review and bounds retries", () => {
-  const status = { delivery: createDeliveryStatus({ delivery: { review_budget: { max_corrections: 2, max_elapsed_sec: 60 } } }, []) };
-  const decide = (pass, verdict, at, notes) => recordReviewDecision(status, { pass, verdict, at, notes, reviewer: "operator" });
-  decide(1, "revise", "2026-09-05T00:00:00Z");
-  assert.throws(() => decide(3, "accept", "2026-09-05T00:00:01Z"), /requires a recorded pass 2/);
-  recordReviewPresentation(status, { pass: 2 });
-  assert.throws(() => decide(2, "revise", "2026-09-05T00:00:02Z"), /requires notes/);
-  decide(2, "revise", "2026-09-05T00:00:02Z", "Tests pass; finish missing behavior.");
-  assert.throws(() => decide(3, "revise", "2026-09-05T00:00:03Z", "more"), /budget exhausted/);
-  decide(3, "accept", "2026-09-05T00:05:00Z");
-  assert.equal(status.state, "reviewed");
-  assert.throws(() => decide(3, "accept", "2026-09-05T00:05:01Z"), /already has/);
-});
-
-test("expired correction time permits disposition but not another retry", () => {
-  const status = { delivery: createDeliveryStatus({ delivery: { review_budget: { max_corrections: 3, max_elapsed_sec: 60 } } }, []) };
-  recordReviewDecision(status, { pass: 1, verdict: "revise", reviewer: "operator", at: "2026-09-05T00:00:00Z" });
-  assert.throws(() => recordReviewDecision(status, { pass: 2, verdict: "revise", reviewer: "operator", notes: "progress", at: "2026-09-05T00:01:00Z" }), /budget exhausted/);
-  recordReviewDecision(status, { pass: 2, verdict: "reject", reviewer: "operator", at: "2026-09-05T00:01:00Z" });
-  assert.equal(status.state, "rejected");
 });
 
 test("Claude start/resume pass explicit effort and preserve inherited effort when omitted", async () => {

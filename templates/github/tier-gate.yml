@@ -1,0 +1,44 @@
+# Optional: make tier 2 a GitHub check instead of a convention.
+#
+# Copy to .github/workflows/tier-gate.yml, vendor tools/ship-tier.mjs from
+# agent-manager to .github/scripts/ship-tier.mjs, and add `tier-gate` to the
+# required checks. A PR whose changed paths reach tier 2 fails this check until
+# someone adds the `ship:approved` label (one tap in the GitHub mobile app).
+#
+# The policy is read from the base branch, so a PR cannot lower its own tier.
+# Like any pull_request workflow this guards against accidents, not against a
+# PR that edits the workflow itself; keep `.github/**` in tier 2.
+name: tier-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  tier-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Classify changed paths
+        env:
+          BASE: origin/${{ github.base_ref }}
+          APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'ship:approved') }}
+        run: |
+          set -euo pipefail
+          policy="$RUNNER_TEMP/ship-tiers.yml"
+          git show "$BASE:.github/ship-tiers.yml" > "$policy" 2>/dev/null || : > "$policy"
+          node .github/scripts/ship-tier.mjs --base "$BASE" --file "$policy" | tee "$RUNNER_TEMP/tier.txt"
+          if head -1 "$RUNNER_TEMP/tier.txt" | grep -q '^tier 2' && [ "$APPROVED" != "true" ]; then
+            echo "::error::Tier 2 change: an operator adds the ship:approved label to merge."
+            exit 1
+          fi

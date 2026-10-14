@@ -4,10 +4,8 @@ import { assertPathInside, repoPath, runDir } from "./paths.mjs";
 import { isTerminalState, readStatus, writeStatus } from "./status.mjs";
 import { releaseLane } from "./claim.mjs";
 import { removeWorktree } from "./worktree.mjs";
-import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
 import { writeReport } from "./report.mjs";
 import { writePrivateFile } from "./fs-safe.mjs";
-import { syncBrainStatus } from "./brain.mjs";
 
 export async function cancelRun(runId, { removeWorktrees = false } = {}) {
   const status = readStatus(runId);
@@ -35,22 +33,8 @@ export async function cancelRun(runId, { removeWorktrees = false } = {}) {
     lane.pid = null;
     lane.endedAt ||= cancelledAt;
   }
-  if (status.ship && ["queued", "running", "blocked"].includes(status.ship.state)) {
-    status.ship.state = "cancelled";
-    status.ship.pid = null;
-    status.ship.endedAt = cancelledAt;
-    status.ship.lastActivity = "cancel requested";
-  }
   status.state = "cancelled";
-  if (status.delivery) status.delivery.state = "cancelled";
   status.endedAt = cancelledAt;
-  await syncBrainStatus(status).catch((error) => {
-    if (status.awareness) status.awareness.lastError = String(error?.message || error);
-  });
-  writeStatus(runId, status);
-
-  const publisher = createFeedPublisher(status.feed || {});
-  await publishFeedEvent(publisher, status, "run_failed", { endedAt: cancelledAt, reason: "cancelled" });
   let saved = writeStatus(runId, status);
 
   if (removeWorktrees) {

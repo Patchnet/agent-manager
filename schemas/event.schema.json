@@ -2,25 +2,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Patchnet/agent-manager/schemas/event.schema.json",
   "title": "agent-manager event",
+  "description": "One line of events.jsonl. Fields are only added within a version; see docs/EVENTS.md.",
   "type": "object",
-  "required": ["schema", "type", "at", "runId", "state", "lanes", "cadence"],
+  "required": ["v", "ts", "kind", "repo", "actor"],
   "properties": {
-    "schema": { "const": "agent-manager.event.v1" }, "type": { "const": "status" },
-    "at": { "type": "string", "format": "date-time" }, "runId": { "type": "string" },
-    "state": { "enum": ["running", "workers_done", "delivery_review_pending", "correction_pending", "ship_gate_pending", "shipping", "blocked", "release_pending", "reviewed", "merged", "released", "rejected", "failed", "cancelled"] },
-    "classification": { "enum": ["operational", "benchmark", "demo", "retry", "recovery", "unknown"] },
-    "lineage": {
-      "oneOf": [
-        { "type": "null" },
-        { "$ref": "status.schema.json#/$defs/runLineage" }
-      ]
+    "v": { "const": 1 },
+    "ts": { "type": "string", "format": "date-time" },
+    "kind": {
+      "enum": ["lane_started", "lane_done", "review_verdict", "pr_opened", "automerge_armed", "merged",
+        "reverted", "waiting_operator", "operator_reply", "blocked", "cancelled", "run_closed"]
     },
-    "goalRefs": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
-    "runtime": { "anyOf": [{ "$ref": "status.schema.json#/$defs/runtime" }, { "type": "null" }] },
-    "lanes": { "type": "array", "items": { "$ref": "status.schema.json#/$defs/laneStatus" } },
-    "ship": { "type": ["object", "null"] },
-    "delivery": { "type": ["object", "null"] },
-    "awareness": { "type": ["object", "null"] },
-    "cadence": { "$ref": "operator-cadence.schema.json" }
+    "repo": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string" },
+    "lane": { "type": "string" },
+    "pr": { "type": "integer" },
+    "sha": { "type": "string" },
+    "tier": { "enum": [0, 1, 2] },
+    "verdict": { "type": "string" },
+    "text": { "type": "string" },
+    "actor": { "type": "string", "minLength": 1 }
   }
 }

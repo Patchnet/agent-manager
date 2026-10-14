@@ -20,7 +20,6 @@ execFileSync("git", [
   "-c", "user.email=test@example.invalid",
   "commit", "-m", "base",
 ], { stdio: "ignore" });
-const base = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const env = isolatedEnv({
   AGENT_MANAGER_DEV_ROOT: root,
   AGENT_MANAGER_RUNS_ROOT: join(root, "runs"),
@@ -34,22 +33,6 @@ function workflow(name, lanes, maxConcurrency = lanes.length) {
     repo,
     integrate: true,
     max_concurrency: maxConcurrency,
-    planning: {
-      source_refs: ["test-source"],
-      plan_ref: "test-plan",
-      context: "Reviewed fixture context.",
-      reviewed_base_sha: base,
-      verified_by: "test-manager",
-      verified_at: "2026-01-01T00:00:00Z",
-      reviewed_paths: ["README.md"],
-      repository_instruction_refs: ["test fixture"],
-      attestations: {
-        source_reviewed: true,
-        repository_instructions_reviewed: true,
-        relevant_code_reviewed: true,
-        scope_verified: true,
-      },
-    },
     lanes,
   }, null, 2));
   return path;
@@ -71,21 +54,17 @@ test("validate reports serialized topology and a stable warning code", () => {
   ], 2);
   const result = JSON.parse(validate(path));
   assert.equal(result.laneCount, 2);
-  assert.equal(result.configuredConcurrency, 2);
   assert.equal(result.effectiveParallelism, 1);
-  assert.equal(result.fullySerialized, true);
-  assert.equal(result.topology.recommendation.includes("one queued agent"), true);
-  assert.equal(
-    result.warnings.some((warning) => warning.code === "fully-serialized-multi-lane"),
-    true,
-  );
+  const warning = result.warnings.find((entry) => entry.code === "fully-serialized-multi-lane");
+  assert.ok(warning, "serialized topology carries a stable warning code");
+  assert.equal(warning.configuredConcurrency, 2);
+  assert.equal(warning.effectiveParallelism, 1);
+  assert.equal(warning.fullySerialized, true);
+  assert.match(warning.message, /one queued agent/);
 
   const human = validate(path, false);
-  assert.match(human, /lanes: 2/);
-  assert.match(human, /configured concurrency: 2/);
-  assert.match(human, /effective parallelism: 1/);
-  assert.match(human, /fully serialized: yes/);
-  assert.match(human, /one queued agent/);
+  assert.match(human, /lanes: 2 \(parallelism 1\)/);
+  assert.match(human, /warning: .*one queued agent/);
 });
 
 test("independent and single-lane workflows do not get the serialized warning", () => {
@@ -94,13 +73,11 @@ test("independent and single-lane workflows do not get the serialized warning", 
     { id: "second", scope: "second.txt", prompt: "second" },
   ], 2)));
   assert.equal(independent.effectiveParallelism, 2);
-  assert.equal(independent.fullySerialized, false);
   assert.equal(independent.warnings.some((warning) => warning.code === "fully-serialized-multi-lane"), false);
 
   const single = JSON.parse(validate(workflow("single", [
     { id: "only", scope: "only.txt", prompt: "only" },
   ], 1)));
   assert.equal(single.effectiveParallelism, 1);
-  assert.equal(single.fullySerialized, false);
   assert.equal(single.warnings.some((warning) => warning.code === "fully-serialized-multi-lane"), false);
 });

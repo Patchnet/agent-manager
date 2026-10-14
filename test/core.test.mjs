@@ -11,7 +11,6 @@ const repo = join(root, "fixture-repo");
 mkdirSync(repo, { recursive: true });
 
 const { loadWorkflow } = await import("../src/workflow.mjs?core-test");
-const { FeedPublisher } = await import("../src/feed.mjs?core-test");
 const {
   currentHead,
   inspectInitialRepo,
@@ -20,60 +19,6 @@ const {
 } = await import("../src/guardrails.mjs?core-test");
 
 test.after(() => rmSync(root, { recursive: true, force: true }));
-
-test("workflow parses feed configuration and defaults to fail-soft disabled", () => {
-  const configuredPath = join(root, "configured.json");
-  writeFileSync(configuredPath, JSON.stringify({
-    repo: "fixture-repo",
-    feed: { enabled: true, baseUrl: "http://localhost:9000/", topic: "runs/test" },
-    lanes: [{ id: "one", scope: "src/**", prompt: "work" }],
-  }));
-  const configured = loadWorkflow(configuredPath);
-  assert.deepEqual(configured.feed, {
-    enabled: true,
-    baseUrl: "http://localhost:9000",
-    topic: "runs/test",
-  });
-
-  const defaultPath = join(root, "default.json");
-  writeFileSync(defaultPath, JSON.stringify({
-    repo: "fixture-repo",
-    lanes: [{ id: "one", scope: "src/**", prompt: "work" }],
-  }));
-  const defaults = loadWorkflow(defaultPath);
-  assert.equal(defaults.feed.enabled, false);
-  assert.equal(defaults.feed.topic, "agent-manager/fixture-repo");
-  assert.equal(defaults.classification, "operational");
-});
-
-test("feed publisher emits the Agent Feed HTTP contract and fails soft", async () => {
-  let request = null;
-  const publisher = new FeedPublisher(
-    { enabled: true, baseUrl: "http://feed.local", topic: "runs/test" },
-    {
-      fetchImpl: async (url, options) => {
-        request = { url, options };
-        return { ok: true, status: 200, json: async () => ({ id: "one" }) };
-      },
-    },
-  );
-  const result = await publisher.publish("run_started", { runId: "run-one" });
-  assert.equal(result.ok, true);
-  assert.equal(request.url, "http://feed.local/feed/publish");
-  const body = JSON.parse(request.options.body);
-  assert.equal(body.topic, "runs/test");
-  assert.equal(JSON.parse(body.body).event, "run_started");
-  assert.equal(body.meta.runId, "run-one");
-
-  const unavailable = new FeedPublisher(
-    { enabled: true, baseUrl: "http://offline", topic: "runs/test" },
-    { fetchImpl: async () => { throw new Error("offline"); } },
-  );
-  assert.deepEqual(await unavailable.publish("run_failed", { runId: "run-two" }), {
-    ok: false,
-    error: "offline",
-  });
-});
 
 test("codex harness is supported and parses thread_id session ids", async () => {
   const { getHarnessAdapter, listHarnessAdapters } = await import("../src/harness/index.mjs?codex-core");
@@ -393,8 +338,8 @@ test("version metadata distinguishes running code from updated installed files",
   assert.match(updated.notice, /quit and restart.*runtime v1\.8\.1/);
 });
 
-test("Master return authentication stays out of worker harness environments", async () => {
-  const { buildHarnessEnv, buildMasterReturnEnv } = await import("../src/environment.mjs?master-return-env");
+test("the Manager's session identity stays out of worker harness environments", async () => {
+  const { buildHarnessEnv } = await import("../src/environment.mjs?master-return-env");
   const source = {
     PATH: "fixture-path",
     CLAUDE_BIN: "C:\\tools\\claude.cmd",
@@ -403,7 +348,6 @@ test("Master return authentication stays out of worker harness environments", as
     CLAUDE_CODE_SESSION_ID: "private-session",
   };
   const worker = buildHarnessEnv([], source);
-  const master = buildMasterReturnEnv([], source);
   // Cursor is a worker harness now, so its documented API key travels with
   // lanes exactly like ANTHROPIC_API_KEY and OPENAI_API_KEY. The Master's own
   // interactive session identity still stays out of worker environments.
@@ -411,9 +355,6 @@ test("Master return authentication stays out of worker harness environments", as
   assert.equal(worker.CLAUDE_CODE_SESSION_ID, undefined);
   assert.equal(worker.CLAUDE_BIN, "C:\\tools\\claude.cmd");
   assert.equal(worker.CODEX_BIN, "C:\\tools\\codex.cmd");
-  assert.equal(master.CURSOR_API_KEY, "cursor-secret");
-  assert.equal(master.CLAUDE_CODE_SESSION_ID, undefined);
-  assert.equal(master.AGENT_MANAGER_MASTER_RETURN, "1");
 });
 
 test("allow_commit=false blocks mutators but allows read-only git tag/show/log", async () => {

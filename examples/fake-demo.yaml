@@ -1,15 +1,10 @@
-# Reference shape for the built-in fake harness. This file is intentionally not
-# runnable: its repository and reviewed base are placeholders.
+# Reference shape for the built-in fake harness. Replace `repo` with a scratch
+# Git repository before running it; the fake harness never calls a model.
 #
-# To create a current workflow in a safe scratch repository and explicitly opt
-# into the fake harness, run:
-#
-#   agent-manager demo
-#
-# Add --no-run to scaffold without launching, or --dir <path> to choose the
-# scratch location. Agent Manager refuses to replace a non-demo directory.
+#   agent-manager validate examples/fake-demo.yaml --repo <scratch-repo>
 
 repo: replace-with-absolute-repository-path
+goal: Show the fake harness writing a file and resuming after an operator reply.
 harness_default: fake
 claim_mode: off
 integrate: true
@@ -18,20 +13,6 @@ policy:
   allow_pr: false
   poll_interval_ms: 100
   stall_timeout_sec: 30
-planning:
-  source_refs: [replace-with-source-reference]
-  plan_ref: replace-with-approved-plan-reference
-  context_file: examples/agent-manager.context.md
-  reviewed_base_sha: "0000000000000000000000000000000000000000"
-  verified_by: replace-with-manager-agent
-  verified_at: 2026-01-01T00:00:00Z
-  reviewed_paths: [examples/**]
-  repository_instruction_refs: [AGENTS.md]
-  attestations:
-    source_reviewed: true
-    repository_instructions_reviewed: true
-    relevant_code_reviewed: true
-    scope_verified: true
 lanes:
   - id: demo-write
     scope: demo-output.txt

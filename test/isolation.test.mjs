@@ -18,7 +18,6 @@ const HOSTILE = {
   AGENT_MANAGER_DEV_ROOT: resolve("/dev-root-that-must-not-be-used"),
   AGENT_MANAGER_RUNS_ROOT: resolve("/runs-root-that-must-not-be-used"),
   AGENT_MANAGER_CLAIMS_ROOT: resolve("/claims-root-that-must-not-be-used"),
-  AGENT_MANAGER_BRAIN_ROOT: resolve("/brain-root-that-must-not-be-used"),
   AGENT_MANAGER_CLAIM_BIN: resolve("/claim-bin-that-must-not-be-used.mjs"),
 };
 
@@ -50,11 +49,9 @@ test("ambient operator roots are dropped in a test process and replaced by the s
   assertIsolated({
     runs: resolved.values.AGENT_MANAGER_RUNS_ROOT,
     claims: resolved.values.AGENT_MANAGER_CLAIMS_ROOT,
-    brain: resolved.values.AGENT_MANAGER_BRAIN_ROOT,
   }, "resolved");
   assert.equal(resolved.sources.AGENT_MANAGER_RUNS_ROOT, "test-sandbox");
   assert.equal(resolved.sources.AGENT_MANAGER_CLAIMS_ROOT, "test-sandbox");
-  assert.equal(resolved.sources.AGENT_MANAGER_BRAIN_ROOT, "test-sandbox");
   // The dev root is a lookup path, not a write target, so it falls back to the
   // working directory instead of a sandbox subdirectory — but never to the
   // operator's workspace.
@@ -72,12 +69,10 @@ test("roots a test chooses itself are honoured when they are disposable", () => 
     NODE_TEST_CONTEXT: "child-v8",
     AGENT_MANAGER_RUNS_ROOT: join(root, "runs"),
     AGENT_MANAGER_CLAIMS_ROOT: join(root, "claims"),
-    AGENT_MANAGER_BRAIN_ROOT: join(root, "brain"),
   });
   assert.equal(resolved.values.AGENT_MANAGER_RUNS_ROOT, join(root, "runs"));
   assert.equal(resolved.sources.AGENT_MANAGER_RUNS_ROOT, "environment");
   assert.equal(resolved.values.AGENT_MANAGER_CLAIMS_ROOT, join(root, "claims"));
-  assert.equal(resolved.values.AGENT_MANAGER_BRAIN_ROOT, join(root, "brain"));
 });
 
 test("outside a test process the operator's configuration is untouched", () => {
@@ -85,7 +80,6 @@ test("outside a test process the operator's configuration is untouched", () => {
   assert.equal(resolved.values.AGENT_MANAGER_RUNS_ROOT, HOSTILE.AGENT_MANAGER_RUNS_ROOT);
   assert.equal(resolved.sources.AGENT_MANAGER_RUNS_ROOT, "environment");
   assert.equal(resolved.values.AGENT_MANAGER_CLAIMS_ROOT, HOSTILE.AGENT_MANAGER_CLAIMS_ROOT);
-  assert.equal(resolved.values.AGENT_MANAGER_BRAIN_ROOT, HOSTILE.AGENT_MANAGER_BRAIN_ROOT);
   assert.equal(resolved.values.AGENT_MANAGER_CLAIM_BIN, HOSTILE.AGENT_MANAGER_CLAIM_BIN);
   assert.equal(resolved.testSandbox, null);
 });
@@ -96,7 +90,6 @@ test("a user configuration file outside the sandbox is never read by a test", ()
   mkdirSync(home, { recursive: true });
   writeFileSync(configPath, [
     `AGENT_MANAGER_RUNS_ROOT=${resolve("/user-config-runs")}`,
-    `AGENT_MANAGER_BRAIN_ROOT=${resolve("/user-config-brain")}`,
     "",
   ].join("\n"));
   const resolved = resolveWith({ NODE_TEST_CONTEXT: "child-v8", AGENT_MANAGER_CONFIG: configPath });
@@ -105,7 +98,6 @@ test("a user configuration file outside the sandbox is never read by a test", ()
   assert.equal(resolved.configPath, configPath);
   assertIsolated({
     runs: resolved.values.AGENT_MANAGER_RUNS_ROOT,
-    brain: resolved.values.AGENT_MANAGER_BRAIN_ROOT,
   }, "user-config");
   assert.equal(resolved.sources.AGENT_MANAGER_RUNS_ROOT, "test-sandbox");
 
@@ -143,7 +135,6 @@ test("a spawned CLI joins the same sandbox instead of the ambient roots", () => 
     "  sandbox: paths.TEST_SANDBOX_ROOT,",
     "  runs: paths.RUNS_ROOT,",
     "  claims: paths.CLAIMS_ROOT,",
-    "  brain: paths.BRAIN_ROOT,",
     "  claimBin: paths.CLAIM_BIN,",
     "}));",
   ].join("\n");
@@ -155,7 +146,7 @@ test("a spawned CLI joins the same sandbox instead of the ambient roots", () => 
   });
   const child = JSON.parse(output);
   assert.equal(child.sandbox, sandboxRoot());
-  assertIsolated({ runs: child.runs, claims: child.claims, brain: child.brain }, "child");
+  assertIsolated({ runs: child.runs, claims: child.claims }, "child");
   assert.equal(child.claimBin, join(process.cwd(), "tools", "claim.mjs"));
 });
 

@@ -44,20 +44,11 @@ export function isRatified(lane) {
   return Boolean(lane?.ratification) && ratificationGap(lane).length === 0;
 }
 
-/**
- * Who a recorded decision is attributed to. An explicit id always wins; the
- * fallback is the run's own planning verifier, which is the manager agent that
- * froze this run's context. Nothing is inferred from the environment: a run
- * with neither is refused rather than attributed to nobody.
- */
+/** Who a recorded decision is attributed to: always explicit, never inferred. */
 export function resolveMasterIdentity(status, explicit = null, label = "this decision") {
   const provided = explicit === null || explicit === undefined ? "" : String(explicit).trim();
   if (provided) return provided;
-  const verifier = String(status?.planning?.verifiedBy || "").trim();
-  if (verifier) return verifier;
-  throw new Error(
-    `${label} requires --by <id>; the run records no planning verifier to attribute it to`,
-  );
+  throw new Error(`${label} requires --by <id>`);
 }
 
 export function ratifyLane(runId, laneId, {

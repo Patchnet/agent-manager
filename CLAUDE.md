@@ -10,7 +10,7 @@ Thin **Master Dev CLI supervisor** for multi-lane work. It does **not** replace
 Claude Code / Codex / Cursor Agent — it claims scopes, creates one worktree per
 lane, spawns those harnesses in-repo (full skills/MCP inheritance), writes run
 telemetry under `AGENT_MANAGER_RUNS_ROOT` (default `~/.agent-manager/runs`),
-escalates blockers, and writes a report.
+records every transition in an event log, and ships by path-based tier.
 
 ## Working agreements
 
@@ -30,23 +30,22 @@ escalates blockers, and writes a report.
 
 ## Skill (canonical)
 
-Load **`skills/agent-manager/SKILL.md`**.
+Load **`skills/agent-manager/SKILL.md`** (reporting: `skills/agent-manager/reporting.md`).
 
-- Reporting templates (mandatory): `skills/agent-manager/reporting.md`
-- Reference: `skills/agent-manager/reference.md`
-- Approved shipping: `skills/pr-manager/SKILL.md`
-- Ship Gate (bundled starter): `skills/ship-gate/SKILL.md` — prefer a
-  host/org ship-gate when present
-- Operator guide: `docs/OPERATOR.md`
+- Ship Gate (bundled starter, path tiers): `skills/ship-gate/SKILL.md` —
+  prefer a host/org ship-gate when present
+- Reviewer prompt: `skills/ship-gate/reviewer.md`
+- Operator guide: `docs/OPERATOR.md` · events: `docs/EVENTS.md` ·
+  harness-native features: `docs/HARNESS-NATIVE.md`
 
 ## Commands
 
 ```bash
 node bin/agent-manager.mjs run <workflow.yaml> --detach
-node bin/agent-manager.mjs status [runId] [--watch]
-node bin/agent-manager.mjs monitor [runId]
-node bin/agent-manager.mjs watch-signal [runId] --heartbeat-sec 180
-node bin/agent-manager.mjs ship <runId> --approve through-pr|all --detach
+node bin/agent-manager.mjs wait <runId>        # background; returns on the next event
+node bin/agent-manager.mjs status <runId>
+node bin/agent-manager.mjs review <runId> --verdict accept --reviewer <id>
+node bin/agent-manager.mjs ship <runId> [--approved-by <operator>]
 node bin/agent-manager.mjs cancel <runId>
 ```
 

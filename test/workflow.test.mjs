@@ -42,18 +42,35 @@ test("harness defaults merge per harness and lane overrides win", () => {
   const result = loadWorkflow(withLane({ harness: "codex", model: "gpt-6-astra",
     harness_options: { effort: "high" } }, {
     harness_defaults: { codex: { effort: "medium", profile: "work" }, claude: { effort: "low" } },
-    delivery: { review_budget: { max_corrections: 2, max_elapsed_sec: 600 } },
     policy: { stall_grace_sec: 0, max_runtime_sec: 30 },
   }));
   assert.deepEqual(result.lanes[0].harness_options, { effort: "high", profile: "work" });
-  assert.equal(result.delivery.review_budget.max_corrections, 2);
   assert.equal(result.policy.stall_grace_sec, 0);
   assert.equal(result.policy.max_runtime_sec, 30);
   assert.throws(() => loadWorkflow(withLane({ harness: "codex" }, {
     model_default: "gpt-6-astra", harness_defaults: { codex: { effort: "none" } },
   })), /does not support/);
-  assert.throws(() => loadWorkflow(withLane({}, { delivery: { review_budget: { max_corrections: 6 } } })), /max_corrections/);
-  assert.throws(() => loadWorkflow(withLane({}, { delivery: { review_budget: { automatic: true } } })), /unknown field/);
+});
+
+test("legacy 2.x keys load with one legacy-keys-ignored warning and are dropped", () => {
+  const result = loadWorkflow(withLane({}, {
+    goal: "Ship the lane",
+    feed: { topic: "x" },
+    planning: { plan_ref: "plan-one" },
+    goal_refs: ["goal-one"],
+    classification: "operational",
+    delivery: { review_budget: { max_corrections: 2 } },
+  }));
+  const legacy = result.lint_warnings.filter((warning) => warning.code === "legacy-keys-ignored");
+  assert.equal(legacy.length, 1);
+  for (const key of ["feed", "planning", "goal_refs", "classification", "delivery.review_budget"]) {
+    assert.match(legacy[0].message, new RegExp(key.replace(".", "\.")));
+  }
+  assert.equal(result.goal, "Ship the lane");
+  assert.equal(result.planning, undefined);
+  assert.equal(result.feed, undefined);
+  assert.equal(result.delivery?.review_budget, undefined);
+  assert.throws(() => loadWorkflow(withLane({}, { goal: "  " })), /workflow.goal must be a non-empty string/);
 });
 
 test("allow_commit with a prompting Claude permission mode is rejected at load", () => {

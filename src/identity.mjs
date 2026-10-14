@@ -23,7 +23,7 @@ export function shortRunId(runId) {
 
 function workflowSubject(workflow) {
   const file = basename(workflow.absPath || "run").replace(/\.(?:ya?ml|json)$/i, "");
-  return workflow.title || workflow.planning?.planRef || file || "Run";
+  return workflow.title || workflow.goal || file || "Run";
 }
 
 export function buildRunIdentity({ runId, workflow, overrides = {} }) {

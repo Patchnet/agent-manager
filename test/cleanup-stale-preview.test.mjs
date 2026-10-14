@@ -28,16 +28,13 @@ function writeStatus(runId, status) {
 
 test("stale dry-run separates cleanup candidates from operator attention without mutation", () => {
   const terminalPath = writeStatus("run-old-terminal", {
-    state: "released",
-    classification: "benchmark",
+    state: "merged",
     startedAt: "2026-01-01T00:00:00.000Z",
     endedAt: "2026-01-01T01:00:00.000Z",
     updatedAt: "2026-01-01T01:00:00.000Z",
   });
   const activePath = writeStatus("run-old-active", {
     state: "blocked",
-    classification: "recovery",
-    lineage: { parentRunId: "run-parent", relationship: "recovery" },
     startedAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-02T00:00:00.000Z",
   });
@@ -47,15 +44,7 @@ test("stale dry-run separates cleanup candidates from operator attention without
     endedAt: "2026-01-01T02:00:00.000Z",
     updatedAt: "2026-01-01T02:00:00.000Z",
   });
-  const unresolvedPath = writeStatus("run-old-unresolved-goal", {
-    state: "failed",
-    goalRefs: ["goal-recovery"],
-    goals: { goals: [{ id: "goal-recovery", title: "Recovery", lifecycle: "active" }] },
-    startedAt: "2026-01-01T00:00:00.000Z",
-    endedAt: "2026-01-01T03:00:00.000Z",
-    updatedAt: "2026-01-01T03:00:00.000Z",
-  });
-  const before = [terminalPath, activePath, legacyPath, unresolvedPath].map((path) => ({
+  const before = [terminalPath, activePath, legacyPath].map((path) => ({
     path,
     body: readFileSync(path, "utf8"),
     mtimeMs: statSync(path).mtimeMs,
@@ -64,13 +53,13 @@ test("stale dry-run separates cleanup candidates from operator attention without
 
   const preview = previewStaleRuns({ olderThanDays: 30, now });
   assert.equal(preview.cleanupCandidates, 2);
-  assert.equal(preview.operatorAttention, 2);
+  assert.equal(preview.operatorAttention, 1);
+  const terminalRun = preview.runs.find((run) => run.runId === "run-old-terminal");
   assert.deepEqual(
-    preview.runs.find((run) => run.runId === "run-old-terminal"),
+    terminalRun,
     {
       runId: "run-old-terminal",
-      state: "released",
-      classification: "benchmark",
+      state: "merged",
       ageSeconds: 20_602_800,
       reason: "terminal run exceeds the stale threshold",
       recommendedAction: "cleanup",
@@ -81,19 +70,7 @@ test("stale dry-run separates cleanup candidates from operator attention without
     preview.runs.find((run) => run.runId === "run-old-active").recommendedAction,
     "inspect-or-cancel",
   );
-  assert.equal(preview.runs.find((run) => run.runId === "run-old-legacy").classification, "unknown");
-  assert.deepEqual(
-    preview.runs.find((run) => run.runId === "run-old-unresolved-goal"),
-    {
-      runId: "run-old-unresolved-goal",
-      state: "failed",
-      classification: "unknown",
-      ageSeconds: 20_595_600,
-      reason: "terminal run still requires explicit goal dispositions",
-      recommendedAction: "reconcile-goals",
-      category: "operator-attention",
-    },
-  );
+  assert.equal(preview.runs.find((run) => run.runId === "run-old-legacy").category, "cleanup-candidate");
 
   const repeated = previewStaleRuns({ olderThanDays: 30, now: now + 5_000 });
   assert.deepEqual(
@@ -115,10 +92,6 @@ test("stale dry-run separates cleanup candidates from operator attention without
   assert.throws(
     () => cleanupRun("run-old-active"),
     /refusing to clean incomplete delivery in state blocked/,
-  );
-  assert.throws(
-    () => cleanupRun("run-old-unresolved-goal"),
-    /before declared goals have explicit dispositions/,
   );
   const cleaned = cleanupStaleRuns({ olderThanDays: 30, now });
   assert.deepEqual(cleaned.sort(), ["run-old-legacy", "run-old-terminal"]);

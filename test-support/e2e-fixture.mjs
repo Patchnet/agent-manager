@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { createServer } from "node:http";
 import { promisify } from "node:util";
 import {
   appendFileSync,
@@ -16,29 +15,21 @@ import { assertIsolated, isolatedRoot, sandboxRoot } from "./isolated-roots.mjs"
 const execFileAsync = promisify(execFile);
 
 // Each importing test file gets a fully isolated fixture: its own temp root,
-// git repository, runs root, claims root, claim log, feed server, and frozen
-// context file. Nothing here may be shared across Node test-file processes,
+// git repository, runs root, claims root, and claim log. Nothing here may be shared across Node test-file processes,
 // and nothing here may resolve onto an operator's real registries.
 export async function createE2eFixture() {
   const cli = join(process.cwd(), "bin", "agent-manager.mjs");
   const root = isolatedRoot("e2e-");
   const runsRoot = join(root, ".runs");
   const claimsRoot = join(root, ".claims");
-  const brainRoot = join(root, ".brain");
   const repo = join(root, "fixture-repo");
   const tools = join(root, "tools");
   const claimLog = join(root, "claim.log");
   mkdirSync(repo, { recursive: true });
   mkdirSync(tools, { recursive: true });
   writeFileSync(join(repo, "README.md"), "fixture\n");
-  writeFileSync(join(repo, "agent-manager.context.md"), [
-    "# E2E shared context",
-    "",
-    "Every lane must preserve the fixture contract.",
-    "",
-  ].join("\n"));
   execFileSync("git", ["init", "-b", "main", repo], { windowsHide: true });
-  execFileSync("git", ["-C", repo, "add", "README.md", "agent-manager.context.md"], { windowsHide: true });
+  execFileSync("git", ["-C", repo, "add", "README.md"], { windowsHide: true });
   execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base"], { windowsHide: true });
   execFileSync("git", ["-C", repo, "config", "user.name", "Test"], { windowsHide: true });
   execFileSync("git", ["-C", repo, "config", "user.email", "test@example.invalid"], { windowsHide: true });
@@ -60,32 +51,19 @@ export async function createE2eFixture() {
     ].join("\n"),
   );
 
-  const feedEvents = [];
-  const feedServer = createServer(async (request, response) => {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
-    const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    feedEvents.push(JSON.parse(payload.body));
-    response.setHeader("content-type", "application/json");
-    response.end(JSON.stringify({ id: "event-" + feedEvents.length, cursor: "cursor-" + feedEvents.length }));
-  });
-  await new Promise((resolve) => feedServer.listen(0, "127.0.0.1", resolve));
-  const feedPort = feedServer.address().port;
-
   const env = {
     ...process.env,
     AGENT_MANAGER_TEST_ROOT: sandboxRoot(),
     AGENT_MANAGER_DEV_ROOT: root,
     AGENT_MANAGER_RUNS_ROOT: runsRoot,
     AGENT_MANAGER_CLAIMS_ROOT: claimsRoot,
-    AGENT_MANAGER_BRAIN_ROOT: brainRoot,
     AGENT_MANAGER_CLAIM_BIN: claimScript,
     AGENT_MANAGER_TEST_MODE: "1",
     CLAIM_LOG: claimLog,
   };
   // An ambient AGENT_MANAGER_CONFIG must not reintroduce operator roots.
   delete env.AGENT_MANAGER_CONFIG;
-  assertIsolated({ root, runsRoot, claimsRoot, brainRoot }, "e2e fixture");
+  assertIsolated({ root, runsRoot, claimsRoot }, "e2e fixture");
 
   function writeWorkflow(name, value) {
     const path = join(root, name + ".json");
@@ -118,13 +96,18 @@ export async function createE2eFixture() {
     throw new Error("timed out waiting for " + runId + ": " + JSON.stringify(latest));
   }
 
-  async function waitForFeed(event, runId, timeoutMs = 20_000) {
+  async function waitForEvent(kind, runId, timeoutMs = 20_000) {
+    const path = join(runsRoot, runId, "events.jsonl");
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (feedEvents.some((item) => item.event === event && item.runId === runId)) return;
+      const events = existsSync(path)
+        ? readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
+        : [];
+      const found = events.find((item) => item.kind === kind);
+      if (found) return found;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    throw new Error("timed out waiting for feed event " + event);
+    throw new Error("timed out waiting for event " + kind);
   }
 
   function baseWorkflow(lanes) {
@@ -132,11 +115,6 @@ export async function createE2eFixture() {
       repo: "fixture-repo",
       harness_default: "fake",
       target_dev_flow: "formal",
-      feed: {
-        enabled: true,
-        baseUrl: "http://127.0.0.1:" + feedPort,
-        topic: "agent-manager/tests",
-      },
       policy: {
         allow_commit: false,
         allow_pr: false,
@@ -147,28 +125,11 @@ export async function createE2eFixture() {
         mode: lanes.length > 1 ? "train" : "single",
         targets: lanes.map((lane) => ({ id: lane.id, lane: lane.id, base: "main" })),
       },
-      planning: {
-        source_refs: ["test-source"],
-        plan_ref: "test-plan",
-        context_file: "agent-manager.context.md",
-        reviewed_base_sha: fixtureBase,
-        verified_by: "test-manager",
-        verified_at: "2026-01-01T00:00:00Z",
-        reviewed_paths: ["README.md", "agent-manager.context.md"],
-        repository_instruction_refs: ["test fixture instructions"],
-        attestations: {
-          source_reviewed: true,
-          repository_instructions_reviewed: true,
-          relevant_code_reviewed: true,
-          scope_verified: true,
-        },
-      },
       lanes,
     };
   }
 
   async function close() {
-    await new Promise((resolve) => feedServer.close(resolve));
     rmSync(root, { recursive: true, force: true });
   }
 
@@ -176,16 +137,14 @@ export async function createE2eFixture() {
     root,
     runsRoot,
     claimsRoot,
-    brainRoot,
     env,
     repo,
     claimLog,
     fixtureBase,
-    feedEvents,
     writeWorkflow,
     runCli,
     waitForStatus,
-    waitForFeed,
+    waitForEvent,
     baseWorkflow,
     close,
   };

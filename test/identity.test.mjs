@@ -10,7 +10,6 @@ test("run identity creates a compact harness-neutral title and Manager metadata"
       repo_shorthand: "agent-manager",
       repoRoot: "C:\\dev\\agent-manager",
       absPath: "C:\\dev\\agent-manager\\workflow.yaml",
-      planning: { planRef: "plan-one" },
     },
     overrides: {
       managerHarness: "codex",

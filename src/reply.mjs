@@ -3,7 +3,7 @@ import { isAbsolute, join } from "node:path";
 import { claimLane, releaseLane } from "./claim.mjs";
 import { resolveMasterIdentity } from "./ratify.mjs";
 import { normalizeScopePath } from "./scope.mjs";
-import { createFeedPublisher, publishFeedEvent } from "./feed.mjs";
+import { emitEvent, makeEvent } from "./events.mjs";
 import { createPolicyEventInspector, validateLaneGuardrails } from "./guardrails.mjs";
 import { getHarnessAdapter } from "./harness/index.mjs";
 import { integrateLanes } from "./integrate.mjs";
@@ -19,25 +19,6 @@ import { inspectSupervision } from "./supervision.mjs";
 import { parseEffort } from "./harness/options.mjs";
 
 /**
- * Operator vocabulary for talking to a worker lane:
- *
- * - reply      answers a lane that already stopped and raised needs-input.
- *              `prepareReply` + `resumeLane`, unchanged.
- * - correct    sends a mid-flight correction to a lane that is still running.
- *              `prepareCorrection` pauses the lane through the supervisor's
- *              needs-input channel, then resumes the same harness session with
- *              the correction as its next turn, so lane context survives.
- *
- * A correction is deliberately not a second concurrent turn: harness print-mode
- * sessions take one turn at a time, so the only honest way to reach a running
- * lane is interrupt, then resume.
- */
-export const CORRECTION_TYPE = "operator_correction";
-const CORRECTION_POLL_MS = 250;
-const CORRECTION_TIMEOUT_MS = 60_000;
-const CORRECTION_SETTLE_MS = 15_000;
-const PAUSABLE_STATES = new Set(["running", "blocked"]);
-/**
  * `blocked` is the ordinary reply target. `failed` is the recovery target: a
  * lane that raised needs-input and then died — a crashed resume, a stalled
  * harness — is `failed` while still holding its escalation and its worktree.
@@ -46,135 +27,7 @@ const PAUSABLE_STATES = new Set(["running", "blocked"]);
  */
 const REPLYABLE_STATES = new Set(["blocked", "failed"]);
 
-function processIsAlive(pid) {
-  if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return false;
-  try {
-    process.kill(Number(pid), 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
-}
 
-/**
- * Pause a running lane so an operator correction can be delivered. Writes the
- * lane's needs-input marker, which the run supervisor already polls: it blocks the
- * lane, retains the claim, and stops the harness at its next poll. Fails closed
- * rather than leaving a marker nobody will read.
- */
-export async function interruptLaneForCorrection(runId, laneId, message, {
-  pollMs = CORRECTION_POLL_MS,
-  timeoutMs = CORRECTION_TIMEOUT_MS,
-  settleMs = CORRECTION_SETTLE_MS,
-  sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
-  now = () => Date.now(),
-  isSupervisorAlive = processIsAlive,
-} = {}) {
-  assertSafeSlug(runId, "run id");
-  assertSafeSlug(laneId, "lane id");
-  const text = String(message || "").trim();
-  if (!text) throw new Error("correction requires a non-empty message");
-  const status = readStatus(runId);
-  if (!status) throw new Error("no status for " + runId);
-  const lane = (status.lanes || []).find((item) => item.id === laneId);
-  if (!lane) throw new Error("no lane " + laneId + " in " + runId);
-  if (lane.state === "blocked") {
-    return { state: "already-blocked", interrupted: false, markerPath: null, settled: true };
-  }
-  if (!PAUSABLE_STATES.has(lane.state)) {
-    throw new Error(
-      "lane " + laneId + " is " + lane.state + "; corrections apply to running or blocked lanes",
-    );
-  }
-  if (!lane.sessionId) {
-    throw new Error(
-      "lane " + laneId + " has no harness session id yet; wait for the first harness event before correcting it",
-    );
-  }
-
-  const root = runDir(runId);
-  const laneDir = join(root, laneId);
-  const safeWorktree = lane.worktree
-    ? assertPathInside(root, lane.worktree, `lane ${laneId} worktree`)
-    : null;
-  const markerPath = join(laneDir, "needs-input.json");
-  for (const path of [
-    markerPath,
-    safeWorktree ? join(safeWorktree, "needs-input.json") : null,
-  ].filter(Boolean)) {
-    if (existsSync(path)) {
-      throw new Error(
-        "lane " + laneId + " already raised needs-input; answer it with reply instead of a correction",
-      );
-    }
-  }
-  if (!isSupervisorAlive(status.supervisor?.pid)) {
-    throw new Error(
-      "no live supervisor for " + runId + "; a correction cannot reach lane " + laneId,
-    );
-  }
-
-  writePrivateFile(
-    markerPath,
-    JSON.stringify({
-      type: CORRECTION_TYPE,
-      prompt: text,
-      blocking: true,
-      source: "operator",
-      requestedAt: new Date().toISOString(),
-    }, null, 2) + "\n",
-    "utf8",
-  );
-
-  const deadline = now() + timeoutMs;
-  let blockedAt = null;
-  while (now() <= deadline) {
-    const current = (readStatus(runId)?.lanes || []).find((item) => item.id === laneId);
-    if (current?.state === "blocked") {
-      blockedAt ??= now();
-      if (current.pid == null) {
-        return { state: "blocked", interrupted: true, markerPath, settled: true };
-      }
-      if (now() - blockedAt >= settleMs) {
-        return { state: "blocked", interrupted: true, markerPath, settled: false };
-      }
-    } else if (current && current.state !== "running") {
-      rmSync(markerPath, { force: true });
-      throw new Error(
-        "lane " + laneId + " reached " + current.state + " before the correction was delivered",
-      );
-    }
-    await sleep(pollMs);
-  }
-  // Once the lane is paused the correction is committed; only an undelivered marker
-  // is withdrawn, so a slow harness exit never strands the lane without its reason.
-  if (blockedAt !== null) {
-    return { state: "blocked", interrupted: true, markerPath, settled: false };
-  }
-  rmSync(markerPath, { force: true });
-  throw new Error("timed out waiting for lane " + laneId + " to pause for an operator correction");
-}
-
-/**
- * Pause a running lane and stage the correction for harness resume. Returns the same
- * shape as `prepareReply`, so a caller detaches the resume supervisor identically.
- */
-export async function prepareCorrection(runId, laneId, message, options = {}) {
-  const correction = await interruptLaneForCorrection(runId, laneId, message, options);
-  const prepared = prepareReply(runId, laneId, message);
-  if (correction.interrupted) {
-    prepared.lane.lastActivity = "operator correction queued for harness resume";
-    writeStatus(runId, prepared.status);
-  }
-  return { ...prepared, correction, interrupted: correction.interrupted };
-}
-
-/**
- * Scope patterns an operator may hand a lane along with the answer. Same shape
- * rules as `lane.scope`: repository-relative, no traversal, no control
- * characters. Validated before anything is recorded, so a typo cannot become a
- * standing grant.
- */
 export function normalizeScopeExtension(input) {
   const values = (Array.isArray(input) ? input : String(input ?? "").split(","))
     .map((value) => String(value).trim())
@@ -295,6 +148,14 @@ export function prepareReply(runId, laneId, message, {
     delete status.error;
   }
   writeStatus(runId, status);
+  const question = previousNeedsInput?.prompt ? `Q: ${previousNeedsInput.prompt}\n` : "";
+  void emitEvent(makeEvent("operator_reply", {
+    repo: status.repo,
+    runId,
+    lane: laneId,
+    text: `${question}A: ${String(message).trim()}`,
+    actor: by || "operator",
+  }));
   return {
     status,
     lane,
@@ -341,22 +202,12 @@ export async function resumeLane(runId, laneId, messagePath) {
 
   const workflow = loadWorkflow(join(runDir(runId), "workflow.yaml"), {
     repoOverride: status.repoRoot || status.repo,
-    planningContextOverride: existsSync(join(runDir(runId), "planning-context.md"))
-      ? join(runDir(runId), "planning-context.md")
-      : null,
   });
-  if (
-    status.planning?.contextDigest &&
-    workflow.planning?.context_digest !== status.planning.contextDigest
-  ) {
-    throw new Error("frozen planning context digest does not match recorded run evidence");
-  }
   if (workflow.policy.dangerously_skip_permissions && status.dangerousPermissionsApproved !== true) {
     throw new Error("run did not record dangerous permission approval");
   }
   const laneConfig = workflow.lanes.find((item) => item.id === laneId);
   const adapter = getHarnessAdapter(lane.harness);
-  const publisher = createFeedPublisher(workflow.feed);
   const root = runDir(runId);
   const laneDir = join(root, laneId);
   lane.worktree = assertPathInside(root, lane.worktree, `lane ${laneId} worktree`);
@@ -402,13 +253,6 @@ export async function resumeLane(runId, laneId, messagePath) {
   lane.logPath = join(laneDir, "resume-" + lane.attempt + ".log");
   lane.sessionId = handle.getSessionId?.() || lane.sessionId;
   persistReplyStatus();
-  await publishFeedEvent(publisher, status, "lane_started", {
-    laneId,
-    harness: lane.harness,
-    branch: lane.branch,
-    resumed: true,
-    attempt: lane.attempt,
-  });
 
   const started = Date.now();
   const elapsedBeforeReply = Number(lane.elapsedSec || 0);
@@ -469,12 +313,6 @@ export async function resumeLane(runId, laneId, messagePath) {
     lane.state = "blocked";
     lane.needsInput = needs;
     lane.claim = { state: "retained", reason: "needs-input" };
-    await publishFeedEvent(publisher, status, "needs_input", {
-      laneId,
-      prompt: needs.prompt || "needs-input",
-      sessionId: lane.sessionId,
-      attempt: lane.attempt,
-    });
   } else if (lane.supervision?.action === "cancel") {
     lane.state = "failed";
     lane.lastActivity = `supervision: ${lane.supervision.reason}`;
@@ -521,14 +359,6 @@ export async function resumeLane(runId, laneId, messagePath) {
   ) {
     const released = releaseLane({ repo: status.repo, branch: lane.branch, mode: status.claimMode });
     lane.claim = { state: released.ok ? "released" : "release-failed", at: lane.endedAt };
-    await publishFeedEvent(publisher, status, "lane_done", {
-      laneId,
-      laneState: lane.state,
-      exitCode: lane.exitCode,
-      changedFiles: lane.changedFiles,
-      scopeViolations: lane.scopeViolations,
-      attempt: lane.attempt,
-    });
   }
 
   status.state = deriveRunState(status);
@@ -553,19 +383,6 @@ export async function resumeLane(runId, laneId, messagePath) {
       endedAt: new Date().toISOString(),
     };
     status.endedAt = new Date().toISOString();
-  }
-  persistReplyStatus();
-  writeReport(runId, status);
-  if (status.state === "delivery_review_pending") {
-    await publishFeedEvent(publisher, status, "workers_done", {
-      executionEndedAt: status.execution?.endedAt,
-      attempt: lane.attempt,
-    });
-  } else if (status.state === "failed") {
-    await publishFeedEvent(publisher, status, "run_failed", {
-      endedAt: status.endedAt,
-      attempt: lane.attempt,
-    });
   }
   const saved = persistReplyStatus();
   writeReport(runId, saved);

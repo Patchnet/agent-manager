@@ -1,4 +1,0 @@
-interface:
-  display_name: "PR Manager"
-  short_description: "Detach approved shipping with explicit cadence"
-  default_prompt: "Use $pr-manager to run approved shipping in the background and follow each operator transition through completion."

@@ -2,7 +2,6 @@ import { getHarnessAdapter } from "./harness/index.mjs";
 import { resolveClaudeBin } from "./harness/claude.mjs";
 import { resolveCodexInstallation } from "./harness/codex.mjs";
 import { resolveCursorBin } from "./harness/cursor.mjs";
-import { assertPlanningReady } from "./planning.mjs";
 import { spawnCommandSync } from "./command.mjs";
 import { harnessFailureRecommendation } from "./harness/setup.mjs";
 import { detectRuntimeProfile, formatRuntime } from "./runtime.mjs";
@@ -128,7 +127,6 @@ export function checkHarnessOptions(command, harness, options, spawnOptions = {}
 }
 
 export function preflightWorkflow(workflow) {
-  assertPlanningReady(workflow);
   const claims = preflightClaims(workflow);
   if (workflow.claim_mode === "required" && claims.some((item) => item.blocked)) {
     throw new Error(`claim preflight blocked before detach: ${JSON.stringify(claims.filter((item) => item.blocked))}`);

@@ -15,9 +15,11 @@ export const CONFIG_KEYS = [
   "AGENT_MANAGER_DEV_ROOT",
   "AGENT_MANAGER_RUNS_ROOT",
   "AGENT_MANAGER_CLAIMS_ROOT",
-  "AGENT_MANAGER_BRAIN_ROOT",
   "AGENT_MANAGER_CLAIM_BIN",
 ];
+
+/** Non-path settings read from config.env (or the environment when absent there). */
+export const SETTING_KEYS = ["AGENT_MANAGER_EVENT_SINKS"];
 
 /**
  * When set to `1` / `true`, ambient environment and command-line path overrides
@@ -53,7 +55,6 @@ function pathsEqual(left, right) {
 const SANDBOX_SUBDIRS = {
   AGENT_MANAGER_RUNS_ROOT: "runs",
   AGENT_MANAGER_CLAIMS_ROOT: "claims",
-  AGENT_MANAGER_BRAIN_ROOT: "brain",
 };
 
 function temporaryRoots(tempDir) {
@@ -135,7 +136,7 @@ export function parseConfigEnv(text) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
     const match = /^(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*)$/.exec(line);
-    if (!match || !CONFIG_KEYS.includes(match[1])) continue;
+    if (!match || (!CONFIG_KEYS.includes(match[1]) && !SETTING_KEYS.includes(match[1]))) continue;
     let value = match[2].trim();
     if (value.startsWith('"') && value.endsWith('"')) {
       try {
@@ -192,7 +193,6 @@ export function resolveAgentManagerConfig({
     AGENT_MANAGER_DEV_ROOT: resolve(cwdValue),
     AGENT_MANAGER_RUNS_ROOT: join(home, ".agent-manager", "runs"),
     AGENT_MANAGER_CLAIMS_ROOT: join(home, ".agent-manager", "claims"),
-    AGENT_MANAGER_BRAIN_ROOT: join(home, ".agent-manager", "brain"),
     AGENT_MANAGER_CLAIM_BIN: null,
   };
   const values = {};
@@ -202,7 +202,7 @@ export function resolveAgentManagerConfig({
   // operator explicitly unlocks overrides. Test sandboxes keep the old order so
   // fixtures can still point roots at disposable temp dirs.
   const unlocked = sandboxed || pathOverridesAllowed(env);
-  const pathLockActive = !sandboxed && Object.keys(fileValues).some((key) => hasConfiguredValue(fileValues[key]));
+  const pathLockActive = !sandboxed && CONFIG_KEYS.some((key) => hasConfiguredValue(fileValues[key]));
 
   for (const key of CONFIG_KEYS) {
     const fileConfigured = hasConfiguredValue(fileValues[key]);
@@ -266,6 +266,7 @@ export function resolveAgentManagerConfig({
     configExists: existsSync(resolvedConfigPath),
     values,
     sources,
+    eventSinks: parseEventSinks(fileValues.AGENT_MANAGER_EVENT_SINKS ?? env.AGENT_MANAGER_EVENT_SINKS),
     pathLock: {
       active: pathLockActive,
       unlocked,
@@ -274,6 +275,18 @@ export function resolveAgentManagerConfig({
     ignoredOverrides,
     testSandbox: sandboxed ? sandbox || env[TEST_SANDBOX_ENV] || null : null,
   };
+}
+
+/** `AGENT_MANAGER_EVENT_SINKS` is a JSON array of shell commands, or one command. */
+export function parseEventSinks(value) {
+  if (!hasConfiguredValue(value)) return [];
+  const text = String(value).trim();
+  if (!text.startsWith("[")) return [text];
+  const parsed = JSON.parse(text);
+  if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string" || !item.trim())) {
+    throw new Error("AGENT_MANAGER_EVENT_SINKS must be a JSON array of commands");
+  }
+  return parsed.map((item) => item.trim());
 }
 
 function envLine(key, value) {
@@ -289,7 +302,6 @@ export function initAgentManagerConfig({
   devRoot = cwdValue,
   runsRoot = join(home, ".agent-manager", "runs"),
   claimsRoot = join(home, ".agent-manager", "claims"),
-  brainRoot = join(home, ".agent-manager", "brain"),
   force = false,
   execArgv = process.execArgv,
   tempDir = tmpdir(),
@@ -313,7 +325,6 @@ export function initAgentManagerConfig({
     AGENT_MANAGER_DEV_ROOT: resolveConfiguredPath(devRoot, { home, baseDir: cwdValue }),
     AGENT_MANAGER_RUNS_ROOT: resolveConfiguredPath(runsRoot, { home, baseDir: cwdValue }),
     AGENT_MANAGER_CLAIMS_ROOT: resolveConfiguredPath(claimsRoot, { home, baseDir: cwdValue }),
-    AGENT_MANAGER_BRAIN_ROOT: resolveConfiguredPath(brainRoot, { home, baseDir: cwdValue }),
   };
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, [
@@ -323,7 +334,8 @@ export function initAgentManagerConfig({
     envLine("AGENT_MANAGER_DEV_ROOT", values.AGENT_MANAGER_DEV_ROOT),
     envLine("AGENT_MANAGER_RUNS_ROOT", values.AGENT_MANAGER_RUNS_ROOT),
     envLine("AGENT_MANAGER_CLAIMS_ROOT", values.AGENT_MANAGER_CLAIMS_ROOT),
-    envLine("AGENT_MANAGER_BRAIN_ROOT", values.AGENT_MANAGER_BRAIN_ROOT),
+    "# Optional: commands that receive each event as one JSON line on stdin.",
+    "# AGENT_MANAGER_EVENT_SINKS='[\"node /path/to/sink.mjs\"]'",
     "",
   ].join("\n"), { encoding: "utf8", mode: 0o600 });
   return { path, values };
@@ -345,7 +357,6 @@ export function formatAgentManagerConfig(config) {
     ["dev root", "AGENT_MANAGER_DEV_ROOT"],
     ["runs root", "AGENT_MANAGER_RUNS_ROOT"],
     ["claims root", "AGENT_MANAGER_CLAIMS_ROOT"],
-    ["brain root", "AGENT_MANAGER_BRAIN_ROOT"],
     ["claim bin", "AGENT_MANAGER_CLAIM_BIN"],
   ];
   const lock = config.pathLock || {};
@@ -358,6 +369,7 @@ export function formatAgentManagerConfig(config) {
     `config exists: ${config.configExists ? "yes" : "no"}`,
     lockLine,
     ...labels.map(([label, key]) => `${label}: ${config.values[key] || "(bundled)"} [${config.sources[key]}]`),
+    `event sinks: ${config.eventSinks?.length ? config.eventSinks.length : "none"}`,
     ...(ignored ? [ignored] : []),
   ].join("\n");
 }

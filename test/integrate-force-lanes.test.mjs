@@ -9,7 +9,7 @@ const {
   writeWorkflow,
   runCli,
   waitForStatus,
-  waitForFeed,
+  waitForEvent,
   baseWorkflow,
   close,
 } = await createE2eFixture();
@@ -58,7 +58,7 @@ test("integrate --force-lanes folds snapshotted failed lanes and records which",
 
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
   const failed = await waitForStatus(runId, (status) => status.state === "failed");
-  await waitForFeed("run_failed", runId);
+  await waitForEvent("run_closed", runId);
   const laneStates = Object.fromEntries(failed.lanes.map((lane) => [lane.id, lane]));
   assert.equal(laneStates.writer.state, "done");
   assert.equal(laneStates.breaker.state, "failed");
@@ -120,7 +120,7 @@ test("integrate --force-lanes folds snapshotted failed lanes and records which",
   assert.match(excluded.silent, /lane snapshot clean/);
   assert.match(excluded.stray, /guardrail violations: stray\.txt/);
   assert.deepEqual(status.integrate.merged.sort(), ["breaker", "writer"]);
-  assert.equal(status.state, "delivery_review_pending");
+  assert.equal(status.state, "review_pending");
 
   const integrated = join(runsRoot, runId, "integrate", "wt");
   assert.ok(existsSync(join(integrated, "allowed.txt")), "the done lane is in the fold");
@@ -159,7 +159,7 @@ test("a ratified guardrail violation folds; an unratified one still does not", a
 
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
   const failed = await waitForStatus(runId, (status) => status.state === "failed");
-  await waitForFeed("run_failed", runId);
+  await waitForEvent("run_closed", runId);
   for (const lane of failed.lanes) {
     assert.equal(lane.state, "failed", lane.id);
     assert.equal(lane.snapshot.state, "committed", lane.id);
@@ -171,6 +171,7 @@ test("a ratified guardrail violation folds; an unratified one still does not", a
   );
   await runCli([
     "ratify", runId, "sanctioned", "--reason", "audited 2026-08-17: this is the work Master asked for",
+    "--by", "test-manager",
   ]);
 
   const forced = JSON.parse((await runCli([
@@ -205,8 +206,8 @@ test("a ratification does not cover violations recorded after it", async () => {
 
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
   await waitForStatus(runId, (status) => status.state === "failed");
-  await waitForFeed("run_failed", runId);
-  await runCli(["ratify", runId, "stray", "--reason", "audited: stray.txt is fine"]);
+  await waitForEvent("run_closed", runId);
+  await runCli(["ratify", runId, "stray", "--reason", "audited: stray.txt is fine", "--by", "test-manager"]);
 
   // New evidence lands on the lane after the ratifier looked at it.
   const statusPath = join(runsRoot, runId, "status.json");
@@ -222,7 +223,7 @@ test("a ratification does not cover violations recorded after it", async () => {
   assert.equal(refused.integrate, undefined, "a refused fold leaves the run alone");
 
   // Re-ratifying on the full evidence lets it through.
-  await runCli(["ratify", runId, "stray", "--reason", "audited again: both files are fine"]);
+  await runCli(["ratify", runId, "stray", "--reason", "audited again: both files are fine", "--by", "test-manager"]);
   const forced = JSON.parse((await runCli([
     "integrate", runId, "--force-lanes", "done,failed-with-snapshot", "--json",
   ])).stdout.trim());
@@ -251,18 +252,18 @@ test("ratify refuses a lane with nothing to ratify and a lane with nothing to fo
 
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
   await waitForStatus(runId, (status) => status.state === "failed");
-  await waitForFeed("run_failed", runId);
+  await waitForEvent("run_closed", runId);
 
   assert.match(
-    await cliError(["ratify", runId, "writer", "--reason", "it went fine"]),
+    await cliError(["ratify", runId, "writer", "--reason", "it went fine", "--by", "test-manager"]),
     /recorded no guardrail violations; there is nothing to ratify/,
   );
   assert.match(
-    await cliError(["ratify", runId, "silent", "--reason", "let it through"]),
+    await cliError(["ratify", runId, "silent", "--reason", "let it through", "--by", "test-manager"]),
     /recorded no guardrail violations; there is nothing to ratify/,
   );
   assert.match(
-    await cliError(["ratify", runId, "ghost", "--reason", "who?"]),
+    await cliError(["ratify", runId, "ghost", "--reason", "who?", "--by", "test-manager"]),
     /no lane ghost in/,
   );
   // The run stays `failed`: refusing to ratify is not a state change, and a
@@ -273,7 +274,7 @@ test("ratify refuses a lane with nothing to ratify and a lane with nothing to fo
   );
 });
 
-test("a force-integrated run can be reviewed and accepted, with the fold surfaced", async () => {
+test("a force-integrated run can be reviewed and accepted, with the fold recorded", async () => {
   const runId = "run-force-review";
   const workflow = writeWorkflow("force-review", baseWorkflow([
     {
@@ -292,35 +293,21 @@ test("a force-integrated run can be reviewed and accepted, with the fold surface
 
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
   await waitForStatus(runId, (status) => status.state === "failed");
-  await waitForFeed("run_failed", runId);
+  await waitForEvent("run_closed", runId);
   await runCli(["integrate", runId, "--force-lanes", "done,failed-with-snapshot", "--json"]);
-
-  const presented = JSON.parse(
-    (await runCli(["review", runId, "--json"])).stdout.trim(),
-  );
-  assert.match(
-    presented.markdown,
-    /- Structural preflight: \*\*passed\*\*/,
-    "a force-included lane is accounted for, not a structural error",
-  );
-  assert.match(
-    presented.markdown,
-    /\*\*Force-included in integration:\*\* lane ended `failed`/,
-    "the forced lane is never silently equal to done",
-  );
-  assert.match(presented.markdown, /- Force-included lanes \(`--force-lanes done,failed-with-snapshot`\): breaker \(failed\)/);
 
   const accepted = JSON.parse(
     (await runCli([
-      "review", runId, "--pass", "1", "--verdict", "accept",
+      "review", runId, "--verdict", "accept",
       "--reviewer", "test-operator", "--json",
     ])).stdout.trim(),
   );
-  assert.equal(accepted.verdict, "accept");
-  assert.equal(accepted.state, "ship_gate_pending");
+  assert.equal(accepted.delivery.review.verdict, "accept");
+  assert.equal(accepted.state, "ship_pending");
 
   const reviewed = JSON.parse((await runCli(["status", runId, "--json"])).stdout.trim());
-  assert.equal(reviewed.delivery.review.state, "accepted");
+  assert.equal(reviewed.delivery.review.reviewer, "test-operator");
+  assert.deepEqual(reviewed.integrate.forcedLanes, ["breaker"], "the fold stays surfaced on the run");
   assert.equal(
     reviewed.lanes.find((lane) => lane.id === "breaker").state,
     "failed",
@@ -355,19 +342,18 @@ test("an unaccounted failed lane still blocks acceptance", async () => {
 
   await runCli(["run", workflow, "--detach", "--json", "--run-id", runId]);
   await waitForStatus(runId, (status) => status.state === "failed");
-  await waitForFeed("run_failed", runId);
+  await waitForEvent("run_closed", runId);
   await runCli(["integrate", runId, "--force-lanes", "done,failed-with-snapshot", "--json"]);
 
-  const presented = JSON.parse((await runCli(["review", runId, "--json"])).stdout.trim());
-  assert.match(presented.markdown, /- Structural preflight: \*\*failed\*\*/);
-  assert.match(presented.markdown, /- Structural preflight errors: lane silent is failed/);
-  assert.match(presented.markdown, /- Lanes excluded from the fold: silent \(lane snapshot clean\)/);
   assert.match(
     await cliError([
-      "review", runId, "--pass", "1", "--verdict", "accept", "--reviewer", "test-operator",
+      "review", runId, "--verdict", "accept", "--reviewer", "test-operator",
     ]),
-    /Delivery Review cannot be accepted; structural preflight failed: lane silent is failed/,
+    /cannot accept run-force-review-gap:[\s\S]*lane silent is failed/,
   );
+  const still = JSON.parse((await runCli(["status", runId, "--json"])).stdout.trim());
+  assert.equal(still.state, "review_pending", "a refused accept records nothing");
+  assert.equal(still.delivery.review.verdict, null);
 
   await runCli(["cancel", runId]);
 });

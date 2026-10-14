@@ -1,0 +1,79 @@
+# Auto-revert a red main.
+#
+# Copy to .github/workflows/revert-on-red.yml in the target repository and set
+# CI_WORKFLOW below to the `name:` of the workflow that runs on every push to
+# main (do not cancel in-progress main runs, so every commit gets a result).
+#
+# When a main run fails:
+#   1. first attempt: re-run the failed jobs once (flake guard) and stop;
+#   2. still red: if the parent commit's run was green, this commit is the
+#      first red one, so open a revert PR for it (label tier:0) with auto-merge.
+#
+# Pull requests opened with the default GITHUB_TOKEN do not trigger other
+# workflows, so the revert PR's required check would never run. Provide a
+# GitHub App token or a fine-grained token with contents, pull-requests and
+# actions write access as the REVERT_TOKEN secret.
+name: revert-on-red
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revert-on-red-${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  revert:
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.REVERT_TOKEN }}
+      CI_WORKFLOW: CI
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.REVERT_TOKEN }}
+
+      - name: Re-run once, then revert the first red commit
+        run: |
+          set -euo pipefail
+          if [ "$ATTEMPT" = "1" ]; then
+            gh run rerun "$RUN_ID" --failed
+            echo "re-running failed jobs once for $SHA"
+            exit 0
+          fi
+          parent=$(git rev-parse "$SHA^")
+          parent_result=$(gh run list --workflow "$CI_WORKFLOW" --commit "$parent" --json conclusion --jq '.[0].conclusion // ""')
+          if [ "$parent_result" != "success" ]; then
+            echo "parent $parent is '$parent_result', so $SHA is not the first red commit; leaving it to the earlier revert"
+            exit 0
+          fi
+          branch="revert/${SHA:0:12}"
+          if [ "$(gh pr list --head "$branch" --state all --json number --jq length)" != "0" ]; then
+            echo "revert PR for $SHA already exists"
+            exit 0
+          fi
+          subject=$(git log -1 --format=%s "$SHA")
+          git config user.name "revert-on-red"
+          git config user.email "revert-on-red@users.noreply.github.com"
+          git checkout -b "$branch"
+          git revert --no-edit "$SHA"
+          git push origin "$branch"
+          gh label create "tier:0" --force --color 0e8a16 >/dev/null
+          gh pr create --base main --head "$branch" --label "tier:0" \
+            --title "revert: $subject" \
+            --body "Automatic revert: main CI failed twice on $SHA and passed on its parent $parent. Run: ${{ github.event.workflow_run.html_url }}"
+          gh pr merge "$branch" --auto --squash
+          # Optional: record it in the agent-manager event stream on a runner that has it.
+          # agent-manager emit reverted --repo "${{ github.event.repository.name }}" --sha "$SHA" --text "revert PR for $subject" --actor revert-on-red

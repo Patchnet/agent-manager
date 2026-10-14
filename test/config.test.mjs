@@ -45,7 +45,6 @@ test("user-config beats ambient environment and CLI unless path overrides are un
     devRoot: join(root, "configured-dev"),
     runsRoot: "./relative-runs",
     claimsRoot: join(root, "configured-claims"),
-    brainRoot: join(root, "configured-brain"),
   });
   const locked = resolveAgentManagerConfig({
     env: { AGENT_MANAGER_RUNS_ROOT: join(root, "environment-runs") },
@@ -61,7 +60,7 @@ test("user-config beats ambient environment and CLI unless path overrides are un
   assert.equal(locked.sources.AGENT_MANAGER_RUNS_ROOT, "user-config");
   assert.equal(locked.values.AGENT_MANAGER_CLAIMS_ROOT, join(root, "configured-claims"));
   assert.equal(locked.sources.AGENT_MANAGER_CLAIMS_ROOT, "user-config");
-  assert.equal(locked.values.AGENT_MANAGER_BRAIN_ROOT, join(root, "configured-brain"));
+  assert.equal(locked.values.AGENT_MANAGER_BRAIN_ROOT, undefined);
   assert.equal(locked.pathLock.active, true);
   assert.equal(locked.pathLock.unlocked, false);
   assert.equal(locked.ignoredOverrides.length, 2);
@@ -97,7 +96,6 @@ test("matching environment values are not reported as ignored overrides", () => 
     devRoot: join(root, "agree-dev"),
     runsRoot: runs,
     claimsRoot: join(root, "agree-claims"),
-    brainRoot: join(root, "agree-brain"),
   });
   const resolved = resolveAgentManagerConfig({
     env: { AGENT_MANAGER_RUNS_ROOT: runs },
@@ -117,7 +115,6 @@ test("config init writes portable absolute paths and protects existing config", 
     devRoot: ".",
     runsRoot: join(root, "run data"),
     claimsRoot: "~/claims",
-    brainRoot: "~/brain",
   });
   const text = readFileSync(result.path, "utf8");
   assert.match(text, /AGENT_MANAGER_DEV_ROOT=/);
@@ -128,7 +125,6 @@ test("config init writes portable absolute paths and protects existing config", 
   assert.equal(resolved.values.AGENT_MANAGER_DEV_ROOT, resolve(work));
   assert.equal(resolved.values.AGENT_MANAGER_RUNS_ROOT, join(root, "run data"));
   assert.equal(resolved.values.AGENT_MANAGER_CLAIMS_ROOT, join(home, "claims"));
-  assert.equal(resolved.values.AGENT_MANAGER_BRAIN_ROOT, join(home, "brain"));
   assert.throws(() => initAgentManagerConfig({ env: {}, home, cwdValue: work, configPath: secondPath, execArgv: [] }), /already exists/);
   assert.throws(
     () => initAgentManagerConfig({

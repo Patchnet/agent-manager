@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { integrateLanes } from "./integrate.mjs";
 import { runDir } from "./paths.mjs";
@@ -7,7 +6,6 @@ import { laneGuardrailViolations, ratificationGap } from "./ratify.mjs";
 import { readStatus, writeStatus } from "./status.mjs";
 import { loadWorkflow } from "./workflow.mjs";
 import { markWorkersComplete } from "./delivery.mjs";
-import { syncBrainStatus } from "./brain.mjs";
 
 /**
  * `--force-lanes` selectors. `done` is the ordinary fold. `failed-with-snapshot`
@@ -101,13 +99,10 @@ export async function integrateRun(runId, { forceLanes = [] } = {}) {
   const selectors = parseForceLanes(forceLanes);
   const status = readStatus(runId);
   if (!status) throw new Error("no status for " + runId);
-  if (["running", "shipping", "cancelled", "ship_gate_pending", "reviewed", "merged", "released"].includes(status.state)) {
+  if (["running", "shipping", "waiting_operator", "cancelled", "ship_pending", "reviewed", "merged", "closed"].includes(status.state)) {
     throw new Error("run must finish successfully before integration");
   }
-  if (status.integrate?.state === "ready") {
-    await syncBrainStatus(status);
-    return writeStatus(runId, status);
-  }
+  if (status.integrate?.state === "ready") return status;
   const lanes = status.lanes || [];
   let forced = [];
   let excluded = [];
@@ -141,16 +136,7 @@ export async function integrateRun(runId, { forceLanes = [] } = {}) {
 
   const workflow = loadWorkflow(join(runDir(runId), "workflow.yaml"), {
     repoOverride: status.repoRoot || status.repo,
-    planningContextOverride: existsSync(join(runDir(runId), "planning-context.md"))
-      ? join(runDir(runId), "planning-context.md")
-      : null,
   });
-  if (
-    status.planning?.contextDigest &&
-    workflow.planning?.context_digest !== status.planning.contextDigest
-  ) {
-    throw new Error("frozen planning context digest does not match recorded run evidence");
-  }
   status.integrate = { state: "running" };
   writeStatus(runId, status);
   // A forced lane carries the files its snapshot committed, so overlap detection
@@ -187,7 +173,6 @@ export async function integrateRun(runId, { forceLanes = [] } = {}) {
     // happened: an excluded lane's files are not in the integrate branch.
     if (selectors.length) alignForcedDeliveryTarget(status);
   } else if (status.state !== "blocked") status.endedAt ||= new Date().toISOString();
-  await syncBrainStatus(status);
   const saved = writeStatus(runId, status);
   writeReport(runId, saved);
   return saved;

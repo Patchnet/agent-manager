@@ -39,9 +39,8 @@ Commit messages are permanent history — a separate leak surface from file cont
 - Describe the technical change only; do not cite internal projects, clients, or incidents as rationale unless the operator explicitly approves a public disclosure.
 - No emails, hostnames, tokens, or internal IDs in subject or body.
 
-PR Manager receives the approved commit message and release summary as command
-inputs. Both can become permanent public history. Review them with the same
-hygiene rules before launching `agent-manager ship`.
+`agent-manager ship --message` and the PR title and body it writes become
+permanent public history. Review them with the same hygiene rules.
 
 ## What stays local (gitignored)
 

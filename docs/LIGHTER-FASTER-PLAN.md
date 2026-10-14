@@ -1,8 +1,9 @@
 # Lighter, faster delivery — plan
 
-Status: **proposal, awaiting operator go**. Nothing below is implemented yet.
-Several items reverse rules the operator wrote; they are listed under
-*Rules this overrides* and need an explicit override before the rewrite.
+Status: **approved 2026-10-13, implemented in 3.0.0.** The operator approved
+the plan and all eight overrides below. The matching playbook changes and the
+branch-protection write-up were handed to the owning sessions; this repository
+carries only the tooling.
 
 ## Goal
 

@@ -1,5 +1,4 @@
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -12,11 +11,9 @@ import { join } from "node:path";
 import { RUNS_ROOT, assertSafeSlug, runDir } from "./paths.mjs";
 import { ensurePrivateDir, writePrivateFile } from "./fs-safe.mjs";
 import { formatRuntime } from "./runtime.mjs";
-import { deriveOperatorCadence } from "./cadence.mjs";
-import { isOverallTerminalState } from "./delivery.mjs";
-import { AGENT_MANAGER_VERSION } from "./version.mjs";
-import { summarizeAuthorization } from "./authorization.mjs";
-import { classificationForRecord } from "./run-classification.mjs";
+import { emitEvent, transitionEvents } from "./events.mjs";
+
+export const TERMINAL_STATES = new Set(["merged", "reviewed", "closed", "rejected", "failed", "cancelled"]);
 
 export function writeStatus(runId, status) {
   assertSafeSlug(runId, "run id");
@@ -30,104 +27,26 @@ export function writeStatus(runId, status) {
     }
     const previous = existsSync(path) ? safeParse(path) : null;
     const lanes = preserveNewerLaneAttempts(status.lanes, previous?.lanes);
-    const currentAuthorization = summarizeAuthorization({ ...status, lanes, runId });
     const payload = {
       ...status,
       lanes,
       runId,
-      ...(currentAuthorization ? { authorization: currentAuthorization } : {}),
       updatedAt: new Date().toISOString(),
     };
     const tempPath = path + "." + process.pid + "." + Date.now() + ".tmp";
     writePrivateFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
     replaceFileWithRetry(tempPath, path);
-    if (eventFingerprint(previous) !== eventFingerprint(payload)) {
-      appendEvent(runId, {
-        schema: "agent-manager.event.v1",
-        type: "status",
-        at: payload.updatedAt,
-        runId,
-        state: payload.state,
-        classification: classificationForRecord(payload),
-        lineage: payload.lineage || null,
-        goalRefs: payload.goalRefs || [],
-        runtime: payload.runtime || null,
-        lanes: (payload.lanes || []).map((lane) => ({
-          id: lane.id,
-          harness: lane.harness,
-          modelRequested: lane.modelRequested || null,
-          modelObserved: lane.modelObserved || null,
-          harnessOptions: lane.harnessOptions || {},
-          effortObserved: lane.effortObserved || null,
-          supervision: lane.supervision || null,
-          state: lane.state,
-          exitCode: lane.exitCode ?? null,
-          needsInput: lane.needsInput || null,
-          waitingFor: lane.waitingFor || [],
-        })),
-        ship: payload.ship
-          ? {
-              state: payload.ship.state,
-              phase: payload.ship.phase,
-              approve: payload.ship.approve,
-              prUrl: payload.ship.prUrl || null,
-              needsInput: payload.ship.needsInput || null,
-            }
-          : null,
-        delivery: payload.delivery
-          ? {
-              state: payload.delivery.state,
-              reviewState: payload.delivery.review?.state || null,
-              verdict: payload.delivery.review?.verdict || null,
-              targets: (payload.delivery.targets || []).map((target) => ({
-                id: target.id,
-                state: target.state,
-                mergeSha: target.mergeSha || null,
-              })),
-            }
-          : null,
-        authorization: payload.authorization
-          ? {
-              state: payload.authorization.state,
-              level: payload.authorization.level,
-              grantDigest: payload.authorization.grantDigest,
-              receiptDigest: payload.authorization.receiptDigest || null,
-              failureCode: payload.authorization.failureCode || null,
-            }
-          : null,
-        awareness: payload.awareness
-          ? {
-              state: payload.awareness.state,
-              repoKey: payload.awareness.repoKey || null,
-              relatedRuns: payload.awareness.activeRelated?.length || 0,
-              deliveryDependencies: payload.awareness.deliveryDependencies?.length || 0,
-              lastError: payload.awareness.lastError || null,
-            }
-          : null,
-        cadence: deriveOperatorCadence(payload),
-      });
+    for (const event of transitionEvents(previous, payload)) {
+      try {
+        void emitEvent(event);
+      } catch {
+        // The event log is telemetry; it never fails a status write.
+      }
     }
     return payload;
   } finally {
     rmSync(lockPath, { recursive: true, force: true });
   }
-}
-
-export function appendEvent(runId, event) {
-  const dir = ensurePrivateDir(runDir(runId));
-  appendFileSync(join(dir, "events.jsonl"), JSON.stringify(event) + "\n", {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-}
-
-export function readEvents(runId) {
-  const path = join(runDir(assertSafeSlug(runId, "run id")), "events.jsonl");
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
 }
 
 export function deriveRunState(status) {
@@ -142,7 +61,7 @@ export function deriveRunState(status) {
 }
 
 export function isTerminalState(state) {
-  return isOverallTerminalState(state);
+  return TERMINAL_STATES.has(state);
 }
 
 export function readStatus(runId) {
@@ -162,39 +81,22 @@ export function latestRunId() {
 }
 
 export function formatStatus(status) {
-  const cadence = deriveOperatorCadence(status);
   if (!status) return "no status";
   const lines = [
     `${status.identity?.displayTitle || `run ${status.runId}`}  state=${status.state}  updated=${status.updatedAt || "-"}`,
-    `repo=${status.repo}  runId=${status.runId}`,
-    `classification=${classificationForRecord(status)}  lineage=${status.lineage ? `${status.lineage.relationship} of ${status.lineage.parentRunId}` : "none"}`,
-    `viewerVersion=${AGENT_MANAGER_VERSION}  runEngineVersion=${status.agentManager?.version || "legacy/unrecorded"}`,
-    `managerHarness=${status.identity?.manager?.harness || "-"}  managerModel=${status.identity?.manager?.model || "-"}`,
-    `target_dev_flow=${status.target_dev_flow || "-"}  workflow=${status.workflow || "-"}`,
+    `repo=${status.repo}  runId=${status.runId}  dev_flow=${status.target_dev_flow || "-"}`,
     `runtime=${formatRuntime(status.runtime)}`,
-    `transition=${cadence.transition}  stage=${cadence.stage}`,
-    `next=${cadence.nextAction}`,
-    `started=${status.startedAt || "-"}  ended=${status.endedAt || "-"}  initialDirty=${status.initialRepo?.dirty ? "yes" : "no"}`,
-    `planning=${status.planning?.state || "legacy/unrecorded"}  plan=${status.planning?.planRef || "-"}`,
-    `reviewedBase=${status.planning?.reviewedBaseSha || "-"}  contextSha256=${status.planning?.contextDigest || "-"}`,
-    `goalRefs=${status.goalRefs?.length ? status.goalRefs.join(",") : "-"}  goalContextSha256=${status.goals?.contextDigest || "-"}`,
-    `awareness=${status.awareness?.state || "legacy/unrecorded"}  repoKey=${status.awareness?.repoKey || "-"}  related=${status.awareness?.activeRelated?.length || 0}  deliveryDeps=${status.awareness?.deliveryDependencies?.length || 0}`,
-    `topology=${status.topology?.fullySerialized ? "serialized" : "parallel"}  effectiveParallelism=${status.topology?.effectiveParallelism || "-"}`,
+    `started=${status.startedAt || "-"}  ended=${status.endedAt || "-"}`,
     "",
   ];
   for (const lane of status.lanes || []) {
-    const spin = lane.state === "running" ? "*" : " ";
-    lines.push(`[${spin}] ${lane.id.padEnd(12)} ${lane.state.padEnd(8)} ${lane.harness}  model=${lane.modelObserved || lane.modelRequested || "default/unverified"}  ${lane.branch || "-"}`);
+    lines.push(`[${lane.state === "running" ? "*" : " "}] ${lane.id.padEnd(12)} ${lane.state.padEnd(8)} ${lane.harness}  model=${lane.modelObserved || lane.modelRequested || "default"}  ${lane.branch || "-"}`);
     lines.push(`      scope: ${lane.scope}`);
-    lines.push(`      kind: ${lane.kind || "-"}  completion=${lane.completion?.state || "-"}`);
     lines.push(`      last: ${lane.lastActivity || "-"}`);
-    if (lane.elapsedSec != null) lines.push(`      elapsed: ${lane.elapsedSec}s  pid=${lane.pid ?? "-"}`);
-    if (lane.exitCode != null) lines.push(`      exit: ${lane.exitCode}`);
+    if (lane.exitCode != null) lines.push(`      exit: ${lane.exitCode}  elapsed=${lane.elapsedSec ?? "-"}s`);
     if (lane.sessionId) lines.push(`      session: ${lane.sessionId}`);
-    if (lane.endedAt) lines.push(`      ended: ${lane.endedAt}`);
-    if (lane.claim?.state) lines.push(`      claim: ${lane.claim.state}`);
     if (lane.waitingFor?.length) lines.push(`      waiting for: ${lane.waitingFor.join(", ")}`);
-    if (lane.queueReason) lines.push(`      queue: ${lane.queueReason}`);
+    if (lane.needsInput?.prompt) lines.push(`      needs input: ${lane.needsInput.prompt}`);
     if (lane.scopeViolations?.length) lines.push(`      scope violations: ${lane.scopeViolations.join(", ")}`);
     if (lane.readOnlyViolations?.length) lines.push(`      read-only violations: ${lane.readOnlyViolations.join(", ")}`);
     lines.push("");
@@ -204,61 +106,14 @@ export function formatStatus(status) {
     if (status.integrate.error) lines.push(`      error: ${status.integrate.error}`);
     lines.push("");
   }
-  if (status.delivery) {
-    lines.push(`delivery: ${status.delivery.state}  mode=${status.delivery.mode || "-"}  releaseRequired=${status.delivery.releaseRequired ? "yes" : "no"}`);
-    lines.push(`      review: ${status.delivery.review?.state || "-"}  verdict=${status.delivery.review?.verdict || "-"}  pass=${status.delivery.review?.latestPass || 0}`);
-    for (const target of status.delivery.targets || []) {
-      lines.push(`      target ${target.id}: ${target.state}  lane=${target.laneId}  pr=${target.prUrl || target.pr || "-"}  merge=${target.mergeSha || "-"}`);
-    }
-    if (status.delivery.release?.tag) lines.push(`      release: ${status.delivery.release.tag}  sha=${status.delivery.release.sha || "-"}`);
-    lines.push("");
+  const review = status.delivery?.review;
+  if (review?.verdict) lines.push(`review: ${review.verdict} by ${review.reviewer || "-"}${review.notes ? ` — ${review.notes}` : ""}`);
+  for (const target of status.delivery?.targets || []) {
+    lines.push(`target ${target.id}: ${target.state}  tier=${target.tier ?? "-"}  pr=${target.prUrl || "-"}  merge=${target.mergeSha || "-"}`);
+    if (target.waitingOperator) lines.push(`      waiting: ${target.waitingOperator}`);
   }
-  if (status.reconciliation) {
-    lines.push(
-      `reconciliation: ${status.reconciliation.state}  provider=${status.reconciliation.provider}  at=${status.reconciliation.reconciledAt || "-"}`,
-      "",
-    );
-  }
-  if (status.authorization) {
-    lines.push(`authorization: ${status.authorization.state}  level=${status.authorization.level || "-"}  valid=${status.authorization.valid ? "yes" : "no"}`);
-    lines.push(`      grant: ${status.authorization.grantDigest || "-"}`);
-    lines.push(`      expires: ${status.authorization.expiresAt || "-"}  riskCeiling=${status.authorization.riskCeiling || "-"}`);
-    if (status.authorization.receiptDigest) lines.push(`      receipt: ${status.authorization.receiptDigest}`);
-    if (status.authorization.failureCode) lines.push(`      failure: ${status.authorization.failureCode}`);
-    if (status.authorization.nextAction) lines.push(`      next: ${status.authorization.nextAction}`);
-    lines.push("");
-  }
-  if (status.ship) {
-    lines.push(`ship: ${status.ship.state}  phase=${status.ship.phase || "-"}  approve=${status.ship.approve || "-"}`);
-    lines.push(`      branch: ${status.ship.branch || "-"}  base=${status.ship.base || "-"}`);
-    if (status.ship.prUrl) lines.push(`      pr: ${status.ship.prUrl}`);
-    if (status.ship.mergeSha) lines.push(`      merge: ${status.ship.mergeSha}`);
-    if (status.ship.tag) lines.push(`      tag: ${status.ship.tag}`);
-    if (status.ship.lastActivity) lines.push(`      last: ${status.ship.lastActivity}`);
-    if (status.ship.ci?.runs?.length) {
-      lines.push(`      GitHub Actions: ${status.ship.ci.state || "unknown"}`);
-      for (const run of status.ship.ci.runs) {
-        lines.push(`        ${run.workflow || run.id || "run"}: ${run.conclusion || run.status || "pending"}${run.url ? `  ${run.url}` : ""}`);
-      }
-    }
-    if (status.ship.needsInput?.prompt) lines.push(`      needs input: ${status.ship.needsInput.prompt}`);
-    lines.push("");
-  }
-  if (status.masterReturn) {
-    lines.push(`master return: ${status.masterReturn.state}  host=${status.masterReturn.host}  mode=${status.masterReturn.mode}  attempts=${status.masterReturn.attempts}`);
-    if (status.masterReturn.lastDeliveredAt) lines.push(`      delivered: ${status.masterReturn.lastDeliveredAt}`);
-    if (status.masterReturn.lastSignaledAt) lines.push(`      signaled: ${status.masterReturn.lastSignaledAt}`);
-    if (status.masterReturn.lastError) lines.push(`      error: ${status.masterReturn.lastError}`);
-    lines.push("");
-  }
-  if (status.feed?.lastError) lines.push(`feed warning: ${status.feed.lastError}`);
-  if (status.awareness?.lastError) lines.push(`awareness warning: ${status.awareness.lastError}`);
+  if (status.error) lines.push(`error: ${status.error}`);
   return lines.join("\n");
-}
-
-export async function watchStatus(runId, options = {}) {
-  const { runMonitor } = await import("./monitor.mjs");
-  return runMonitor(runId, options);
 }
 
 function safeParse(path) {
@@ -314,60 +169,4 @@ function replaceFileWithRetry(source, target) {
       Atomics.wait(sleeper, 0, 0, 10);
     }
   }
-}
-
-function eventFingerprint(status) {
-  if (!status) return null;
-  return JSON.stringify({
-    state: status.state,
-    lanes: (status.lanes || []).map((lane) => ({
-      id: lane.id,
-      state: lane.state,
-      modelObserved: lane.modelObserved || null,
-      exitCode: lane.exitCode ?? null,
-      needsInput: lane.needsInput || null,
-      waitingFor: lane.waitingFor || [],
-    })),
-    ship: status.ship
-      ? {
-          state: status.ship.state,
-          phase: status.ship.phase,
-          prUrl: status.ship.prUrl || null,
-          mergeSha: status.ship.mergeSha || null,
-          tag: status.ship.tag || null,
-          lastActivity: status.ship.lastActivity || null,
-          steps: (status.ship.steps || []).map((step) => [step.name, step.state, step.detail || null]),
-          checks: (status.ship.checks || []).map((check) => [check.name, check.status, check.conclusion]),
-          ci: (status.ship.ci?.runs || []).map((run) => [run.id, run.status, run.conclusion]),
-          needsInput: status.ship.needsInput || null,
-        }
-      : null,
-    delivery: status.delivery
-      ? {
-          state: status.delivery.state,
-          reviewState: status.delivery.review?.state || null,
-          verdict: status.delivery.review?.verdict || null,
-          targets: (status.delivery.targets || []).map((target) => ({
-            id: target.id,
-            state: target.state,
-            mergeSha: target.mergeSha || null,
-          })),
-        }
-      : null,
-    authorization: status.authorization
-      ? {
-          state: status.authorization.state,
-          grantDigest: status.authorization.grantDigest,
-          receiptDigest: status.authorization.receiptDigest || null,
-          failureCode: status.authorization.failureCode || null,
-        }
-      : null,
-    reconciliation: status.reconciliation
-      ? {
-          state: status.reconciliation.state,
-          provider: status.reconciliation.provider,
-          reconciledAt: status.reconciliation.reconciledAt,
-        }
-      : null,
-  });
 }

@@ -4,7 +4,6 @@ import YAML from "yaml";
 import { DEFAULT_MAX_CONCURRENCY, MAX_LANES } from "./constants.mjs";
 import { writePrivateFile } from "./fs-safe.mjs";
 import { assertPathInside } from "./paths.mjs";
-import { resolveGitRef } from "./worktree.mjs";
 import { recommendedNodeDependencySetup } from "./workflow.mjs";
 
 export function initWorkflow({ repo = process.cwd(), output = "agent-manager.yaml", request = "Implement the requested change", harnesses = ["claude"] } = {}) {
@@ -32,48 +31,12 @@ export function initWorkflow({ repo = process.cwd(), output = "agent-manager.yam
   const workflow = {
     repo: ".",
     title: request.length > 120 ? request.slice(0, 119) + "…" : request,
-    classification: "operational",
+    goal: request,
     base_ref: "HEAD",
     claim_mode: "auto",
     max_concurrency: Math.min(DEFAULT_MAX_CONCURRENCY, lanes.length),
     integrate: true,
     policy: { allow_commit: false, allow_pr: false, permission_mode: "acceptEdits" },
-    planning: {
-      source_refs: ["replace-with-source-reference"],
-      plan_ref: "replace-with-approved-plan-reference",
-      context: [
-        "# Shared planning context",
-        "",
-        `## Objective\n\n${request}`,
-        "",
-        "## Accepted decisions",
-        "",
-        "- Replace with the decisions every lane must follow.",
-        "",
-        "## Non-goals",
-        "",
-        "- Replace with work that is explicitly out of scope.",
-        "",
-        "## Contracts and constraints",
-        "",
-        "- Replace with repository instructions, interfaces, and ownership boundaries.",
-        "",
-        "## Validation",
-        "",
-        "- Replace with the commands and acceptance criteria for the completed run.",
-      ].join("\n"),
-      reviewed_base_sha: resolveGitRef(repo, "HEAD"),
-      verified_by: "replace-with-manager-agent",
-      verified_at: new Date().toISOString(),
-      reviewed_paths: ["replace-with-reviewed-paths"],
-      repository_instruction_refs: ["replace-with-reviewed-instruction-files"],
-      attestations: {
-        source_reviewed: false,
-        repository_instructions_reviewed: false,
-        relevant_code_reviewed: false,
-        scope_verified: false,
-      },
-    },
     lanes,
   };
   const dependencySetup = recommendedNodeDependencySetup(repo);
@@ -88,5 +51,5 @@ export function initWorkflow({ repo = process.cwd(), output = "agent-manager.yam
     };
   }
   writePrivateFile(target, YAML.stringify(workflow), "utf8");
-  return { path: target, contextPath: null, planningReady: false, workflow };
+  return { path: target, workflow };
 }

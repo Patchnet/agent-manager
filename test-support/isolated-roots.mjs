@@ -1,7 +1,7 @@
 // Test isolation for Agent Manager roots.
 //
 // Importing this module guarantees the current process — and every child it
-// spawns — resolves its runs, claims, and brain roots inside a disposable temp
+// spawns — resolves its runs and claims roots inside a disposable temp
 // sandbox, no matter what `AGENT_MANAGER_*` variables the operator has exported.
 // The enforcement itself lives in `src/config.mjs`, which every root passes
 // through; this module is the test-side handle on it.
@@ -46,7 +46,6 @@ export function isolatedEnv(overrides = {}) {
     AGENT_MANAGER_DEV_ROOT: join(root, "dev"),
     AGENT_MANAGER_RUNS_ROOT: join(root, "runs"),
     AGENT_MANAGER_CLAIMS_ROOT: join(root, "claims"),
-    AGENT_MANAGER_BRAIN_ROOT: join(root, "brain"),
     ...overrides,
   };
 }
@@ -60,7 +59,6 @@ export function useIsolatedRoots(root = isolatedRoot("roots-")) {
     AGENT_MANAGER_DEV_ROOT: root,
     AGENT_MANAGER_RUNS_ROOT: join(root, "runs"),
     AGENT_MANAGER_CLAIMS_ROOT: join(root, "claims"),
-    AGENT_MANAGER_BRAIN_ROOT: join(root, "brain"),
   };
   delete process.env.AGENT_MANAGER_CONFIG;
   delete process.env.AGENT_MANAGER_CLAIM_BIN;
@@ -74,7 +72,6 @@ export async function assertResolvedRootsIsolated() {
   return assertIsolated({
     runs: paths.RUNS_ROOT,
     claims: paths.CLAIMS_ROOT,
-    brain: paths.BRAIN_ROOT,
   }, "resolved root");
 }
 

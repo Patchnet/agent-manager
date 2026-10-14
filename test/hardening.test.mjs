@@ -29,7 +29,8 @@ const { currentHead, validateLaneGuardrails } = await import("../src/guardrails.
 const { buildHarnessEnv, buildVerificationEnv } = await import("../src/environment.mjs?hardening");
 const { detectRuntimeProfile, runtimeEnv } = await import("../src/runtime.mjs?hardening");
 const { getHarnessAdapter } = await import("../src/harness/index.mjs?hardening");
-const { isTerminalState, readEvents, readStatus, writeStatus } = await import("../src/status.mjs?hardening");
+const { isTerminalState, readStatus, writeStatus } = await import("../src/status.mjs?hardening");
+const { readEvents } = await import("../src/events.mjs?hardening");
 const { prepareReply, resumeLane } = await import("../src/reply.mjs?hardening");
 const { addWorktree, assertWorktreeIdentity } = await import("../src/worktree.mjs?hardening");
 
@@ -47,15 +48,14 @@ function valid(overrides = {}) {
   };
 }
 
-test("this test file resolves disposable runs, claims, and brain roots", async () => {
+test("this test file resolves disposable runs and claims roots", async () => {
   await assertResolvedRootsIsolated();
 });
 
-test("workflow validation rejects traversal, duplicate ids, wrong booleans, credentials, and unknown fields", () => {
+test("workflow validation rejects traversal, duplicate ids, wrong booleans, and unknown fields", () => {
   assert.throws(() => loadWorkflow(workflow("scope-traversal", valid({ lanes: [{ id: "lane", scope: "../outside", prompt: "work" }] }))), /stay inside/);
   assert.throws(() => loadWorkflow(workflow("duplicate", valid({ lanes: [{ id: "same", scope: "src/**", prompt: "a" }, { id: "same", scope: "docs/**", prompt: "b" }] }))), /duplicate lane id/);
   assert.throws(() => loadWorkflow(workflow("boolean", valid({ policy: { allow_commit: "yes" } }))), /must be a boolean/);
-  assert.throws(() => loadWorkflow(workflow("feed-creds", valid({ feed: { enabled: true, baseUrl: "https://user:pass@example.invalid" } }))), /must not embed credentials/);
   assert.throws(() => loadWorkflow(workflow("unknown", { ...valid(), surprise: true })), /unknown field/);
   assert.equal(loadWorkflow(workflow("identity", valid({ title: "Fleet telemetry", repo_shorthand: "fixture" }))).title, "Fleet telemetry");
   assert.throws(() => loadWorkflow(workflow("long-title", valid({ title: "x".repeat(161) }))), /exceeds 160/);
@@ -186,19 +186,20 @@ test("integrated verification excludes provider credentials unless explicitly al
   });
 });
 
-test("blocked is resumable, and status transitions produce JSONL events", () => {
+test("blocked is resumable, and status transitions produce JSONL transition events", () => {
   const runId = "run-event-test";
   writeStatus(runId, { runId, state: "running", repo: "repo", startedAt: new Date().toISOString(), lanes: [{ id: "lane", harness: "claude", state: "running" }] });
   writeStatus(runId, { runId, state: "blocked", repo: "repo", startedAt: new Date().toISOString(), lanes: [{ id: "lane", harness: "claude", state: "blocked", needsInput: { prompt: "choose" } }] });
   assert.equal(isTerminalState("blocked"), false);
   assert.equal(isTerminalState("done"), false);
   assert.equal(isTerminalState("merged"), true);
-  assert.equal(isTerminalState("released"), true);
-  const events = readEvents(runId);
-  assert.equal(events.length, 2);
-  assert.equal(events[1].state, "blocked");
-  assert.equal(events[1].schema, "agent-manager.event.v1");
-  assert.match(readFileSync(join(runsRoot, runId, "events.jsonl"), "utf8"), /"state":"blocked"/);
+  assert.equal(isTerminalState("released"), false);
+  const events = readEvents({ runId });
+  assert.deepEqual(events.map((event) => event.kind), ["lane_started", "waiting_operator"]);
+  assert.equal(events[1].v, 1);
+  assert.equal(events[1].lane, "lane");
+  assert.equal(events[1].text, "choose");
+  assert.match(readFileSync(join(runsRoot, runId, "events.jsonl"), "utf8"), /"kind":"waiting_operator"/);
 });
 
 test("stale supervisors cannot overwrite a resumed lane attempt", () => {
