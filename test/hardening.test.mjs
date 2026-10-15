@@ -191,9 +191,11 @@ test("blocked is resumable, and status transitions produce JSONL transition even
   writeStatus(runId, { runId, state: "running", repo: "repo", startedAt: new Date().toISOString(), lanes: [{ id: "lane", harness: "claude", state: "running" }] });
   writeStatus(runId, { runId, state: "blocked", repo: "repo", startedAt: new Date().toISOString(), lanes: [{ id: "lane", harness: "claude", state: "blocked", needsInput: { prompt: "choose" } }] });
   assert.equal(isTerminalState("blocked"), false);
-  assert.equal(isTerminalState("done"), false);
   assert.equal(isTerminalState("merged"), true);
-  assert.equal(isTerminalState("released"), false);
+  // 3.0 never writes `done` or `released` as a run state; runs finished under
+  // 2.x still carry them and must read as finished (see legacy-terminal-states).
+  assert.equal(isTerminalState("done"), true);
+  assert.equal(isTerminalState("released"), true);
   const events = readEvents({ runId });
   assert.deepEqual(events.map((event) => event.kind), ["lane_started", "waiting_operator"]);
   assert.equal(events[1].v, 1);

@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 3.0.0
+current: 3.0.1
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 3.0.1 - 2026-10-14
+
+Stale cleanup finishes the job: runs that ended in 2.x states (`released`, `filed`, `done`) count as finished, a worktree directory git already forgot is removed instead of stopping cleanup, and one failing run no longer aborts the rest of the batch.
 
 ## 3.0.0 - 2026-10-13
 

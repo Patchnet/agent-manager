@@ -310,8 +310,15 @@ const commands = {
           ...preview.runs.map((run) => `${run.runId}  ${run.state}  action=${run.recommendedAction}`)].join("\n"));
         return;
       }
-      const cleaned = cleanupStaleRuns({ olderThanDays, keepLogs: args.includes("--keep-logs") });
-      print(cleaned, `cleaned stale runs: ${cleaned.length}${cleaned.length ? "\n" + cleaned.join("\n") : ""}`);
+      const failed = [];
+      const cleaned = cleanupStaleRuns({
+        olderThanDays,
+        keepLogs: args.includes("--keep-logs"),
+        onFailure: (runId, error) => failed.push(`${runId}: ${error.message}`),
+      });
+      print(cleaned, [`cleaned stale runs: ${cleaned.length}`, ...cleaned,
+        ...(failed.length ? [`failed: ${failed.length}`, ...failed] : [])].join("\n"));
+      for (const line of failed) console.error(`cleanup failed ${line}`);
       return;
     }
     const [runId] = positionals();

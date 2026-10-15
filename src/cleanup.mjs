@@ -67,7 +67,12 @@ export function cleanupRun(runId, { keepLogs = false } = {}) {
   };
   return writeStatus(runId, status);
 }
-export function cleanupStaleRuns({ olderThanDays = 30, keepLogs = false, now = Date.now() } = {}) {
+export function cleanupStaleRuns({
+  olderThanDays = 30,
+  keepLogs = false,
+  now = Date.now(),
+  onFailure = (runId, error) => console.error(`cleanup ${runId} failed: ${error.message}`),
+} = {}) {
   if (!Number.isFinite(olderThanDays) || olderThanDays < 1) {
     throw new Error("olderThanDays must be at least 1");
   }
@@ -80,8 +85,13 @@ export function cleanupStaleRuns({ olderThanDays = 30, keepLogs = false, now = D
     if (!status || !isTerminalState(status.state)) continue;
     const timestamp = Date.parse(status.updatedAt || status.endedAt || status.startedAt || "");
     if (!Number.isFinite(timestamp) || timestamp > cutoff) continue;
-    cleanupRun(entry.name, { keepLogs });
-    cleaned.push(entry.name);
+    // One broken run must not stop the rest of the batch.
+    try {
+      cleanupRun(entry.name, { keepLogs });
+      cleaned.push(entry.name);
+    } catch (error) {
+      onFailure(entry.name, error);
+    }
   }
   return cleaned;
 }

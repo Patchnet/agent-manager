@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const AGENT_INSTRUCTION_FILES = [
@@ -83,11 +83,27 @@ export function inheritIgnoredAgentFiles(repoRoot, worktreePath) {
   return copied.sort();
 }
 
+// A linked worktree has a `.git` file; a full repository has a `.git` directory.
+function isFullRepository(path) {
+  try {
+    return statSync(join(path, ".git")).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export function removeWorktree({ repoRoot, worktreePath, force = true, bestEffort = false }) {
   if (!existsSync(worktreePath)) return;
   const args = ["worktree", "remove", worktreePath];
   if (force) args.push("--force");
   const r = git(repoRoot, args);
+  if (!r.ok && /is not a working tree/i.test(r.stderr || "") && !isFullRepository(worktreePath)) {
+    // Git already forgot this worktree; only its directory is left. Drop the
+    // stale registration and the directory. A full repository is never removed.
+    git(repoRoot, ["worktree", "prune"]);
+    rmSync(worktreePath, { recursive: true, force: true });
+    return;
+  }
   if (!r.ok) {
     const message = `worktree remove failed: ${r.stderr || r.stdout}`;
     if (bestEffort) console.error(message);

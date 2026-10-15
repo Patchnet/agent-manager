@@ -14,6 +14,9 @@ import { formatRuntime } from "./runtime.mjs";
 import { emitEvent, transitionEvents } from "./events.mjs";
 
 export const TERMINAL_STATES = new Set(["merged", "reviewed", "closed", "rejected", "failed", "cancelled"]);
+// End states written by 2.x runs. 3.0 never writes them, but runs that
+// finished under 2.x keep them on disk and must still read as finished.
+const LEGACY_TERMINAL_STATES = new Set(["released", "filed", "done"]);
 
 export function writeStatus(runId, status) {
   assertSafeSlug(runId, "run id");
@@ -61,7 +64,7 @@ export function deriveRunState(status) {
 }
 
 export function isTerminalState(state) {
-  return TERMINAL_STATES.has(state);
+  return TERMINAL_STATES.has(state) || LEGACY_TERMINAL_STATES.has(state);
 }
 
 export function readStatus(runId) {
