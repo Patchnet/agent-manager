@@ -1,0 +1,8 @@
+{
+  "gate": ["qx", "leaks", "commits", "deps", "audit", "ci-hosting", "agent-files"],
+  "main": [],
+  "commands": {},
+  "qx": { "exemptions": "docs/quality-exemptions.md" },
+  "leaks": { "allow": ["@example\\.invalid$"], "allowPaths": [] },
+  "public": true
+}
