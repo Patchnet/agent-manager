@@ -15,6 +15,8 @@
 // A path takes tier 2 if any tier2 pattern matches, else tier 0 if any tier0
 // pattern matches, else `default`. The change's tier is the highest path tier,
 // and the tiers file itself is always tier 2.
+// A missing, empty, or malformed tiers file exits 2: no usable policy stops the
+// ship and goes to the operator. It never means tier 1.
 // Patterns are repository-relative: `*` stays in one segment, `**` spans any.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -51,10 +53,16 @@ export function parseTiers(text) {
   return tiers;
 }
 
+/** Parse a policy that must exist. `text` is null when the file is missing. */
+export function requireTiers(text, file = TIERS_FILE) {
+  if (text == null) throw new Error(`no ${file}: stop and ask the operator`);
+  if (!/^(default|tier0|tier2):/m.test(text)) throw new Error(`${file} is empty: stop and ask the operator`);
+  return parseTiers(text);
+}
+
 export function loadTiers(repoRoot, file = TIERS_FILE) {
   const path = resolve(repoRoot, file);
-  if (!existsSync(path)) return { ...parseTiers(""), missing: true, path };
-  return { ...parseTiers(readFileSync(path, "utf8")), missing: false, path };
+  return { ...requireTiers(existsSync(path) ? readFileSync(path, "utf8") : null, file), path };
 }
 
 export function globToRegExp(pattern) {
@@ -108,10 +116,10 @@ function main(argv) {
   const paths = argv.includes("--stdin")
     ? readFileSync(0, "utf8").split(/\r?\n/)
     : changedPaths(repoRoot, option("--base", "origin/main"), option("--head", "HEAD"));
-  const result = { ...classifyPaths(paths, tiers), tiersFile: tiers.missing ? null : TIERS_FILE };
+  const result = { ...classifyPaths(paths, tiers), tiersFile: TIERS_FILE };
   if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
   else {
-    console.log(`tier ${result.tier}${tiers.missing ? ` (no ${TIERS_FILE}; default 1 for every path)` : ""}`);
+    console.log(`tier ${result.tier}`);
     for (const file of result.files) console.log(`  ${file.tier}  ${file.path}${file.pattern ? `  (${file.pattern})` : ""}`);
   }
 }

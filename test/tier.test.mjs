@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyPaths, globToRegExp, parseTiers } from "../tools/ship-tier.mjs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { classifyPaths, globToRegExp, loadTiers, parseTiers, requireTiers } from "../tools/ship-tier.mjs";
 
 const TIERS = parseTiers(`
 # comment
@@ -39,9 +43,59 @@ test("the tiers file itself is always tier 2, so a change cannot lower its own t
   assert.equal(classifyPaths(["anything.txt"], permissive).tier, 0);
 });
 
-test("no changes and no tiers file are both safe defaults", () => {
+test("a change with no paths is tier 0", () => {
   assert.equal(classifyPaths([], TIERS).tier, 0);
-  assert.equal(classifyPaths(["src/x.ts"], parseTiers("")).tier, 1);
+});
+
+test("a missing or empty policy stops instead of defaulting to tier 1", () => {
+  assert.throws(() => requireTiers(null), /no \.github\/ship-tiers\.yml: stop and ask the operator/);
+  assert.throws(() => requireTiers(""), /is empty: stop and ask the operator/);
+  assert.throws(() => requireTiers("# only a comment\n\n"), /is empty/);
+  assert.equal(requireTiers("default: 1\n").default, 1, "one explicit key is a policy");
+  assert.deepEqual(requireTiers("tier2:\n  - \"src/**\"\n").tier2, ["src/**"]);
+});
+
+test("loadTiers and the vendored CLI stop on a missing, empty, or malformed policy", () => {
+  const repo = mkdtempSync(join(tmpdir(), "tier-policy-"));
+  const cli = join(import.meta.dirname, "..", "tools", "ship-tier.mjs");
+  const classify = () => spawnSync(process.execPath, [cli, "--stdin"], { cwd: repo, input: "src/x.ts\n", encoding: "utf8", windowsHide: true });
+  try {
+    assert.throws(() => loadTiers(repo), /stop and ask the operator/);
+    assert.equal(classify().status, 2);
+    mkdirSync(join(repo, ".github"));
+    writeFileSync(join(repo, ".github", "ship-tiers.yml"), "# nothing yet\n");
+    assert.equal(classify().status, 2);
+    writeFileSync(join(repo, ".github", "ship-tiers.yml"), "default: 9\n");
+    assert.equal(classify().status, 2);
+    writeFileSync(join(repo, ".github", "ship-tiers.yml"), "default: 1\n");
+    const ok = classify();
+    assert.equal(ok.status, 0);
+    assert.match(ok.stdout, /^tier 1/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("the agent-manager tier command stops without a policy", () => {
+  const repo = mkdtempSync(join(tmpdir(), "tier-cli-"));
+  const bin = join(import.meta.dirname, "..", "bin", "agent-manager.mjs");
+  try {
+    execFileSync("git", ["init", "-q", "-b", "main", repo], { windowsHide: true });
+    const result = spawnSync(process.execPath, [bin, "tier", "--repo", repo, "--base", "HEAD"], { encoding: "utf8", windowsHide: true });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /stop and ask the operator/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("the tier-gate template refuses an empty policy before it classifies", () => {
+  const template = readFileSync(join(import.meta.dirname, "..", "templates", "github", "tier-gate.yml"), "utf8");
+  assert.ok(
+    template.indexOf("grep -qE '^(default|tier0|tier2):'") < template.indexOf("node .github/scripts/ship-tier.mjs --base"),
+    "an older vendored classifier must not see an empty policy",
+  );
+  assert.match(template, /::error::No usable \.github\/ship-tiers\.yml/);
 });
 
 test("glob semantics: * stays in a segment, ** spans any depth", () => {

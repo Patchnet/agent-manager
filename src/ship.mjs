@@ -2,7 +2,7 @@ import { spawnCommandSync } from "./command.mjs";
 import { assertAccepted, settleTargets } from "./delivery.mjs";
 import { writeReport } from "./report.mjs";
 import { readStatus, writeStatus } from "./status.mjs";
-import { TIERS_FILE, classifyPaths, parseTiers } from "../tools/ship-tier.mjs";
+import { TIERS_FILE, classifyPaths, requireTiers } from "../tools/ship-tier.mjs";
 
 // One command, no background phase: classify the change by path, open (or
 // fast-forward) it, and arm auto-merge when policy allows. GitHub, the required
@@ -22,10 +22,15 @@ const gh = (cwd, args, options) => run("gh", args, cwd, options);
 export function tierForChange(cwd, baseRef) {
   // Policy comes from the base branch, so a change cannot lower its own tier.
   const file = git(cwd, ["show", `${baseRef}:${TIERS_FILE}`], { allowFail: true });
-  const tiers = parseTiers(file.ok ? file.stdout : "");
   const diff = git(cwd, ["diff", "--name-status", "-M", `${baseRef}...HEAD`]).stdout;
   const paths = diff.split(/\r?\n/).filter(Boolean).flatMap((line) => line.split("\t").slice(1));
-  return { ...classifyPaths(paths, tiers), tiersFile: file.ok ? TIERS_FILE : null };
+  try {
+    return { ...classifyPaths(paths, requireTiers(file.ok ? file.stdout : null)), tiersFile: TIERS_FILE, policyProblem: null };
+  } catch (error) {
+    // No usable policy holds the ship like tier 2, so an armed auto-merge is disarmed too.
+    const files = paths.map((path) => ({ path, tier: 2, pattern: "(no usable policy)" }));
+    return { tier: 2, files, tiersFile: null, policyProblem: error.message };
+  }
 }
 
 export function shipRun(runId, { targetId = null, message = null, approvedBy = null, remote = null } = {}) {
@@ -51,6 +56,7 @@ export function shipRun(runId, { targetId = null, message = null, approvedBy = n
     const tier = tierForChange(cwd, baseRef);
     target.tier = tier.tier;
     target.tierFiles = tier.files.filter((file) => file.tier === tier.tier).map((file) => file.path).slice(0, 20);
+    target.policyProblem = tier.policyProblem;
     const approved = tier.tier < 2 || Boolean(approvedBy);
     if (approvedBy) target.approvedBy = approvedBy;
     if (flow === "simple") shipSimple({ status, target, cwd, origin, baseRef, approved, message });
@@ -158,7 +164,8 @@ function subject(status) {
 }
 
 function waitingText(status, target, action) {
-  return `Tier 2 (${target.tierFiles.join(", ")}): approve with \`agent-manager ship ${status.runId} --target ${target.id} --approved-by <you>\` to ${action}`;
+  const reason = target.policyProblem ? `Ship policy: ${target.policyProblem}` : `Tier 2 (${target.tierFiles.join(", ")})`;
+  return `${reason}: approve with \`agent-manager ship ${status.runId} --target ${target.id} --approved-by <you>\` to ${action}`;
 }
 
 export function notice(runId, target) {

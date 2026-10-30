@@ -116,6 +116,51 @@ test("ship refuses without an accepted review or a Simple Flow message", () => {
   assert.equal(readStatus(runId).state, "ship_pending");
 });
 
+// Moves main to `body` (null removes the policy), runs `use`, then restores it.
+function withBasePolicy(body, use) {
+  const path = join(seed, ".github", "ship-tiers.yml");
+  const original = readFileSync(path);
+  const setPolicy = (next, subject) => {
+    git(seed, "pull", "-q", "--rebase", "origin", "main");
+    if (next === null) rmSync(path);
+    else writeFileSync(path, next);
+    git(seed, "add", "-A");
+    git(seed, "commit", "-q", "-m", subject);
+    git(seed, "push", "-q", "origin", "main");
+  };
+  setPolicy(body, "chore: change policy");
+  try {
+    return use();
+  } finally {
+    setPolicy(original, "chore: restore policy");
+  }
+}
+
+for (const [label, body, reason] of [
+  ["missing", null, /no \.github\/ship-tiers\.yml/],
+  ["empty", "# nothing yet\n", /ship-tiers\.yml is empty/],
+  ["malformed", "default: 9\n", /default must be 0, 1, or 2/],
+]) {
+  test(`Simple Flow stops on a ${label} policy, then ships on operator approval`, () => {
+    withBasePolicy(body, () => {
+      const { runId } = seedRun({ [`src/${label}.ts`]: "x\n" });
+      const before = git(remote, "rev-parse", "main");
+      const waiting = shipRun(runId, { message: "feat: plain" });
+      const target = waiting.status.delivery.targets[0];
+      assert.equal(waiting.status.state, "waiting_operator");
+      assert.equal(git(remote, "rev-parse", "main"), before, "nothing reaches main");
+      assert.equal(target.tier, 2);
+      assert.match(target.policyProblem, reason);
+      assert.match(waiting.lines[0], /waiting: Ship policy: /);
+      assert.doesNotMatch(waiting.lines[0], /tier 1/);
+
+      const shipped = shipRun(runId, { message: "feat: plain", approvedBy: "operator" });
+      assert.equal(shipped.status.state, "merged");
+      assert.equal(shipped.status.delivery.targets[0].approvedBy, "operator");
+    });
+  });
+}
+
 // A scripted `gh` (AGENT_MANAGER_GH_BIN) that keeps PR state in a JSON file.
 const ghState = join(root, "gh-state.json");
 const ghBin = join(root, "fake-gh.mjs");
@@ -166,6 +211,27 @@ test("Formal Flow arms auto-merge for tier 1 and disarms it when new commits rea
     const approved = shipRun(runId, { message: "feat: formal", approvedBy: "operator" });
     assert.equal(approved.status.delivery.targets[0].autoMerge, true);
     assert.equal(approved.status.state, "shipping");
+  } finally {
+    delete process.env.AGENT_MANAGER_GH_BIN;
+    delete process.env.FAKE_GH_STATE;
+  }
+});
+
+test("Formal Flow disarms auto-merge when the base loses its policy", () => {
+  process.env.AGENT_MANAGER_GH_BIN = ghBin;
+  process.env.FAKE_GH_STATE = join(root, "gh-state-policy.json");
+  try {
+    const { runId } = seedRun({ "src/armed.ts": "a\n" }, { flow: "formal" });
+    assert.equal(shipRun(runId, { message: "feat: armed" }).status.delivery.targets[0].autoMerge, true);
+    withBasePolicy(null, () => {
+      const stopped = shipRun(runId, { message: "feat: armed" });
+      const target = stopped.status.delivery.targets[0];
+      assert.equal(stopped.status.state, "waiting_operator");
+      assert.equal(target.autoMerge, false);
+      assert.match(target.waitingOperator, /Ship policy: no \.github\/ship-tiers\.yml/);
+      const state = JSON.parse(readFileSync(process.env.FAKE_GH_STATE, "utf8"));
+      assert.ok(state.calls.some((call) => call.endsWith("--disable-auto")));
+    });
   } finally {
     delete process.env.AGENT_MANAGER_GH_BIN;
     delete process.env.FAKE_GH_STATE;

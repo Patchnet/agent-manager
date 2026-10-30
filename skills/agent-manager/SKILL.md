@@ -70,7 +70,7 @@ agent-manager emit <kind> --repo <name> [--pr <n>] [--text "<detail>"]   # from 
 | `waiting_operator` (lane) | relay the question verbatim; on the answer, `reply` |
 | `blocked` | read `status`; fix integration or guardrail issues (`ratify`, `integrate --force-lanes`), or escalate |
 | `run_closed` with `review_pending` reached | review, then `ship` |
-| `waiting_operator` (tier 2) | ask the operator to approve; on yes, `ship --approved-by <them>` |
+| `waiting_operator` (tier 2 or no usable ship policy) | ask the operator to approve; on yes, `ship --approved-by <them>` |
 | `pr_opened`, `automerge_armed` | post the notice; `wait` until `merged` |
 | `merged`, `run_closed` | report the outcome in one line and stop |
 

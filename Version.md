@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 3.0.1
+current: 3.1.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 3.1.0 - 2026-10-30
+
+No usable ship policy now stops the ship. When `.github/ship-tiers.yml` is missing, empty, or malformed on the base branch, `tier` and `tools/ship-tier.mjs` exit non-zero, `ship` holds the change and raises `waiting_operator`, and the `tier-gate` template fails until the file exists or `ship:approved` is set. Before this, a missing or empty file meant tier 1 for every path. Target repositories with no policy file must add one, or approve each ship with `--approved-by`.
 
 ## 3.0.1 - 2026-10-14
 

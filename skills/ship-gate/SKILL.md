@@ -20,8 +20,9 @@ tiers file once, not into every PR.
 agent-manager tier --base origin/main      # or: node tools/ship-tier.mjs --base origin/main
 ```
 
-The policy is `.github/ship-tiers.yml` on the base branch (no file: every path
-is tier 1). A change takes the highest tier among its paths; editing the tiers
+The policy is `.github/ship-tiers.yml` on the base branch. If that file is
+missing, empty, or malformed, stop and ask the operator: no usable policy never
+means tier 1. A change takes the highest tier among its paths; editing the tiers
 file is always tier 2.
 
 | Tier | Typical paths | Gate |

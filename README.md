@@ -36,7 +36,8 @@ run --detach ──► lanes work in worktrees ──► integrate ──► rev
 ```
 
 - **Tiers come from paths, never judgment.** The policy file is read from the
-  base branch, and editing it is always tier 2. See
+  base branch, and editing it is always tier 2. With no usable policy file,
+  `ship` stops and asks the operator. See
   [Ship tiers](docs/OPERATOR.md#ship-tiers).
 - **Review is independent but light.** A fresh-context reviewer blocks only on
   correctness, safety, data, authorization, or drift from the brief

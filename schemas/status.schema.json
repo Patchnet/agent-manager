@@ -105,6 +105,7 @@
         "autoMerge": { "type": "boolean" },
         "approvedBy": { "type": "string" },
         "waitingOperator": { "type": ["string", "null"] },
+        "policyProblem": { "type": ["string", "null"] },
         "mergeSha": { "type": ["string", "null"] },
         "mergedAt": { "type": ["string", "null"] }
       }

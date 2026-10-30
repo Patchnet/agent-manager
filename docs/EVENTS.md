@@ -38,7 +38,7 @@ changing its type, bumps `v`. Consumers should ignore unknown fields and kinds.
 |---|---|
 | `lane_started` | a lane (or a resumed attempt) starts; `text` = harness · branch · scope |
 | `lane_done` | a lane ends; `text` = `done\|failed\|cancelled: <last activity>` |
-| `waiting_operator` | a lane asks a question, or a tier 2 change needs approval; `text` = the exact question |
+| `waiting_operator` | a lane asks a question, or a tier 2 change needs approval, or the target has no usable ship policy; `text` = the exact question |
 | `operator_reply` | `reply` answered a lane; `text` = `Q: <question>\nA: <verbatim reply>` |
 | `review_verdict` | `review` recorded `accept`, `revise`, or `reject`; `actor` = reviewer |
 | `pr_opened` | `ship` opened or found the PR; `text` = URL |

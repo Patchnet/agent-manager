@@ -285,8 +285,8 @@ const commands = {
     const repoRoot = resolve(flag("--repo") || process.cwd());
     const tiers = loadTiers(repoRoot);
     const result = classifyPaths(changedPaths(repoRoot, flag("--base") || "origin/main", flag("--head") || "HEAD"), tiers);
-    print({ ...result, tiersFile: tiers.missing ? null : TIERS_FILE }, [
-      `tier ${result.tier}${tiers.missing ? ` (no ${TIERS_FILE}: every path is tier 1)` : ""}`,
+    print({ ...result, tiersFile: TIERS_FILE }, [
+      `tier ${result.tier}`,
       ...result.files.map((file) => `  ${file.tier}  ${file.path}${file.pattern ? `  (${file.pattern})` : ""}`),
     ].join("\n"));
   },

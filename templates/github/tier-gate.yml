@@ -4,6 +4,8 @@
 # agent-manager to .github/scripts/ship-tier.mjs, and add `tier-gate` to the
 # required checks. A PR whose changed paths reach tier 2 fails this check until
 # someone adds the `ship:approved` label (one tap in the GitHub mobile app).
+# A base branch with a missing or empty policy file fails the same way; it never
+# means tier 1. A malformed policy file fails until it is fixed.
 #
 # The policy is read from the base branch, so a PR cannot lower its own tier.
 # Like any pull_request workflow this guards against accidents, not against a
@@ -37,6 +39,15 @@ jobs:
           set -euo pipefail
           policy="$RUNNER_TEMP/ship-tiers.yml"
           git show "$BASE:.github/ship-tiers.yml" > "$policy" 2>/dev/null || : > "$policy"
+          # Checked here too, so an older vendored ship-tier.mjs cannot fall back to tier 1.
+          if ! grep -qE '^(default|tier0|tier2):' "$policy"; then
+            if [ "$APPROVED" = "true" ]; then
+              echo "No usable ship-tiers.yml on $BASE; ship:approved is set."
+              exit 0
+            fi
+            echo "::error::No usable .github/ship-tiers.yml on $BASE: an operator adds one, or adds the ship:approved label to merge."
+            exit 1
+          fi
           node .github/scripts/ship-tier.mjs --base "$BASE" --file "$policy" | tee "$RUNNER_TEMP/tier.txt"
           if head -1 "$RUNNER_TEMP/tier.txt" | grep -q '^tier 2' && [ "$APPROVED" != "true" ]; then
             echo "::error::Tier 2 change: an operator adds the ship:approved label to merge."

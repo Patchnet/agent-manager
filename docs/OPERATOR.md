@@ -73,7 +73,11 @@ tier0:                # docs, tests, copy
 - `*` stays inside one path segment; `**` spans any number of segments.
 - `ship` reads the file from the **base branch**, so a change cannot lower its
   own tier, and any change to the file itself is tier 2.
-- No file means every path is tier 1.
+- A missing, empty, or malformed file stops the ship: no usable policy never
+  means tier 1. `tier` exits non-zero. `ship` holds the change like tier 2
+  (nothing pushed in Simple Flow; PR without auto-merge in Formal Flow, and any
+  armed auto-merge is disarmed) and raises `waiting_operator`. Add the file to
+  the base branch and rerun, or approve this one change with `--approved-by`.
 - `agent-manager tier --base origin/main` classifies the current branch;
   `tools/ship-tier.mjs` is the same classifier with zero dependencies, ready to
   vendor into CI ([tier-gate template](../templates/github/tier-gate.yml)).
