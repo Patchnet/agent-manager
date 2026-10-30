@@ -9,6 +9,7 @@ CHANGELOG.md
 !.env.example
 .secrets/
 *.local.md
+CLAUDE.md
 AGENTS.md
 Codex.local.md
 .claude/

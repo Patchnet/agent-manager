@@ -49,7 +49,7 @@ Operator-specific and fleet-specific material must never be tracked:
 | Pattern / path | Purpose |
 |---|---|
 | `*.local.md` | Operator context, machine paths, internal planning coordinates |
-| `AGENTS.md`, `Codex.local.md` | Codex bootstrap siblings (operator-local) |
+| `CLAUDE.md`, `AGENTS.md`, `Codex.local.md` | Agent bootstrap files (operator-local) |
 | `.claude/`, `.cursor/`, `.codex/` | Host agent settings |
 | `.env`, `.env.*` (except `.env.example`) | Secrets and local config |
 | `.secrets/` | Credential storage |
@@ -89,8 +89,8 @@ Before first public push or after scrubbing private development history:
 
 ## Agent bootstrap
 
-- **Claude Code:** `CLAUDE.md` (tracked, safe-public)
+- **Claude Code:** `CLAUDE.md` (gitignored — operator-local)
 - **Codex / other hosts:** `AGENTS.md` (gitignored — operator copies or mirrors locally)
 - **Operator context:** `CLAUDE.local.md` (gitignored)
 
-When adding tracked agent instructions, keep `CLAUDE.md` self-contained for public readers and put internal planning, fleet, and machine-specific context in `*.local.md` only.
+Agent files are never tracked in this repo. Worktrees get the local copies from `src/worktree.mjs`.
