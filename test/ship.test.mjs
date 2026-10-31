@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isolatedRoot, useIsolatedRoots } from "../test-support/isolated-roots.mjs";
 
@@ -9,7 +9,7 @@ const root = isolatedRoot("ship-");
 useIsolatedRoots(root);
 test.after(() => rmSync(root, { recursive: true, force: true }));
 
-const { shipRun, tierForChange } = await import("../src/ship.mjs?ship");
+const { hasGate, shipRun, tierForChange } = await import("../src/ship.mjs?ship");
 const { readStatus, writeStatus } = await import("../src/status.mjs?ship");
 const { readEvents } = await import("../src/events.mjs?ship");
 
@@ -81,19 +81,16 @@ test("Simple Flow ships a tier 1 change as one commit on main and closes the run
   assert.deepEqual(readEvents({ runId }).map((event) => event.kind), ["review_verdict", "merged", "run_closed"]);
 });
 
-test("a tier 2 change waits for the operator, then ships on approval", () => {
+test("a tier 2 path ships without an approval step and records no approver", () => {
   const { runId } = seedRun({ "secrets/key-rotation.md": "rotate\n" });
-  const before = git(remote, "rev-parse", "main");
-  const waiting = shipRun(runId, { message: "chore: rotate keys" });
-  assert.equal(waiting.status.state, "waiting_operator");
-  assert.equal(git(remote, "rev-parse", "main"), before, "nothing reaches main before approval");
-  assert.match(waiting.lines[0], /Ship Gate · .* tier 2 · waiting: .*secrets\/key-rotation\.md/);
-  const [question] = readEvents({ runId }).filter((event) => event.kind === "waiting_operator");
-  assert.equal(question.tier, 2);
-
-  const shipped = shipRun(runId, { message: "chore: rotate keys", approvedBy: "operator" });
-  assert.equal(shipped.status.state, "merged");
-  assert.equal(shipped.status.delivery.targets[0].approvedBy, "operator");
+  const result = shipRun(runId, { message: "chore: rotate keys", approvedBy: "operator" });
+  const target = result.status.delivery.targets[0];
+  assert.equal(result.status.state, "merged");
+  assert.equal(target.tier, 2);
+  assert.equal(target.approvedBy, undefined);
+  assert.equal(target.mergeSha, git(remote, "rev-parse", "main"));
+  assert.match(result.lines[0], /tier 2 · merged/);
+  assert.deepEqual(readEvents({ runId }).filter((event) => event.kind === "waiting_operator"), []);
 });
 
 test("Simple Flow rebases onto a moved main", () => {
@@ -116,25 +113,30 @@ test("ship refuses without an accepted review or a Simple Flow message", () => {
   assert.equal(readStatus(runId).state, "ship_pending");
 });
 
-// Moves main to `body` (null removes the policy), runs `use`, then restores it.
-function withBasePolicy(body, use) {
-  const path = join(seed, ".github", "ship-tiers.yml");
-  const original = readFileSync(path);
-  const setPolicy = (next, subject) => {
+// Moves main to `files` (path to body, null removes it), runs `use`, then restores them.
+function withBase(files, use) {
+  const paths = Object.keys(files);
+  const original = paths.map((path) => (existsSync(join(seed, path)) ? readFileSync(join(seed, path)) : null));
+  const setFiles = (bodies, subject) => {
     git(seed, "pull", "-q", "--rebase", "origin", "main");
-    if (next === null) rmSync(path);
-    else writeFileSync(path, next);
+    paths.forEach((path, index) => {
+      const file = join(seed, path);
+      mkdirSync(join(file, ".."), { recursive: true });
+      if (bodies[index] === null) rmSync(file, { force: true });
+      else writeFileSync(file, bodies[index]);
+    });
     git(seed, "add", "-A");
     git(seed, "commit", "-q", "-m", subject);
     git(seed, "push", "-q", "origin", "main");
   };
-  setPolicy(body, "chore: change policy");
+  setFiles(Object.values(files), "chore: change base");
   try {
     return use();
   } finally {
-    setPolicy(original, "chore: restore policy");
+    setFiles(original, "chore: restore base");
   }
 }
+const withBasePolicy = (body, use) => withBase({ ".github/ship-tiers.yml": body }, use);
 
 for (const [label, body, reason] of [
   ["missing", null, /no \.github\/ship-tiers\.yml/],
@@ -149,7 +151,7 @@ for (const [label, body, reason] of [
       const target = waiting.status.delivery.targets[0];
       assert.equal(waiting.status.state, "waiting_operator");
       assert.equal(git(remote, "rev-parse", "main"), before, "nothing reaches main");
-      assert.equal(target.tier, 2);
+      assert.equal(target.tier, null);
       assert.match(target.policyProblem, reason);
       assert.match(waiting.lines[0], /waiting: Ship policy: /);
       assert.doesNotMatch(waiting.lines[0], /tier 1/);
@@ -184,7 +186,7 @@ writeFileSync(path, JSON.stringify(state));
 process.stdout.write(out);
 `);
 
-test("Formal Flow arms auto-merge for tier 1 and disarms it when new commits reach tier 2", () => {
+test("Formal Flow arms auto-merge for tier 1 and keeps it armed when new commits reach tier 2", () => {
   process.env.AGENT_MANAGER_GH_BIN = ghBin;
   process.env.FAKE_GH_STATE = ghState;
   try {
@@ -202,15 +204,11 @@ test("Formal Flow arms auto-merge for tier 1 and disarms it when new commits rea
     const second = shipRun(runId, { message: "feat: formal" });
     const raised = second.status.delivery.targets[0];
     assert.equal(raised.tier, 2);
-    assert.equal(raised.autoMerge, false);
-    assert.equal(second.status.state, "waiting_operator");
+    assert.equal(raised.autoMerge, true);
+    assert.equal(second.status.state, "shipping");
     const state = JSON.parse(readFileSync(ghState, "utf8"));
-    assert.ok(state.calls.includes("pr merge 1 --disable-auto"), "auto-merge was disarmed on GitHub");
-    assert.equal(state.prs[0].autoMerge, false);
-
-    const approved = shipRun(runId, { message: "feat: formal", approvedBy: "operator" });
-    assert.equal(approved.status.delivery.targets[0].autoMerge, true);
-    assert.equal(approved.status.state, "shipping");
+    assert.ok(state.calls.includes("pr edit 1 --add-label tier:2"));
+    assert.ok(!state.calls.some((call) => call.endsWith("--disable-auto")));
   } finally {
     delete process.env.AGENT_MANAGER_GH_BIN;
     delete process.env.FAKE_GH_STATE;
@@ -236,4 +234,124 @@ test("Formal Flow disarms auto-merge when the base loses its policy", () => {
     delete process.env.AGENT_MANAGER_GH_BIN;
     delete process.env.FAKE_GH_STATE;
   }
+});
+
+// A fictional gate: it logs its arguments and fails when FAKE_GATE_RED is set.
+const gateFiles = {
+  "pipeline.json": "{ \"gate\": [\"unit\"] }\n",
+  "scripts/quality.mjs": `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.FAKE_GATE_LOG, process.argv.slice(2).join(" ") + "\\n");
+if (process.env.FAKE_GATE_RED) {
+  console.log("unit: 1 failed");
+  process.exit(1);
+}
+`,
+};
+const gateLog = join(root, "gate.log");
+
+function withGate(extra, use) {
+  process.env.FAKE_GATE_LOG = gateLog;
+  rmSync(gateLog, { force: true });
+  try {
+    return withBase({ ...gateFiles, ...extra }, use);
+  } finally {
+    delete process.env.FAKE_GATE_LOG;
+  }
+}
+
+test("a gated repository with no policy ships through the gate with no approval", () => {
+  withGate({ ".github/ship-tiers.yml": null }, () => {
+    const { runId, worktree } = seedRun({ "src/gated.ts": "g\n" });
+    assert.equal(hasGate(worktree, "origin/main"), true);
+    const result = shipRun(runId, { message: "feat: gated" });
+    const target = result.status.delivery.targets[0];
+    assert.equal(result.status.state, "merged");
+    assert.equal(target.gated, true);
+    assert.equal(target.tier, null);
+    assert.equal(target.policyProblem, null);
+    assert.equal(target.mergeSha, git(remote, "rev-parse", "main"));
+    assert.match(result.lines[0], /· gate · merged /);
+    assert.equal(readFileSync(gateLog, "utf8").trim(), "--range origin/main..HEAD");
+    assert.ok(!readEvents({ runId }).some((event) => "tier" in event));
+  });
+});
+
+test("the gate wins over a tier policy, so a tier 2 path pushes with no approval", () => {
+  withGate({}, () => {
+    const { runId } = seedRun({ "secrets/gated.md": "g\n" });
+    const result = shipRun(runId, { message: "chore: gated" });
+    assert.equal(result.status.state, "merged");
+    assert.equal(result.status.delivery.targets[0].tier, null);
+  });
+});
+
+test("a failed gate pushes nothing, and ship succeeds once the gate is green", () => {
+  withGate({ ".github/ship-tiers.yml": null }, () => {
+    const { runId } = seedRun({ "src/red.ts": "r\n" });
+    const before = git(remote, "rev-parse", "main");
+    process.env.FAKE_GATE_RED = "1";
+    try {
+      assert.throws(() => shipRun(runId, { message: "feat: red" }), /gate failed[\s\S]*unit: 1 failed/);
+    } finally {
+      delete process.env.FAKE_GATE_RED;
+    }
+    assert.equal(git(remote, "rev-parse", "main"), before);
+    assert.equal(readStatus(runId).state, "ship_pending");
+    assert.equal(shipRun(runId, { message: "feat: red" }).status.state, "merged");
+    assert.equal(git(remote, "log", "-1", "--format=%s", "main"), "feat: red");
+  });
+});
+
+test("a gated repository pushes even when it declares Formal Flow", () => {
+  process.env.AGENT_MANAGER_GH_BIN = ghBin;
+  process.env.FAKE_GH_STATE = join(root, "gh-state-gated.json");
+  try {
+    withGate({}, () => {
+      const { runId } = seedRun({ "src/formal-gated.ts": "f\n" }, { flow: "formal" });
+      const result = shipRun(runId, { message: "feat: formal gated" });
+      assert.equal(result.status.state, "merged");
+      assert.equal(result.status.delivery.targets[0].pr, null);
+      assert.equal(existsSync(process.env.FAKE_GH_STATE), false, "no PR tooling ran");
+    });
+  } finally {
+    delete process.env.AGENT_MANAGER_GH_BIN;
+    delete process.env.FAKE_GH_STATE;
+  }
+});
+
+test("a PR that is already open stays a PR when its repository adopts the gate", () => {
+  process.env.AGENT_MANAGER_GH_BIN = ghBin;
+  process.env.FAKE_GH_STATE = join(root, "gh-state-adopted.json");
+  try {
+    const { runId } = seedRun({ "src/open.ts": "o\n" }, { flow: "formal" });
+    assert.equal(shipRun(runId, { message: "feat: open" }).status.delivery.targets[0].autoMerge, true);
+    withGate({}, () => {
+      const result = shipRun(runId, { message: "feat: open" });
+      const target = result.status.delivery.targets[0];
+      assert.equal(result.status.state, "shipping");
+      assert.equal(target.autoMerge, true);
+      assert.match(result.lines[0], /· gate · PR /);
+    });
+  } finally {
+    delete process.env.AGENT_MANAGER_GH_BIN;
+    delete process.env.FAKE_GH_STATE;
+  }
+});
+
+test("a change cannot add the gate to skip the stop", () => {
+  withBasePolicy(null, () => {
+    const { runId, worktree } = seedRun({ ...gateFiles, "src/sneak.ts": "s\n" });
+    assert.equal(hasGate(worktree, "origin/main"), false);
+    const before = git(remote, "rev-parse", "main");
+    const stopped = shipRun(runId, { message: "feat: sneak" });
+    assert.equal(stopped.status.state, "waiting_operator");
+    assert.equal(git(remote, "rev-parse", "main"), before);
+  });
+});
+
+test("one gate file alone is not a gate", () => {
+  withBase({ "pipeline.json": gateFiles["pipeline.json"], ".github/ship-tiers.yml": null }, () => {
+    const { runId } = seedRun({ "src/half.ts": "h\n" });
+    assert.equal(shipRun(runId, { message: "feat: half" }).status.state, "waiting_operator");
+  });
 });

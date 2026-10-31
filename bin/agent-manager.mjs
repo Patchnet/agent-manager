@@ -25,7 +25,7 @@ import { prepareReply, resumeLane } from "../src/reply.mjs";
 import { closeRunById, reviewRun } from "../src/review.mjs";
 import { newRunId, runWorkflow } from "../src/run.mjs";
 import { formatRuntime } from "../src/runtime.mjs";
-import { shipRun } from "../src/ship.mjs";
+import { hasGate, shipRun } from "../src/ship.mjs";
 import { formatStatus, latestRunId, readStatus, writeStatus } from "../src/status.mjs";
 import { AGENT_MANAGER_VERSION, currentVersionInfo } from "../src/version.mjs";
 import { waitForEvent } from "../src/wait.mjs";
@@ -283,8 +283,13 @@ const commands = {
   },
   tier() {
     const repoRoot = resolve(flag("--repo") || process.cwd());
+    const base = flag("--base") || "origin/main";
+    if (hasGate(repoRoot, base)) {
+      print({ gated: true, tier: null, files: [], tiersFile: null }, `gate: ${base} has the pipeline gate, so tiers do not apply`);
+      return;
+    }
     const tiers = loadTiers(repoRoot);
-    const result = classifyPaths(changedPaths(repoRoot, flag("--base") || "origin/main", flag("--head") || "HEAD"), tiers);
+    const result = classifyPaths(changedPaths(repoRoot, base, flag("--head") || "HEAD"), tiers);
     print({ ...result, tiersFile: TIERS_FILE }, [
       `tier ${result.tier}`,
       ...result.files.map((file) => `  ${file.tier}  ${file.path}${file.pattern ? `  (${file.pattern})` : ""}`),

@@ -6,6 +6,11 @@ description: >-
   Use when the operator says "fire up agent manager", "agent-manager", "run
   lanes", "multi-lane", "orchestrate agents", or asks for run status. Always
   launch with --detach and wake on events with `agent-manager wait`.
+version: 2.0.0
+purpose: Run agent-manager lanes and ship through the repository's gate or tier policy.
+author_model: Claude Code (claude-opus-5-5)
+created: 2026-07-29
+updated: 2026-10-30
 ---
 
 # agent-manager
@@ -13,7 +18,7 @@ description: >-
 Use it for work that needs **more than one harness or more than one disjoint
 scope at once**. For one coherent task, work directly in a single session (with
 your harness's own worktree and subagents) and ship with the
-[Ship Gate](../ship-gate/SKILL.md) tiers; no run needed.
+[Ship Gate](../ship-gate/SKILL.md); no run needed.
 
 Before reaching for a feature here, check
 [what your harness already does](../../docs/HARNESS-NATIVE.md).
@@ -29,14 +34,15 @@ Before reaching for a feature here, check
    invent lane state.
 4. **Questions go to the operator verbatim** (`waiting_operator`). Make
    routine engineering calls yourself. Ask only for product decisions, scope
-   beyond the brief, or a tier 2 approval.
+   beyond the brief, or a ship with no gate and no usable policy.
 5. **One verdict.** When the run reaches `review_pending`, have a
    fresh-context reviewer (subagent or `/code-review`) check the diff against
    the brief with the [reviewer prompt](../ship-gate/reviewer.md), then record it:
    `agent-manager review <runId> --verdict accept|revise|reject --reviewer <id> --notes "..."`.
-6. **Ship by tier.** `agent-manager ship <runId>`. Tier 0/1: auto-merge armed,
-   so post the one-line notice and move on. Tier 2: post the question and wait
-   for the operator. Never approve a tier 2 change yourself.
+6. **Ship.** `agent-manager ship <runId>`. With the gate, it runs the gate and
+   pushes to the base. With only a tier policy, it pushes or arms auto-merge.
+   Post the one-line notice and move on. With neither, post the question and
+   wait for the operator. Never approve that stop yourself.
 7. **Conflicts and red checks go to the author thread**, not the operator:
    merge the base, resolve, re-run the affected tests, push.
 8. **Workers never commit, push, merge, or tag** unless the workflow policy
@@ -70,7 +76,7 @@ agent-manager emit <kind> --repo <name> [--pr <n>] [--text "<detail>"]   # from 
 | `waiting_operator` (lane) | relay the question verbatim; on the answer, `reply` |
 | `blocked` | read `status`; fix integration or guardrail issues (`ratify`, `integrate --force-lanes`), or escalate |
 | `run_closed` with `review_pending` reached | review, then `ship` |
-| `waiting_operator` (tier 2 or no usable ship policy) | ask the operator to approve; on yes, `ship --approved-by <them>` |
+| `waiting_operator` (no gate, no usable ship policy) | ask the operator to approve; on yes, `ship --approved-by <them>` |
 | `pr_opened`, `automerge_armed` | post the notice; `wait` until `merged` |
 | `merged`, `run_closed` | report the outcome in one line and stop |
 

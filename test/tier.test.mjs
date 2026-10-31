@@ -96,6 +96,7 @@ test("the tier-gate template refuses an empty policy before it classifies", () =
     "an older vendored classifier must not see an empty policy",
   );
   assert.match(template, /::error::No usable \.github\/ship-tiers\.yml/);
+  assert.doesNotMatch(template, /tier 2 change/i, "a tier is a label, so no tier fails the check");
 });
 
 test("glob semantics: * stays in a segment, ** spans any depth", () => {

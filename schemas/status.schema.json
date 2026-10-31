@@ -100,6 +100,7 @@
         "state": { "enum": ["pending", "changes_ready", "no_changes", "pr_open", "merged", "closed"] },
         "tier": { "enum": [0, 1, 2, null] },
         "tierFiles": { "type": "array", "items": { "type": "string" } },
+        "gated": { "type": "boolean" },
         "pr": { "type": ["string", "null"] },
         "prUrl": { "type": ["string", "null"] },
         "autoMerge": { "type": "boolean" },

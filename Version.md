@@ -1,11 +1,15 @@
 ---
 enabled: true
-current: 3.1.0
+current: 3.2.0
 dev_flow: simple
 test_gate: local
 ---
 
 # Version History
+
+## 3.2.0 - 2026-10-30
+
+`ship` follows the pipeline gate and has no tier 2 approval step. Where the base branch has `pipeline.json` and `scripts/quality.mjs`, `ship` runs the gate and pushes one commit to the base, whatever flow the repository declares and with no approval. Without a gate, every tier ships the same way and a tier is only a label. The stop from 3.1.0 stays for a repository with no gate and no usable policy, and `--approved-by` now applies only to that stop. `tier` reports the gate, and the `tier-gate` template checks only for a usable policy.
 
 ## 3.1.0 - 2026-10-30
 

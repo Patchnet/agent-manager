@@ -44,19 +44,49 @@ run --detach → wait → (reply) → integrate → review → ship → wait →
    records one verdict: `review <runId> --verdict accept|revise|reject
    --reviewer <id> [--notes ...]`. `revise` leaves the worktrees in place for
    a follow-up run or `reply`; `reject` ends the run.
-6. **Ship.** `ship <runId>` (see below). Tier 0/1 changes need nothing else.
+6. **Ship.** `ship <runId>` (see below). Only a repository with no gate and no
+   usable policy stops to ask.
 7. **Close** a run you accept but will not ship: `close <runId> --reason ...`.
 
 `status <runId>` shows the current state at any time; `events <runId>` shows
 the history; `cancel <runId> [--remove-worktrees]` stops a run.
 
+## How `ship` picks a route
+
+`ship` looks at the **base branch**, so a change cannot pick its own route:
+
+| Base branch has | `ship` does | You see |
+|---|---|---|
+| `pipeline.json` and `scripts/quality.mjs` | runs the gate, then pushes one commit to the base | a one-line notice |
+| a usable `.github/ship-tiers.yml`, no gate | labels the change and ships it by flow | a one-line notice |
+| no gate and no usable policy | stops | a `waiting_operator` event |
+
+Nobody approves a change on the first two routes. Production stops, such as a
+destructive schema change, belong to Ops and are outside this tool.
+
+## Pipeline gate
+
+A repository with both gate files ships the way its own pipeline says. `ship`
+squashes the lane commits into one commit with `--message`, rebases it onto the
+latest base, runs `node scripts/quality.mjs --range <base>..HEAD` in the
+worktree, and pushes. The worktree needs the dependencies its gate uses.
+
+- The gate wins over a tier policy, and tiers do not apply: `tier` says so.
+- It wins over a declared Formal Flow too, except that a PR already open stays a
+  PR.
+- A failed gate pushes nothing. `ship` exits with the gate's output; fix the
+  worktree and rerun.
+- `ship` always runs the gate itself, because a clone may not have the
+  `pre-push` hook. Where the hook is installed, the gate runs twice.
+
 ## Ship tiers
 
-The target repository declares its policy in `.github/ship-tiers.yml`:
+Without a gate, the target repository declares its policy in
+`.github/ship-tiers.yml`:
 
 ```yaml
 default: 1            # unmatched paths
-tier2:                # an operator approves
+tier2:                # the highest-risk paths
   - "src/db/migrations/**"
   - "src/**/billing/**"
   - "src/**/auth/**"
@@ -73,29 +103,28 @@ tier0:                # docs, tests, copy
 - `*` stays inside one path segment; `**` spans any number of segments.
 - `ship` reads the file from the **base branch**, so a change cannot lower its
   own tier, and any change to the file itself is tier 2.
-- A missing, empty, or malformed file stops the ship: no usable policy never
-  means tier 1. `tier` exits non-zero. `ship` holds the change like tier 2
-  (nothing pushed in Simple Flow; PR without auto-merge in Formal Flow, and any
-  armed auto-merge is disarmed) and raises `waiting_operator`. Add the file to
-  the base branch and rerun, or approve this one change with `--approved-by`.
+- A tier is a label for the change. Every tier ships the same way: PR, `tier:N`
+  label, and auto-merge (Formal), or one commit pushed to the base (Simple). The
+  repository's required check is what holds a change back.
 - `agent-manager tier --base origin/main` classifies the current branch;
   `tools/ship-tier.mjs` is the same classifier with zero dependencies, ready to
   vendor into CI ([tier-gate template](../templates/github/tier-gate.yml)).
 
-| Tier | `ship` does | You see |
-|---|---|---|
-| 0 | PR + `tier:0` label + auto-merge (Formal), or one commit pushed to the base (Simple) | a log line |
-| 1 | the same | a one-line notice |
-| 2 | PR + `tier:2` label, then stops (Formal); nothing pushed (Simple) | a `waiting_operator` event naming the tier 2 paths |
+## No gate and no usable policy
 
-Approve a tier 2 change with `ship <runId> --approved-by <you>`. The approval
-is recorded on the target and in the event log, and covers the change as it
-stands when you approve. A later `ship` without `--approved-by` re-classifies
-the branch: if new commits reach tier 2 while auto-merge is armed, `ship`
-disarms it (`gh pr merge --disable-auto`) and asks again.
+A missing, empty, or malformed policy file in a repository with no gate stops
+the ship: it never means tier 1. `tier` exits non-zero. `ship` pushes nothing to
+the base in Simple Flow. In Formal Flow it opens the PR without auto-merge, and
+disarms any armed auto-merge (`gh pr merge --disable-auto`). Either way it raises
+`waiting_operator`.
+
+Add the gate or the policy file to the base branch and rerun, or approve this
+one change with `ship <runId> --approved-by <you>`. The approval is recorded on
+the target and in the event log, and covers the change as it stands when you
+approve.
 
 **Formal Flow** (`dev_flow: formal` in the target's `Version.md`, or
-`target_dev_flow` in the workflow) pushes the delivery branch, opens or reuses
+`target_dev_flow` in the workflow, on a repository with no gate) pushes the delivery branch, opens or reuses
 the PR, labels it, and runs `gh pr merge --auto --squash`. The repository's
 required check gates the merge. `wait` records the merge when GitHub completes
 it. Merge conflicts surface as a blocked PR; the author thread merges the base,

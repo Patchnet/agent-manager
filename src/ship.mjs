@@ -4,9 +4,12 @@ import { writeReport } from "./report.mjs";
 import { readStatus, writeStatus } from "./status.mjs";
 import { TIERS_FILE, classifyPaths, requireTiers } from "../tools/ship-tier.mjs";
 
-// One command, no background phase: classify the change by path, open (or
-// fast-forward) it, and arm auto-merge when policy allows. GitHub, the required
-// check, and the harness PR monitor take it from there.
+// One command, no background phase. A repository with the pipeline gate gets one
+// commit pushed through that gate. Any other repository is classified by path and
+// opened (or fast-forwarded) with auto-merge. No gate and no usable policy stops
+// for the operator.
+
+export const GATE_FILES = ["pipeline.json", "scripts/quality.mjs"];
 
 function run(command, args, cwd, { allowFail = false } = {}) {
   // AGENT_MANAGER_GH_BIN points `gh` at a stand-in (a .mjs runs under node); tests use it.
@@ -19,6 +22,18 @@ function run(command, args, cwd, { allowFail = false } = {}) {
 const git = (cwd, args, options) => run("git", args, cwd, options);
 const gh = (cwd, args, options) => run("gh", args, cwd, options);
 
+/** The gate on the base branch counts, so a change cannot add one to skip the stop. */
+export function hasGate(cwd, baseRef) {
+  return GATE_FILES.every((file) => git(cwd, ["cat-file", "-e", `${baseRef}:${file}`], { allowFail: true }).ok);
+}
+
+// Runs in the worktree even when a pre-push hook would, since a clone may not have the hook.
+function runGate(cwd, baseRef) {
+  const gate = run(process.execPath, ["scripts/quality.mjs", "--range", `${baseRef}..HEAD`], cwd, { allowFail: true });
+  if (!gate.ok) throw new Error(`gate failed in ${cwd}, nothing pushed: fix it and rerun ship
+${(gate.stdout || gate.stderr).slice(-2000)}`);
+}
+
 export function tierForChange(cwd, baseRef) {
   // Policy comes from the base branch, so a change cannot lower its own tier.
   const file = git(cwd, ["show", `${baseRef}:${TIERS_FILE}`], { allowFail: true });
@@ -27,9 +42,7 @@ export function tierForChange(cwd, baseRef) {
   try {
     return { ...classifyPaths(paths, requireTiers(file.ok ? file.stdout : null)), tiersFile: TIERS_FILE, policyProblem: null };
   } catch (error) {
-    // No usable policy holds the ship like tier 2, so an armed auto-merge is disarmed too.
-    const files = paths.map((path) => ({ path, tier: 2, pattern: "(no usable policy)" }));
-    return { tier: 2, files, tiersFile: null, policyProblem: error.message };
+    return { tier: null, files: [], tiersFile: null, policyProblem: error.message };
   }
 }
 
@@ -40,7 +53,7 @@ export function shipRun(runId, { targetId = null, message = null, approvedBy = n
   const targets = (status.delivery?.targets || []).filter((target) =>
     target.state !== "no_changes" && !target.mergeSha && (!targetId || target.id === targetId));
   if (!targets.length) throw new Error(targetId ? `no unmerged target ${targetId}` : "nothing left to ship");
-  const flow = status.target_dev_flow === "formal" ? "formal" : "simple";
+  const declaredFlow = status.target_dev_flow === "formal" ? "formal" : "simple";
   const lines = [];
   for (const target of targets) {
     const cwd = target.worktree;
@@ -53,12 +66,14 @@ export function shipRun(runId, { targetId = null, message = null, approvedBy = n
       git(cwd, ["add", "-A"]);
       git(cwd, ["commit", "-m", message || subject(status)]);
     }
-    const tier = tierForChange(cwd, baseRef);
+    target.gated = hasGate(cwd, baseRef);
+    const tier = target.gated ? { tier: null, policyProblem: null } : tierForChange(cwd, baseRef);
     target.tier = tier.tier;
-    target.tierFiles = tier.files.filter((file) => file.tier === tier.tier).map((file) => file.path).slice(0, 20);
     target.policyProblem = tier.policyProblem;
-    const approved = tier.tier < 2 || Boolean(approvedBy);
-    if (approvedBy) target.approvedBy = approvedBy;
+    const approved = !tier.policyProblem || Boolean(approvedBy);
+    if (approvedBy && tier.policyProblem) target.approvedBy = approvedBy;
+    // A gated repository pushes to its base whatever flow it declares. A PR already open stays a PR.
+    const flow = target.gated && !target.pr ? "simple" : declaredFlow;
     if (flow === "simple") shipSimple({ status, target, cwd, origin, baseRef, approved, message });
     else shipFormal({ status, target, cwd, origin, approved, message });
     lines.push(notice(runId, target));
@@ -85,6 +100,7 @@ function shipSimple({ status, target, cwd, origin, baseRef, approved, message })
     target.waitingOperator = null;
     throw new Error(`conflict with ${baseRef}: resolve it in ${cwd} (merge or rebase, rerun tests), then rerun ship`);
   }
+  if (target.gated) runGate(cwd, baseRef);
   git(cwd, ["push", origin, `HEAD:${target.base}`]);
   target.mergeSha = git(cwd, ["rev-parse", "HEAD"]).stdout;
   target.mergedAt = new Date().toISOString();
@@ -102,7 +118,7 @@ function shipFormal({ status, target, cwd, origin, approved, message }) {
     const title = message || subject(status);
     const body = [
       status.goal ? `Goal: ${status.goal}` : null,
-      `Agent Manager run \`${status.runId}\` · tier ${target.tier} · review ${status.delivery.review.verdict} by ${status.delivery.review.reviewer}`,
+      `Agent Manager run \`${status.runId}\` · ${route(target)} · review ${status.delivery.review.verdict} by ${status.delivery.review.reviewer}`,
       status.delivery.review.notes ? `Review notes: ${status.delivery.review.notes}` : null,
     ].filter(Boolean).join("\n\n");
     gh(cwd, ["pr", "create", "--base", target.base, "--head", target.branch, "--title", title, "--body", body]);
@@ -112,11 +128,13 @@ function shipFormal({ status, target, cwd, origin, approved, message }) {
   target.pr = String(pr.number);
   target.prUrl = pr.url;
   target.state = "pr_open";
-  const label = `tier:${target.tier}`;
-  gh(cwd, ["label", "create", label, "--force", "--color", ["0e8a16", "fbca04", "d93f0b"][target.tier]], { allowFail: true });
-  gh(cwd, ["pr", "edit", target.pr, "--add-label", label], { allowFail: true });
+  if (target.tier !== null) {
+    const label = `tier:${target.tier}`;
+    gh(cwd, ["label", "create", label, "--force", "--color", ["0e8a16", "fbca04", "d93f0b"][target.tier]], { allowFail: true });
+    gh(cwd, ["pr", "edit", target.pr, "--add-label", label], { allowFail: true });
+  }
   if (!approved) {
-    // New commits can raise a PR to tier 2 after auto-merge was armed: disarm it.
+    // The base can lose its policy after auto-merge was armed: disarm it.
     if (target.autoMerge) {
       gh(cwd, ["pr", "merge", target.pr, "--disable-auto"]);
       target.autoMerge = false;
@@ -163,13 +181,17 @@ function subject(status) {
   return status.identity?.subject || status.goal || `agent-manager run ${status.runId}`;
 }
 
+function route(target) {
+  if (target.gated) return "gate";
+  return target.tier === null ? "no usable policy" : `tier ${target.tier}`;
+}
+
 function waitingText(status, target, action) {
-  const reason = target.policyProblem ? `Ship policy: ${target.policyProblem}` : `Tier 2 (${target.tierFiles.join(", ")})`;
-  return `${reason}: approve with \`agent-manager ship ${status.runId} --target ${target.id} --approved-by <you>\` to ${action}`;
+  return `Ship policy: ${target.policyProblem}: approve with \`agent-manager ship ${status.runId} --target ${target.id} --approved-by <you>\` to ${action}`;
 }
 
 export function notice(runId, target) {
-  if (target.waitingOperator) return `Ship Gate · ${runId} · ${target.id} · tier 2 · waiting: ${target.waitingOperator}`;
-  if (target.mergeSha) return `Ship · ${runId} · ${target.id} · tier ${target.tier} · merged ${target.mergeSha.slice(0, 12)}`;
-  return `Ship · ${runId} · ${target.id} · tier ${target.tier} · PR ${target.prUrl} · auto-merge armed`;
+  if (target.waitingOperator) return `Ship Gate · ${runId} · ${target.id} · waiting: ${target.waitingOperator}`;
+  if (target.mergeSha) return `Ship · ${runId} · ${target.id} · ${route(target)} · merged ${target.mergeSha.slice(0, 12)}`;
+  return `Ship · ${runId} · ${target.id} · ${route(target)} · PR ${target.prUrl} · auto-merge armed`;
 }

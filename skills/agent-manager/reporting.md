@@ -1,3 +1,11 @@
+---
+version: 2.0.0
+purpose: The report formats for agent-manager runs.
+author_model: Claude Code (claude-opus-5-5)
+created: 2026-07-29
+updated: 2026-10-30
+---
+
 # agent-manager — reporting
 
 Short, factual, from `status.json` or the event that woke you. One message per
@@ -32,26 +40,26 @@ I will reply with your answer and the lane resumes in the same session.
 - Notes: <non-blocking, at most three>
 ```
 
-## Ship notice (tier 0/1)
+## Ship notice
 
 One line, copied from `ship` output:
 
 ```text
+Ship · <runId> · integrate · gate · merged <sha>
 Ship · <runId> · integrate · tier 1 · PR <url> · auto-merge armed
 ```
 
-## Ship Gate (tier 2)
+## Ship stop (no gate, no usable policy)
 
 ```markdown
-**Ship Gate · tier 2** `<runId>` · PR <url or "direct push">
-Touches: `<tier 2 paths>`
+**Ship Gate** `<runId>` · PR <url or "nothing pushed"> · no gate and no usable ship policy
 Intent: <one sentence: what changes for users or data>
 Reviewer: <verdict, reviewer>
-Reply **approve** to arm auto-merge, or say what to change.
+Add a policy file or the gate, or reply **approve** to ship this one change.
 ```
 
 ## Outcome
 
 ```markdown
-**Agent Manager · done** `<runId>` — merged `<sha>` (tier <n>) | closed: <reason> | rejected: <reason>
+**Agent Manager · done** `<runId>` — merged `<sha>` (gate or tier <n>) | closed: <reason> | rejected: <reason>
 ```

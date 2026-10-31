@@ -4,12 +4,12 @@
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4b5563)](#requirements)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Parallel coding lanes across harnesses, path-based shipping tiers, one event stream.**
+**Parallel coding lanes across harnesses, gated shipping, one event stream.**
 
 agent-manager runs a few coding agents (Claude Code, Codex CLI, Cursor Agent)
 side by side, each in its own Git worktree and scope, then ships the result
-under a deterministic policy: the files a change touches decide whether it
-merges on its own or waits for a person.
+under a deterministic policy: the repository's own gate or tier policy decides,
+not a person reading each change.
 
 It does only what coding harnesses do not do themselves:
 
@@ -18,8 +18,8 @@ It does only what coding harnesses do not do themselves:
 | lanes that mix Claude Code, Codex, and Cursor in one run | subagents, parallel review, background sessions |
 | one worktree + advisory scope claim per lane | a worktree per session |
 | `status.json` and an append-only event log | session notifications, cross-session messages |
-| path-based ship tiers (`.github/ship-tiers.yml`) | PR/CI monitoring, auto-fix, auto-merge buttons |
-| one `ship` command: tier → PR/push → auto-merge | `/code-review`, scheduled tasks, hooks |
+| one route to ship: the pipeline gate, or path tiers (`.github/ship-tiers.yml`) | PR/CI monitoring, auto-fix, auto-merge buttons |
+| one `ship` command: gate or tier → push or PR → auto-merge | `/code-review`, scheduled tasks, hooks |
 
 See [docs/HARNESS-NATIVE.md](docs/HARNESS-NATIVE.md) for the harness side,
 with links, so new harness features replace this tool instead of duplicating it.
@@ -29,16 +29,17 @@ with links, so new harness features replace this tool instead of duplicating it.
 ```text
 run --detach ──► lanes work in worktrees ──► integrate ──► review (one verdict)
                                                              │
-                     ship: classify changed paths by tier ◄──┘
-                       tier 0  docs, tests          → PR + auto-merge (log line)
-                       tier 1  product (default)    → PR + auto-merge (one-line notice)
-                       tier 2  billing, auth, infra → waits for --approved-by
+                     ship: read the route from the base ◄────┘
+                       pipeline gate         → run the gate, push to the base
+                       tier policy, no gate  → PR + auto-merge, or push (Simple)
+                       neither               → stops and asks the operator
 ```
 
-- **Tiers come from paths, never judgment.** The policy file is read from the
-  base branch, and editing it is always tier 2. With no usable policy file,
-  `ship` stops and asks the operator. See
-  [Ship tiers](docs/OPERATOR.md#ship-tiers).
+- **The route comes from the base branch, never judgment.** A repository with
+  `pipeline.json` and `scripts/quality.mjs` ships through that gate. Otherwise
+  `.github/ship-tiers.yml` labels the change by path. With neither, `ship` stops
+  and asks the operator. See
+  [How `ship` picks a route](docs/OPERATOR.md#how-ship-picks-a-route).
 - **Review is independent but light.** A fresh-context reviewer blocks only on
   correctness, safety, data, authorization, or drift from the brief
   ([reviewer prompt](skills/ship-gate/reviewer.md)).
@@ -109,8 +110,8 @@ lanes:
 | `reply <runId> <lane> --message` | answer a lane that asked a question; resumes the same session |
 | `ratify`, `integrate`, `cancel`, `cleanup` | fold, recover, stop, tidy |
 | `review <runId> --verdict accept\|revise\|reject --reviewer` | the one recorded verdict |
-| `ship <runId> [--approved-by <id>]` | tier, push or PR, auto-merge |
-| `tier [--base origin/main]` | classify the current branch |
+| `ship <runId> [--approved-by <id>]` | gate or tier, push or PR, auto-merge |
+| `tier [--base origin/main]` | show the route for the current branch |
 | `events [runId]`, `emit <kind> --repo …` | read or append the event stream |
 | `doctor`, `config`, `validate`, `init`, `harnesses`, `version` | setup |
 
